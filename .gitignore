@@ -1,0 +1,12 @@
+# Editor artifacts
+*~
+.*.swp
+debug.test
+launch.json
+
+# Agent handoff artifacts
+.agentcon/
+
+# Go project artifacts
+/vendor
+*.exe

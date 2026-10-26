@@ -1,0 +1,44 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - asciicheck
+    - bidichk
+    - durationcheck
+    - errcheck
+    - errorlint
+    - exhaustive
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - nakedret
+    - nilerr
+    - nolintlint
+    - revive
+    - sqlclosecheck
+    - staticcheck
+    - unparam
+    - unused
+    - wastedassign
+    - whitespace
+    - wrapcheck
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
