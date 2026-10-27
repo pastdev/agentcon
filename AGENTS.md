@@ -6,12 +6,13 @@ Humans should be able to review this file as ordinary project documentation.
 ## Project
 
 This repository builds and runs a containerized agent workspace (`agentcon`).
-The host launches the image via `agent_exec.sh`.
+The host launches the image with `agentcon run`.
 The image entrypoint prepares a writable home for an arbitrary container UID.
 It links harness state onto a bind mount under `/agent`.
 It then starts the selected harness.
 
 Treat `/workspace` as the mounted host workspace tree.
+The container sets `AGENTCON_HOST_ROOT` to the host path of that bind.
 Prefer changing files under this project's root unless the user asks otherwise.
 
 Do not change this repository without explicit approval of the proposed diff.
@@ -34,6 +35,12 @@ For significant work, use `<use_case>.plan.md` to capture clear guidance.
 Resolve open questions before treating a plan as complete.
 Do not leave unanswered questions in `<use_case>.plan.md`.
 
+Treat questions as inquiry, not as a cue to start work.
+That includes a statement ending in `..., right?` or similar.
+Think about the claim.
+Give pushback when it is wrong.
+Propose a next step only after we agree.
+
 Default to proposing changes and waiting for approval before applying them.
 The user may grant permission to implement a full feature at once.
 
@@ -53,6 +60,12 @@ Commands may only process user input and format user output.
 They may call services under `pkg/**`.
 They must not hold domain logic that belongs in `pkg/**`.
 
+Do not import `pkg/config` from other packages under `pkg/**`.
+Config objects stay in `pkg/config`.
+That package is a factory.
+It maps loaded config into the types each service package already owns.
+A service package receives only the values it needs at that boundary.
+
 ### Bash
 
 Follow the Google Shell Style Guide.
@@ -68,6 +81,7 @@ Keep real actions on their own line so later readers can see them.
 The agent runs in a container without credentials or elevated host access.
 Actions that need credentials or elevated access require a handoff script.
 Examples include `git push`, merge request creation, and Docker on the host.
+When a handoff script must name a host path, use `AGENTCON_HOST_ROOT` with the path under `/workspace`.
 
 Keep handoff artifacts under `.agentcon/` at the project root.
 That directory must be listed in `.gitignore`.

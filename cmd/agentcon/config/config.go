@@ -5,8 +5,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func Add(root *cobra.Command) {
-	loader := pkgcfg.NewLoader()
+func Add(root *cobra.Command, loader *pkgcfg.Loader) {
 	loader.AddCommand(root)
 	loader.AddFlags(root)
 }
