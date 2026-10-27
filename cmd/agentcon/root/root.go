@@ -2,7 +2,9 @@ package root
 
 import (
 	"github.com/pastdev/agentcon/cmd/agentcon/config"
+	"github.com/pastdev/agentcon/cmd/agentcon/run"
 	"github.com/pastdev/agentcon/cmd/agentcon/version"
+	pkgcfg "github.com/pastdev/agentcon/pkg/config"
 	"github.com/pastdev/agentcon/pkg/log"
 	cfgldrlog "github.com/pastdev/configloader/pkg/log"
 	"github.com/spf13/cobra"
@@ -26,8 +28,10 @@ func New() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&logFormat, "log-format", "pretty", "log format (pretty|json)")
 	cmd.PersistentFlags().StringVar(&logLevel, "log", "info", "log level")
 
-	config.Add(&cmd)
+	loader := pkgcfg.NewLoader()
+	config.Add(&cmd, loader)
 	cmd.AddCommand(version.New())
+	cmd.AddCommand(run.New(loader))
 
 	return &cmd
 }

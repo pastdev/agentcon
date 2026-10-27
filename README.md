@@ -2,9 +2,29 @@
 
 Containerized agent workspace.
 
-The host launches the image with `agent_exec.sh`.
+The host CLI is `agentcon run`.
+Build the image, then configure a context with an `image` and a host `root`.
+
+```bash
+docker build --progress plain --tag pastdev.com/agentcon:latest image/base/
+```
+
+Config is loaded from `/etc/agentcon.d`, `~/.config/agentcon.d`, and `./agentcon.d`.
+
+```yaml
+default_context: git
+contexts:
+  git:
+    image: pastdev.com/agentcon:latest
+    root: ~/git
+```
+
+`agentcon run` uses `default_context`.
+`agentcon run NAME` uses that context.
+Cwd must be at or under the selected `root`.
+It bind-mounts `root` at `/workspace` and starts the harness.
 Harness state is bind-mounted from the host to `/agent`.
-The project tree is bind-mounted at `/workspace`.
+The container sets `AGENTCON_HOST_ROOT` to that host `root`.
 
 ## Handoff scratch space
 

@@ -14,7 +14,15 @@ const (
 	UserConfigDir      = "~/.config/agentcon.d"
 )
 
-type Config struct{}
+type Config struct {
+	DefaultContext string                 `json:"default_context" yaml:"default_context"`
+	Contexts       map[string]contextSpec `json:"contexts" yaml:"contexts"`
+}
+
+type contextSpec struct {
+	Image string `json:"image" yaml:"image"`
+	Root  string `json:"root" yaml:"root"`
+}
 
 type Loader struct {
 	source cobracfg.ConfigLoader[Config]
