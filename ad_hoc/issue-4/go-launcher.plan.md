@@ -17,10 +17,10 @@ Do not talk to Docker from inside the agent container.
 ## Decisions
 
 - Config key `contexts` is a map of name to `{image, root}`
+- Top-level `default_context` names the context for bare `agentcon run`
 - Expand `~` in `root`
-- `agentcon run` selects by cwd, longest `root` prefix wins
-- `agentcon run NAME` forces that context
-- Error if cwd matches none, or two roots tie
+- `agentcon run NAME` uses that context
+- Error if cwd is not at or under the selected `root`
 - One bind: expanded `root` to `/workspace`
 - Container cwd is `/workspace` plus the path relative to `root`
 - Inject `AGENTCON_HOST_ROOT` with the expanded host `root`
@@ -28,7 +28,7 @@ Do not talk to Docker from inside the agent container.
 - Extra args after `--` go to the harness
 - `cmd/**` is CLI I/O only
 - Domain packages do not import `pkg/config`
-- `pkg/config.NewRunRequest` maps a named or cwd-matched context onto `run.Request`
+- `pkg/config.NewRunRequest` maps a named or default context onto `run.Request`
 - `pkg/run` does not know about the map of configured contexts
 - Container create/start lives behind `pkg/container.Runtime`
 - Default implementation uses `github.com/moby/moby/client` and `github.com/moby/moby/api`
@@ -50,6 +50,6 @@ pkg/run/run_test.go
 
 ## Acceptance
 
-- From a directory under a configured `root`, `agentcon run` starts the named image
+- From a directory under the selected `root`, `agentcon run` starts that context's image
 - The container has `AGENTCON_HOST_ROOT` set to that host root
 - `go test ./...` and `golangci-lint run` pass

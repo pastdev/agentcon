@@ -15,7 +15,8 @@ const (
 )
 
 type Config struct {
-	Contexts map[string]contextSpec `json:"contexts" yaml:"contexts"`
+	DefaultContext string                 `json:"default_context" yaml:"default_context"`
+	Contexts       map[string]contextSpec `json:"contexts" yaml:"contexts"`
 }
 
 type contextSpec struct {

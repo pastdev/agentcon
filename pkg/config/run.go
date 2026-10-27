@@ -13,68 +13,36 @@ func NewRunRequest(cfg *Config, name, cwd string) (run.Request, error) {
 	if cfg == nil {
 		return run.Request{}, fmt.Errorf("config is required")
 	}
+	if name == "" {
+		name = cfg.DefaultContext
+	}
+	if name == "" {
+		return run.Request{}, fmt.Errorf("default_context is not set")
+	}
 
-	image, root, err := cfg.lookupContext(name, cwd)
+	image, root, err := cfg.contextByName(name)
 	if err != nil {
 		return run.Request{}, err
-	}
-
-	req := run.Request{
-		Image: image,
-		Root:  root,
-		Cwd:   cwd,
-	}
-	if cwd == "" {
-		return req, nil
 	}
 
 	absCwd, err := filepath.Abs(cwd)
 	if err != nil {
 		return run.Request{}, fmt.Errorf("resolve cwd: %w", err)
 	}
-	req.Cwd = absCwd
-	return req, nil
-}
-
-func (c Config) lookupContext(name, cwd string) (string, string, error) {
-	if name != "" {
-		return c.contextByName(name)
+	if !hasPathPrefix(absCwd, root) {
+		return run.Request{}, fmt.Errorf(
+			"cwd %s is not under context %q root %s",
+			absCwd,
+			name,
+			root,
+		)
 	}
 
-	absCwd, err := filepath.Abs(cwd)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve cwd: %w", err)
-	}
-
-	var matchImage, matchRoot string
-	var matchLen int
-	tied := false
-	for n := range c.Contexts {
-		image, root, loadErr := c.contextByName(n)
-		if loadErr != nil {
-			return "", "", loadErr
-		}
-		if !hasPathPrefix(absCwd, root) {
-			continue
-		}
-		if len(root) > matchLen {
-			matchImage = image
-			matchRoot = root
-			matchLen = len(root)
-			tied = false
-			continue
-		}
-		if len(root) == matchLen && matchLen > 0 {
-			tied = true
-		}
-	}
-	if matchLen == 0 {
-		return "", "", fmt.Errorf("no context root contains %s", absCwd)
-	}
-	if tied {
-		return "", "", fmt.Errorf("multiple contexts match %s", absCwd)
-	}
-	return matchImage, matchRoot, nil
+	return run.Request{
+		Image: image,
+		Root:  root,
+		Cwd:   absCwd,
+	}, nil
 }
 
 func (c Config) contextByName(name string) (string, string, error) {
