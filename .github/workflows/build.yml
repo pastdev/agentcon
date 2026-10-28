@@ -36,3 +36,68 @@ jobs:
         cache: true
     - run: go version
     - run: go test ./...
+
+  version:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+    - lint
+    - test
+    outputs:
+      release-version: ${{ steps.parse.outputs.release-version }}
+    runs-on: ubuntu-latest
+    steps:
+    - id: parse
+      env:
+        GITHUB_REF: ${{ github.ref }}
+      name: Parse version from tag ${{ github.ref }}
+      run: |
+        if [[ "${GITHUB_REF}" =~ ^refs/tags/(v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          echo "release-version=${BASH_REMATCH[1]}" >>"${GITHUB_OUTPUT}"
+        fi
+
+  release:
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_DIR: .github-release
+      RELEASE_VERSION: ${{ needs.version.outputs.release-version }}
+    if: needs.version.outputs.release-version
+    needs: version
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Setup go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache: true
+    - name: Build release artifacts version ${{ env.RELEASE_VERSION }}
+      run: |
+        mkdir -p "${RELEASE_DIR}"
+        for PLATFORM in windows linux darwin; do
+          EXTENSION=""
+          if [[ "${PLATFORM}" == "windows" ]]; then
+            EXTENSION=".exe"
+          fi
+          export GOOS="${PLATFORM}"
+          export GOARCH=amd64
+          export CGO_ENABLED=0
+
+          OUT_FILE="${RELEASE_DIR}/agentcon-${PLATFORM}${EXTENSION}"
+          echo "Creating ${OUT_FILE} (${RELEASE_VERSION})"
+          go build \
+            -ldflags "-X github.com/pastdev/agentcon/pkg/version.version=${RELEASE_VERSION}" \
+            -o "${OUT_FILE}" \
+            ./cmd/agentcon
+        done
+        ls -lrt "${RELEASE_DIR}"
+    - name: Create release ${{ env.RELEASE_VERSION }}
+      run: |
+        gh release create "${RELEASE_VERSION}" \
+          --title "${RELEASE_VERSION}" \
+          "${RELEASE_DIR}/agentcon-darwin" \
+          "${RELEASE_DIR}/agentcon-linux" \
+          "${RELEASE_DIR}/agentcon-windows.exe"
+
