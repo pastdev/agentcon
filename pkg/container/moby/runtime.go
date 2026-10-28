@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 
 	"github.com/moby/moby/api/pkg/stdcopy"
 	apictn "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 	"github.com/pastdev/agentcon/pkg/container"
-	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -173,31 +171,6 @@ func mounts(in []container.Mount) []mount.Mount {
 		})
 	}
 	return out
-}
-
-func (r *Runtime) monitorTtySize(ctx context.Context, id string, spec container.Spec) func() {
-	r.resizeTty(ctx, id, spec)
-	if !spec.TTY {
-		return func() {}
-	}
-
-	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, unix.SIGWINCH)
-	done := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-done:
-				return
-			case <-winch:
-				r.resizeTty(ctx, id, spec)
-			}
-		}
-	}()
-	return func() {
-		signal.Stop(winch)
-		close(done)
-	}
 }
 
 func (r *Runtime) resizeTty(ctx context.Context, id string, spec container.Spec) {
