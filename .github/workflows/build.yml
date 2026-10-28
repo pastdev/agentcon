@@ -1,6 +1,9 @@
 ---
 name: build
 
+permissions:
+  contents: read
+
 defaults:
   run:
     shell: bash
