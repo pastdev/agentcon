@@ -19,19 +19,32 @@ const (
 	workspaceMountPoint = "/workspace"
 )
 
+type BouncerSetup struct {
+	ContextName string
+	PolicyYAML  []byte
+	TSFiles     map[string]string
+}
+
 type Request struct {
-	Image   string
-	Root    string
-	Cwd     string
-	Home    string
-	User    string
-	Harness string
-	Args    []string
-	TTY     bool
-	Stdin   io.Reader
-	Stdout  io.Writer
-	Stderr  io.Writer
-	Runtime container.Runtime
+	Image             string
+	Root              string
+	Cwd               string
+	Home              string
+	User              string
+	Harness           string
+	Args              []string
+	TTY               bool
+	Stdin             io.Reader
+	Stdout            io.Writer
+	Stderr            io.Writer
+	Runtime           container.Runtime
+	Context           string
+	Bouncer           *BouncerSetup
+	LinuxBinary       string
+	Entrypoint        []string
+	ExtraHosts        []string
+	SidecarExtraHosts []string
+	SidecarEnv        []string
 }
 
 func Run(ctx context.Context, req Request) error {
@@ -46,7 +59,15 @@ func Run(ctx context.Context, req Request) error {
 
 	err = prepareHost(spec)
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare host: %w", err)
+	}
+
+	if req.Bouncer != nil {
+		err = runWithBouncer(ctx, req, spec)
+		if err != nil {
+			return fmt.Errorf("run with bouncer: %w", err)
+		}
+		return nil
 	}
 
 	err = req.Runtime.Run(ctx, spec)
@@ -84,19 +105,25 @@ func specFrom(req Request) (container.Spec, error) {
 	}
 
 	spec := container.Spec{
-		Image:    req.Image,
-		User:     req.User,
-		GroupAdd: []string{groupRoot},
-		WorkDir:  filepath.ToSlash(filepath.Join(workspaceMountPoint, rel)),
-		Env:      []string{hostRootEnv + "=" + req.Root},
-		Args:     req.Args,
-		Stdin:    req.Stdin,
-		Stdout:   req.Stdout,
-		Stderr:   req.Stderr,
-		TTY:      req.TTY,
+		Image:      req.Image,
+		User:       req.User,
+		GroupAdd:   []string{groupRoot},
+		WorkDir:    filepath.ToSlash(filepath.Join(workspaceMountPoint, rel)),
+		Env:        []string{hostRootEnv + "=" + req.Root},
+		Args:       req.Args,
+		Entrypoint: req.Entrypoint,
+		Stdin:      req.Stdin,
+		Stdout:     req.Stdout,
+		Stderr:     req.Stderr,
+		TTY:        req.TTY,
+		ExtraHosts: req.ExtraHosts,
 		Mounts: []container.Mount{
 			{Source: req.Root, Target: workspaceMountPoint},
 		},
+	}
+
+	if len(req.Entrypoint) > 0 {
+		return spec, nil
 	}
 
 	switch harness {

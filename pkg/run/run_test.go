@@ -2,6 +2,8 @@ package run
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,7 +11,12 @@ import (
 	"github.com/pastdev/agentcon/pkg/container"
 )
 
-const testImage = "pastdev.com/agentcon:latest"
+var errUnused = errors.New("unused")
+
+const (
+	testImage = "pastdev.com/agentcon:latest"
+	testUser  = "1000:1000"
+)
 
 type captureRuntime struct {
 	spec container.Spec
@@ -19,6 +26,34 @@ func (c *captureRuntime) Run(_ context.Context, spec container.Spec) error {
 	c.spec = spec
 	return nil
 }
+
+func (c *captureRuntime) Create(context.Context, container.Spec) (string, error) {
+	return "", errUnused
+}
+func (c *captureRuntime) Start(context.Context, string) error { return errUnused }
+func (c *captureRuntime) AttachStartWait(context.Context, string, container.Spec) error {
+	return errUnused
+}
+func (c *captureRuntime) CopyTo(context.Context, string, string, io.Reader) error {
+	return errUnused
+}
+func (c *captureRuntime) Exec(context.Context, string, container.Exec) error {
+	return errUnused
+}
+func (c *captureRuntime) Inspect(context.Context, string) (container.Info, error) {
+	return container.Info{}, errUnused
+}
+func (c *captureRuntime) Remove(context.Context, string, bool) error { return errUnused }
+func (c *captureRuntime) CreateNetwork(context.Context, container.NetworkSpec) (string, error) {
+	return "", errUnused
+}
+func (c *captureRuntime) InspectNetwork(context.Context, string) (container.NetworkInfo, error) {
+	return container.NetworkInfo{}, errUnused
+}
+func (c *captureRuntime) ConnectNetwork(context.Context, string, string) error {
+	return errUnused
+}
+func (c *captureRuntime) RemoveNetwork(context.Context, string) error { return errUnused }
 
 func TestRunBuildsSpec(t *testing.T) {
 	root := t.TempDir()
@@ -35,7 +70,7 @@ func TestRunBuildsSpec(t *testing.T) {
 		Root:    root,
 		Cwd:     cwd,
 		Home:    home,
-		User:    "1000:1000",
+		User:    testUser,
 		Args:    []string{"--help"},
 		Runtime: rt,
 	})
@@ -70,6 +105,49 @@ func TestRunBuildsSpec(t *testing.T) {
 	}
 }
 
+func TestRunEntrypointSkipsHarnessMount(t *testing.T) {
+	root := t.TempDir()
+	rt := &captureRuntime{}
+	err := Run(context.Background(), Request{
+		Image:      testImage,
+		Root:       root,
+		Cwd:        root,
+		Home:       t.TempDir(),
+		User:       testUser,
+		Entrypoint: []string{"/workspace/agent"},
+		Args:       []string{"-agent", "http://example"},
+		ExtraHosts: []string{"host.docker.internal:host-gateway"},
+		Runtime:    rt,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(rt.spec.Mounts) != 1 {
+		t.Fatalf("mounts %v", rt.spec.Mounts)
+	}
+	if len(rt.spec.Entrypoint) != 1 || rt.spec.Entrypoint[0] != "/workspace/agent" {
+		t.Fatalf("entrypoint %v", rt.spec.Entrypoint)
+	}
+	if len(rt.spec.ExtraHosts) != 1 {
+		t.Fatalf("extra hosts %v", rt.spec.ExtraHosts)
+	}
+}
+
+func TestParseContainerUser(t *testing.T) {
+	uid, gid := parseContainerUser("1000:1001")
+	if uid != 1000 || gid != 1001 {
+		t.Fatalf("got %d:%d", uid, gid)
+	}
+	uid, gid = parseContainerUser("42")
+	if uid != 42 || gid != 42 {
+		t.Fatalf("uid-only got %d:%d", uid, gid)
+	}
+	uid, gid = parseContainerUser("")
+	if uid != 0 || gid != 0 {
+		t.Fatalf("empty got %d:%d", uid, gid)
+	}
+}
+
 func TestRunNamedContextOutsideRootUsesWorkspaceRoot(t *testing.T) {
 	root := t.TempDir()
 	other := t.TempDir()
@@ -79,7 +157,7 @@ func TestRunNamedContextOutsideRootUsesWorkspaceRoot(t *testing.T) {
 		Root:    root,
 		Cwd:     other,
 		Home:    t.TempDir(),
-		User:    "1000:1000",
+		User:    testUser,
 		Runtime: rt,
 	})
 	if err != nil {

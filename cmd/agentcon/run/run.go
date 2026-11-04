@@ -45,7 +45,7 @@ func execute(cmd *cobra.Command, loader *pkgcfg.Loader, args []string) error {
 		harnessArgs = args[1:]
 	}
 
-	req, err := pkgcfg.NewRunRequest(cfg, name, cwd)
+	req, err := pkgcfg.NewRunRequest(cfg, name, cwd, home)
 	if err != nil {
 		return fmt.Errorf("run request: %w", err)
 	}

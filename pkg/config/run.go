@@ -2,14 +2,13 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/pastdev/agentcon/pkg/run"
 )
 
-func NewRunRequest(cfg *Config, name, cwd string) (run.Request, error) {
+func NewRunRequest(cfg *Config, name, cwd, home string) (run.Request, error) {
 	if cfg == nil {
 		return run.Request{}, fmt.Errorf("config is required")
 	}
@@ -38,10 +37,18 @@ func NewRunRequest(cfg *Config, name, cwd string) (run.Request, error) {
 		)
 	}
 
+	setup, err := cfg.MaterializeBouncer(name)
+	if err != nil {
+		return run.Request{}, err
+	}
+
 	return run.Request{
-		Image: image,
-		Root:  root,
-		Cwd:   absCwd,
+		Image:   image,
+		Root:    root,
+		Cwd:     absCwd,
+		Home:    home,
+		Context: name,
+		Bouncer: setup,
 	}, nil
 }
 
@@ -58,13 +65,6 @@ func (c Config) contextByName(name string) (string, string, error) {
 }
 
 func expandRoot(root string) (string, error) {
-	if root == "~" || strings.HasPrefix(root, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("expand home: %w", err)
-		}
-		root = home + root[1:]
-	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("resolve root %q: %w", root, err)

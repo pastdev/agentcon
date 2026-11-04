@@ -12,6 +12,7 @@ const (
 	testContextPastdev = "pastdev"
 	testImageOther     = "other:latest"
 	testImagePastdev   = "pastdev:latest"
+	testBouncerListen  = "127.0.0.1:8228"
 )
 
 func TestNewRunRequestUsesDefaultContext(t *testing.T) {
@@ -24,7 +25,7 @@ func TestNewRunRequestUsesDefaultContext(t *testing.T) {
 
 	cfg := Config{
 		DefaultContext: testContextPastdev,
-		Contexts: map[string]contextSpec{
+		Contexts: map[string]ContextSpec{
 			testContextOther: {Image: testImageOther, Root: t.TempDir()},
 			testContextPastdev: {
 				Image: testImagePastdev,
@@ -33,7 +34,7 @@ func TestNewRunRequestUsesDefaultContext(t *testing.T) {
 		},
 	}
 
-	req, err := NewRunRequest(&cfg, "", cwd)
+	req, err := NewRunRequest(&cfg, "", cwd, t.TempDir())
 	if err != nil {
 		t.Fatalf("new run request: %v", err)
 	}
@@ -52,12 +53,12 @@ func TestNewRunRequestAllowsCwdAtRoot(t *testing.T) {
 	root := t.TempDir()
 	cfg := Config{
 		DefaultContext: testContextPastdev,
-		Contexts: map[string]contextSpec{
+		Contexts: map[string]ContextSpec{
 			testContextPastdev: {Image: testImagePastdev, Root: root},
 		},
 	}
 
-	req, err := NewRunRequest(&cfg, "", root)
+	req, err := NewRunRequest(&cfg, "", root, t.TempDir())
 	if err != nil {
 		t.Fatalf("new run request: %v", err)
 	}
@@ -71,12 +72,12 @@ func TestNewRunRequestAllowsCwdAtRoot(t *testing.T) {
 
 func TestNewRunRequestRequiresDefaultContext(t *testing.T) {
 	cfg := Config{
-		Contexts: map[string]contextSpec{
+		Contexts: map[string]ContextSpec{
 			testContextPastdev: {Image: testImagePastdev, Root: t.TempDir()},
 		},
 	}
 
-	_, err := NewRunRequest(&cfg, "", t.TempDir())
+	_, err := NewRunRequest(&cfg, "", t.TempDir(), t.TempDir())
 	if err == nil {
 		t.Fatal("expected missing default")
 	}
@@ -90,12 +91,12 @@ func TestNewRunRequestRejectsCwdOutsideRoot(t *testing.T) {
 	other := t.TempDir()
 	cfg := Config{
 		DefaultContext: testContextPastdev,
-		Contexts: map[string]contextSpec{
+		Contexts: map[string]ContextSpec{
 			testContextPastdev: {Image: testImagePastdev, Root: root},
 		},
 	}
 
-	_, err := NewRunRequest(&cfg, "", other)
+	_, err := NewRunRequest(&cfg, "", other, t.TempDir())
 	if err == nil {
 		t.Fatal("expected cwd outside root")
 	}
@@ -109,13 +110,13 @@ func TestNewRunRequestNamedRejectsCwdOutsideRoot(t *testing.T) {
 	other := t.TempDir()
 	cfg := Config{
 		DefaultContext: testContextOther,
-		Contexts: map[string]contextSpec{
+		Contexts: map[string]ContextSpec{
 			testContextPastdev: {Image: testImagePastdev, Root: root},
 			testContextOther:   {Image: testImageOther, Root: other},
 		},
 	}
 
-	_, err := NewRunRequest(&cfg, testContextPastdev, other)
+	_, err := NewRunRequest(&cfg, testContextPastdev, other, t.TempDir())
 	if err == nil {
 		t.Fatal("expected cwd outside named root")
 	}
@@ -134,13 +135,13 @@ func TestNewRunRequestByName(t *testing.T) {
 
 	cfg := Config{
 		DefaultContext: testContextOther,
-		Contexts: map[string]contextSpec{
+		Contexts: map[string]ContextSpec{
 			testContextPastdev: {Image: testImagePastdev, Root: root},
 			testContextOther:   {Image: testImageOther, Root: nested},
 		},
 	}
 
-	req, err := NewRunRequest(&cfg, testContextPastdev, nested)
+	req, err := NewRunRequest(&cfg, testContextPastdev, nested, t.TempDir())
 	if err != nil {
 		t.Fatalf("new run request: %v", err)
 	}
@@ -156,12 +157,12 @@ func TestNewRunRequestUnknownName(t *testing.T) {
 	root := t.TempDir()
 	cfg := Config{
 		DefaultContext: testContextPastdev,
-		Contexts: map[string]contextSpec{
+		Contexts: map[string]ContextSpec{
 			testContextPastdev: {Image: testImagePastdev, Root: root},
 		},
 	}
 
-	_, err := NewRunRequest(&cfg, "missing", root)
+	_, err := NewRunRequest(&cfg, "missing", root, t.TempDir())
 	if err == nil {
 		t.Fatal("expected unknown context")
 	}
@@ -170,10 +171,8 @@ func TestNewRunRequestUnknownName(t *testing.T) {
 	}
 }
 
-func TestNewRunRequestExpandsHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	root := filepath.Join(home, "git")
+func TestNewRunRequestResolvesRoot(t *testing.T) {
+	root := t.TempDir()
 	cwd := filepath.Join(root, "proj")
 	err := os.MkdirAll(cwd, 0o700)
 	if err != nil {
@@ -182,12 +181,12 @@ func TestNewRunRequestExpandsHome(t *testing.T) {
 
 	cfg := Config{
 		DefaultContext: testContextPastdev,
-		Contexts: map[string]contextSpec{
-			testContextPastdev: {Image: "img:latest", Root: "~/git"},
+		Contexts: map[string]ContextSpec{
+			testContextPastdev: {Image: "img:latest", Root: root},
 		},
 	}
 
-	req, err := NewRunRequest(&cfg, testContextPastdev, cwd)
+	req, err := NewRunRequest(&cfg, testContextPastdev, cwd, t.TempDir())
 	if err != nil {
 		t.Fatalf("new run request: %v", err)
 	}
