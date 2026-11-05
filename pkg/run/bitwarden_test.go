@@ -9,99 +9,108 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
 )
 
-const testAuthenticator = "authenticator app"
+const (
+	testAuthenticator  = "authenticator app"
+	testMasterPassword = "pw"
+	testTOTP           = "123456"
+	testTOTPWrong      = "000000"
+)
 
-func TestCompleteBitwardenUnlockNeedCode(t *testing.T) {
-	var codes []string
-	unlock := func(_ string, code string) error {
-		codes = append(codes, code)
-		if code == "" {
-			return &mgmt.NeedCodeError{Method: testAuthenticator}
-		}
-		if code != "123456" {
-			return fmt.Errorf("bitwarden: Invalid TOTP code")
-		}
-		return nil
-	}
-	prompts := 0
-	err := completeBitwardenUnlock(unlock, "pw", func(method string) (string, error) {
-		prompts++
-		if method != testAuthenticator {
-			t.Fatalf("method %q", method)
-		}
-		return "123456", nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prompts != 1 || strings.Join(codes, ",") != ",123456" {
-		t.Fatalf("codes %v prompts %d", codes, prompts)
-	}
-}
+func TestCompleteBitwardenUnlock(t *testing.T) {
+	errNeedCode := &mgmt.NeedCodeError{Method: testAuthenticator}
+	errInvalidTOTP := fmt.Errorf("bitwarden: Invalid TOTP code")
+	errBadPassword := errors.New("bitwarden: incorrect master password")
 
-func TestCompleteBitwardenUnlockRetriesInvalidTOTP(t *testing.T) {
-	n := 0
-	unlock := func(_ string, code string) error {
-		if code == "" {
-			return &mgmt.NeedCodeError{Method: testAuthenticator}
-		}
-		n++
-		if n == 1 {
-			return fmt.Errorf("bitwarden: Invalid TOTP code")
-		}
-		return nil
+	type unlockStep struct {
+		code string
+		err  error
 	}
-	codes := []string{"000000", "123456"}
-	err := completeBitwardenUnlock(unlock, "pw", func(string) (string, error) {
-		if len(codes) == 0 {
-			t.Fatal("extra prompt")
-		}
-		c := codes[0]
-		codes = codes[1:]
-		return c, nil
-	})
-	if err != nil {
-		t.Fatal(err)
+	type testCase struct {
+		steps   []unlockStep
+		codes   []string
+		wantErr string
 	}
-}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		n := 0
+		unlock := func(_ string, code string) error {
+			if n >= len(tc.steps) {
+				t.Fatalf("extra unlock code %q", code)
+			}
+			step := tc.steps[n]
+			n++
+			if code != step.code {
+				t.Fatalf("unlock %d code %q want %q", n, code, step.code)
+			}
+			return step.err
+		}
+		prompt := 0
+		err := completeBitwardenUnlock(unlock, testMasterPassword, func(method string) (string, error) {
+			if prompt >= len(tc.codes) {
+				t.Fatal("extra prompt")
+			}
+			if method != "" && method != testAuthenticator {
+				t.Fatalf("method %q", method)
+			}
+			code := tc.codes[prompt]
+			prompt++
+			return code, nil
+		})
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("got %v, want %q", err, tc.wantErr)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != len(tc.steps) {
+			t.Fatalf("unlocks %d want %d", n, len(tc.steps))
+		}
+		if prompt != len(tc.codes) {
+			t.Fatalf("prompts %d want %d", prompt, len(tc.codes))
+		}
+	}
 
-func TestCompleteBitwardenUnlockRetriesNeedCode(t *testing.T) {
-	n := 0
-	unlock := func(_ string, code string) error {
-		n++
-		if code == "" || code == "000000" {
-			return &mgmt.NeedCodeError{Method: testAuthenticator}
-		}
-		if code != "123456" {
-			t.Fatalf("code %q", code)
-		}
-		return nil
-	}
-	codes := []string{"000000", "123456"}
-	err := completeBitwardenUnlock(unlock, "pw", func(string) (string, error) {
-		if len(codes) == 0 {
-			t.Fatal("extra prompt")
-		}
-		c := codes[0]
-		codes = codes[1:]
-		return c, nil
+	t.Run("need code then totp", func(t *testing.T) {
+		tester(t, testCase{
+			steps: []unlockStep{
+				{code: "", err: errNeedCode},
+				{code: testTOTP},
+			},
+			codes: []string{testTOTP},
+		})
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 3 {
-		t.Fatalf("unlocks %d", n)
-	}
-}
 
-func TestCompleteBitwardenUnlockWrongPassword(t *testing.T) {
-	err := completeBitwardenUnlock(func(string, string) error {
-		return errors.New("bitwarden: incorrect master password")
-	}, "pw", func(string) (string, error) {
-		t.Fatal("prompted for code")
-		return "", nil
+	t.Run("retries invalid totp", func(t *testing.T) {
+		tester(t, testCase{
+			steps: []unlockStep{
+				{code: "", err: errNeedCode},
+				{code: testTOTPWrong, err: errInvalidTOTP},
+				{code: testTOTP},
+			},
+			codes: []string{testTOTPWrong, testTOTP},
+		})
 	})
-	if err == nil || !strings.Contains(err.Error(), "incorrect master password") {
-		t.Fatalf("got %v", err)
-	}
+
+	t.Run("retries need code", func(t *testing.T) {
+		tester(t, testCase{
+			steps: []unlockStep{
+				{code: "", err: errNeedCode},
+				{code: testTOTPWrong, err: errNeedCode},
+				{code: testTOTP},
+			},
+			codes: []string{testTOTPWrong, testTOTP},
+		})
+	})
+
+	t.Run("wrong password", func(t *testing.T) {
+		tester(t, testCase{
+			steps: []unlockStep{
+				{code: "", err: errBadPassword},
+			},
+			wantErr: errBadPassword.Error(),
+		})
+	})
 }
