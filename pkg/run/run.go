@@ -44,7 +44,13 @@ type Request struct {
 	Entrypoint        []string
 	ExtraHosts        []string
 	SidecarExtraHosts []string
-	SidecarEnv        []string
+	// SidecarEnv is extra NAME=value pairs for source: env credentials.
+	// They overlay the host environment and are PUT to the sidecar after serve is up.
+	// They are not passed as container environment variables.
+	SidecarEnv []string
+	// Provided is extra credential-name to secret for source: provided.
+	// Host-resolved file, keyring, and command secrets are collected automatically.
+	Provided map[string]string
 }
 
 func Run(ctx context.Context, req Request) error {

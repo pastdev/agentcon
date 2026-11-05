@@ -2,6 +2,7 @@ package jsfilter
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -127,6 +128,31 @@ export default defineFilter({
 	h = chain.Build([]chain.Filter{f}, upstream("fine"))
 	if resp, _ := h(req(t, "GET", "https://x/", nil)); resp.Denial != nil || resp.Status != 200 {
 		t.Fatalf("unexpected %+v", resp)
+	}
+}
+
+func TestCredentialRespond(t *testing.T) {
+	env := &chain.Env{Credential: func(_ context.Context, name string) (string, error) {
+		if name != "smoke" {
+			return "", errors.New("unknown credential")
+		}
+		return "from-vault", nil
+	}}
+	f := load(t, `
+import { defineFilter, credential, respond } from "bouncer";
+export default defineFilter({
+  onRequest() {
+    return respond(200, credential("smoke") + "\n", { "Content-Type": "text/plain" });
+  },
+});`, Options{Env: env})
+	h := chain.Build([]chain.Filter{f}, upstream("should-not-run"))
+	resp, err := h(req(t, "GET", "https://vault.test/", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body.Reader())
+	if resp.Status != 200 || string(b) != "from-vault\n" {
+		t.Fatalf("status=%d body=%q", resp.Status, b)
 	}
 }
 

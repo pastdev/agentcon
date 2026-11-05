@@ -51,6 +51,7 @@ type fakeServer struct {
 	syncBody      []byte
 	refreshToken  string
 	requireSecond bool
+	requireDevice bool
 	logins        int
 	refreshes     int
 	syncs         int
@@ -93,6 +94,18 @@ func (s *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"error_description": "invalid_username_or_password",
 				"ErrorModel":        map[string]string{"Message": "Username or password is incorrect. Try again"},
 			})
+			return
+		}
+		if s.requireDevice && r.Form.Get("newDeviceOtp") == "" {
+			writeJSON(w, 400, map[string]any{
+				"error":             "device_error",
+				"error_description": "New device verification required",
+				"ErrorModel":        map[string]string{"Message": "new device verification required"},
+			})
+			return
+		}
+		if s.requireDevice && r.Form.Get("newDeviceOtp") != "654321" {
+			writeJSON(w, 400, map[string]any{"errorModel": map[string]string{"message": "Invalid OTP"}})
 			return
 		}
 		if s.requireSecond && r.Form.Get("twoFactorToken") == "" {
@@ -416,6 +429,56 @@ func TestPasswordEnvFailureDoesNotStick(t *testing.T) {
 	t.Setenv("BW_MASTER", testPassword)
 	if _, err := v.Get(context.Background(), q); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNewDeviceVerification(t *testing.T) {
+	srv, fake := startVault(t, false)
+	fake.mu.Lock()
+	fake.requireDevice = true
+	fake.mu.Unlock()
+	p := &memPrompt{passwords: []string{testPassword}, codes: []string{"654321"}}
+	v := New(Options{StateDir: t.TempDir(), Prompt: p})
+	got, err := v.Get(context.Background(), Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"})
+	if err != nil || got != "org-password" {
+		t.Fatalf("got %q %v", got, err)
+	}
+	if p.nCode != 1 {
+		t.Fatalf("codes %d", p.nCode)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.logins != 2 {
+		t.Fatalf("logins %d", fake.logins)
+	}
+}
+
+func TestStaticPrompterRejectedCodeNeedsNewPrompt(t *testing.T) {
+	srv, _ := startVault(t, true)
+	p := &StaticPrompter{Password: testPassword, Code: "000000"}
+	v := New(Options{StateDir: t.TempDir(), Prompt: p})
+	_, err := v.Get(context.Background(), Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"})
+	var need *NeedCodeError
+	if !errors.As(err, &need) || need.Method != "authenticator app" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestTwoFactorRetriesWrongCode(t *testing.T) {
+	srv, fake := startVault(t, true)
+	p := &memPrompt{passwords: []string{testPassword}, codes: []string{"000000", "123456"}}
+	v := New(Options{StateDir: t.TempDir(), Prompt: p})
+	got, err := v.Get(context.Background(), Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"})
+	if err != nil || got != "org-password" {
+		t.Fatalf("got %q %v", got, err)
+	}
+	if p.nCode != 2 {
+		t.Fatalf("codes %d", p.nCode)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.logins != 3 {
+		t.Fatalf("logins %d", fake.logins)
 	}
 }
 

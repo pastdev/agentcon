@@ -2,6 +2,7 @@ package mgmt
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -129,6 +130,77 @@ func TestDialContextUsesRunningRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = c.Reload()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientUnlockNeedCode(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /_bouncer/credentials/sources/bitwarden/unlock", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), `"code":"123456"`) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "need_code", "method": "authenticator app"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL, "secret")
+	err := c.UnlockBitwarden("pw", "")
+	var need *NeedCodeError
+	if !errors.As(err, &need) || need.Method != "authenticator app" {
+		t.Fatalf("got %v", err)
+	}
+	err = c.UnlockBitwarden("pw", "123456")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientPutEnv(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /_bouncer/credentials/sources/env", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("auth %q", r.Header.Get("Authorization"))
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"SMOKE_TOKEN":"s3cret"`) {
+			t.Errorf("body %s", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL, "secret")
+	err := c.PutEnv(map[string]string{"SMOKE_TOKEN": "s3cret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientPutProvided(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /_bouncer/credentials/provided", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("auth %q", r.Header.Get("Authorization"))
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"tok":"from-file"`) {
+			t.Errorf("body %s", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL, "secret")
+	err := c.PutProvided(map[string]string{"tok": "from-file"})
 	if err != nil {
 		t.Fatal(err)
 	}

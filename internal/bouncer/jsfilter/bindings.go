@@ -83,6 +83,29 @@ func (i *instance) installHost() error {
 		return i.resolved(vm.ToValue(ok))
 	})
 
+	host.Set("credential", func(call goja.FunctionCall) goja.Value {
+		name := ""
+		if a := call.Argument(0); !goja.IsUndefined(a) && !goja.IsNull(a) {
+			name = a.String()
+		}
+		if name == "" {
+			panic(vm.ToValue("credential() requires a credential name"))
+		}
+		get := i.f.opts.Env.Credential
+		if get == nil {
+			panic(vm.ToValue("credential() is not configured"))
+		}
+		ctx := context.Background()
+		if i.cur != nil && i.cur.Ctx != nil {
+			ctx = i.cur.Ctx
+		}
+		v, err := get(ctx, name)
+		if err != nil {
+			panic(vm.ToValue(err.Error()))
+		}
+		return vm.ToValue(v)
+	})
+
 	host.Set("log", func(call goja.FunctionCall) goja.Value {
 		var fields map[string]any
 		if o, ok := call.Argument(1).(*goja.Object); ok {

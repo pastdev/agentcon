@@ -20,6 +20,8 @@ import (
 const (
 	sidecarTimeout = 5 * time.Second
 	cliTimeout     = 30 * time.Second
+	// Unlock talks to Bitwarden (login, optional OTP, vault sync).
+	unlockTimeout = 2 * time.Minute
 )
 
 // Client talks to /_bouncer/ on a running daemon.
@@ -169,10 +171,40 @@ func (c *Client) Reload() error {
 }
 
 func (c *Client) UnlockBitwarden(password, code string) error {
-	return c.do(http.MethodPost, "/_bouncer/bitwarden/unlock", map[string]string{
+	return c.doTimeout(unlockTimeout, http.MethodPost, "/_bouncer/credentials/sources/bitwarden/unlock", map[string]string{
 		"password": password,
 		"code":     code,
 	}, nil)
+}
+
+// NeedCodeError means unlock needs a second factor. Retry UnlockBitwarden
+// with the same password and a verification code.
+type NeedCodeError struct {
+	Method string
+}
+
+func (e *NeedCodeError) Error() string {
+	if e.Method == "" {
+		return "bitwarden verification code required"
+	}
+	return "bitwarden verification code (" + e.Method + ") required"
+}
+
+// PutEnv replaces the daemon's source: env overlay.
+func (c *Client) PutEnv(vars map[string]string) error {
+	if len(vars) == 0 {
+		return nil
+	}
+	return c.do(http.MethodPut, "/_bouncer/credentials/sources/env", vars, nil)
+}
+
+// PutProvided replaces host-resolved secrets (file, keyring, command,
+// provided) keyed by credential name.
+func (c *Client) PutProvided(values map[string]string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	return c.do(http.MethodPut, "/_bouncer/credentials/provided", values, nil)
 }
 
 // Trust is GET /_bouncer/ca.
@@ -189,6 +221,10 @@ func (c *Client) Trust() (Trust, error) {
 }
 
 func (c *Client) do(method, path string, in, out any) error {
+	return c.doTimeout(0, method, path, in, out)
+}
+
+func (c *Client) doTimeout(timeout time.Duration, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -205,13 +241,26 @@ func (c *Client) do(method, path string, in, out any) error {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
+	httpClient := c.http
+	if timeout > 0 {
+		clone := *c.http
+		clone.Timeout = timeout
+		httpClient = &clone
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("contacting bouncer at %s (is `agentcon bouncer serve` running?): %w", c.base, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		var payload struct {
+			Error  string `json:"error"`
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(msg, &payload) == nil && payload.Error == "need_code" {
+			return &NeedCodeError{Method: payload.Method}
+		}
 		return fmt.Errorf("%s", strings.TrimSpace(string(msg)))
 	}
 	if out != nil {

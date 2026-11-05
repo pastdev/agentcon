@@ -1,7 +1,9 @@
 package run
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -37,6 +39,19 @@ const (
 
 func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) error {
 	setup := req.Bouncer
+	envVars, err := hostEnvCreds(setup.PolicyYAML, req.SidecarEnv)
+	if err != nil {
+		return fmt.Errorf("host env credentials: %w", err)
+	}
+	provided, err := hostProvidedCreds(ctx, setup.PolicyYAML, req.Provided)
+	if err != nil {
+		return fmt.Errorf("host credentials: %w", err)
+	}
+	sshSock, err := hostSSHAuthSock(setup.PolicyYAML)
+	if err != nil {
+		return fmt.Errorf("ssh-agent: %w", err)
+	}
+
 	hostPort, err := freeLocalPort()
 	if err != nil {
 		return fmt.Errorf("management port: %w", err)
@@ -78,21 +93,10 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("inspect external network: %w", err)
 	}
 
-	sidecarID, err := req.Runtime.Create(ctx, container.Spec{
-		Image:      req.Image,
-		User:       req.User,
-		GroupAdd:   []string{groupRoot},
-		Entrypoint: []string{"sleep", "infinity"},
-		Networks:   []string{extNetName, agentNetName},
-		Ports: []container.Port{{
-			HostIP:        "127.0.0.1",
-			HostPort:      strconv.Itoa(hostPort),
-			ContainerPort: defaultProxyPort,
-			Protocol:      "tcp",
-		}},
-		Labels:     labels,
-		ExtraHosts: req.SidecarExtraHosts,
-	})
+	sidecarSpec := withSSHAuthSock(bouncerSidecarSpec(
+		req, labels, extNetName, agentNetName, agentNet.Subnet, extNet.Subnet, hostPort,
+	), sshSock)
+	sidecarID, err := req.Runtime.Create(ctx, sidecarSpec)
 	if err != nil {
 		return fmt.Errorf("create bouncer sidecar: %w", err)
 	}
@@ -109,22 +113,19 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("start bouncer sidecar: %w", err)
 	}
 
-	execEnv := []string{
-		"AGENT_NETWORK=" + agentNet.Subnet,
-		"MANAGEMENT_NETWORK=" + extNet.Subnet,
-		"MANAGEMENT_PORT=" + defaultProxyPort,
-	}
-	execEnv = append(execEnv, req.SidecarEnv...)
-	err = req.Runtime.Exec(ctx, sidecarID, container.Exec{
-		Cmd:    []string{sidecarBinPath, "bouncer", "serve", "--file", sidecarConfigPath, "--state-dir", sidecarStatePath, "--quiet"},
-		Env:    execEnv,
-		Detach: true,
-	})
-	if err != nil {
-		return fmt.Errorf("exec bouncer serve: %w", err)
-	}
-
 	client := mgmt.New(fmt.Sprintf("http://127.0.0.1:%d", hostPort), token)
+	err = waitUntilServing(ctx, client)
+	if err != nil {
+		return fmt.Errorf("wait for bouncer: %w", err)
+	}
+	err = client.PutEnv(envVars)
+	if err != nil {
+		return fmt.Errorf("put env credentials: %w", err)
+	}
+	err = client.PutProvided(provided)
+	if err != nil {
+		return fmt.Errorf("put host credentials: %w", err)
+	}
 	err = waitReady(ctx, client, req)
 	if err != nil {
 		return fmt.Errorf("wait for bouncer: %w", err)
@@ -178,6 +179,52 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("run container: %w", err)
 	}
 	return nil
+}
+
+func bouncerSidecarSpec(
+	req Request,
+	labels map[string]string,
+	extNetName, agentNetName, agentSubnet, extSubnet string,
+	hostPort int,
+) container.Spec {
+	return container.Spec{
+		Image:      req.Image,
+		User:       req.User,
+		GroupAdd:   []string{groupRoot},
+		Entrypoint: []string{sidecarBinPath},
+		Args: []string{
+			"bouncer", "serve",
+			"--file", sidecarConfigPath,
+			"--state-dir", sidecarStatePath,
+			"--quiet",
+		},
+		Env: []string{
+			"AGENT_NETWORK=" + agentSubnet,
+			"MANAGEMENT_NETWORK=" + extSubnet,
+			"MANAGEMENT_PORT=" + defaultProxyPort,
+		},
+		Networks: []string{extNetName, agentNetName},
+		Ports: []container.Port{{
+			HostIP:        "127.0.0.1",
+			HostPort:      strconv.Itoa(hostPort),
+			ContainerPort: defaultProxyPort,
+			Protocol:      "tcp",
+		}},
+		Labels:     labels,
+		ExtraHosts: req.SidecarExtraHosts,
+	}
+}
+
+func withSSHAuthSock(spec container.Spec, sock string) container.Spec {
+	if sock == "" {
+		return spec
+	}
+	spec.Mounts = append(spec.Mounts, container.Mount{
+		Source: sock,
+		Target: sidecarSSHAuthSock,
+	})
+	spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+sidecarSSHAuthSock)
+	return spec
 }
 
 func copySidecarPayload(ctx context.Context, req Request, id, token string) error {
@@ -325,6 +372,21 @@ func freeLocalPort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
+func waitUntilServing(ctx context.Context, client *mgmt.Client) error {
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wait bouncer: %w", ctx.Err())
+		}
+		_, err := client.Status()
+		if err == nil {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for bouncer management API")
+}
+
 func waitReady(ctx context.Context, client *mgmt.Client, req Request) error {
 	deadline := time.Now().Add(2 * time.Minute)
 	for time.Now().Before(deadline) {
@@ -353,7 +415,9 @@ func waitReady(ctx context.Context, client *mgmt.Client, req Request) error {
 
 func unlockBitwarden(client *mgmt.Client, req Request, label string) error {
 	fd := -1
+	var in *os.File
 	if f, ok := req.Stdin.(*os.File); ok {
+		in = f
 		fd = int(f.Fd())
 	}
 	if fd < 0 || !term.IsTerminal(fd) {
@@ -365,11 +429,70 @@ func unlockBitwarden(client *mgmt.Client, req Request, label string) error {
 	if err != nil {
 		return fmt.Errorf("read bitwarden password: %w", err)
 	}
-	err = client.UnlockBitwarden(string(pw), "")
+	err = completeBitwardenUnlock(client.UnlockBitwarden, string(pw), func(method string) (string, error) {
+		return readBitwardenCode(in, req.Stderr, label, method)
+	})
 	if err != nil {
 		return fmt.Errorf("unlock bitwarden: %w", err)
 	}
 	return nil
+}
+
+const bitwardenCodeAttempts = 3
+
+func completeBitwardenUnlock(unlock func(password, code string) error, password string, promptCode func(method string) (string, error)) error {
+	code := ""
+	for attempt := 0; attempt < bitwardenCodeAttempts; attempt++ {
+		err := unlock(password, code)
+		if err == nil {
+			return nil
+		}
+		var need *mgmt.NeedCodeError
+		if errors.As(err, &need) {
+			code, err = promptCode(need.Method)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if code != "" && bitwardenInvalidCode(err) {
+			code, err = promptCode("")
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		return err
+	}
+	return fmt.Errorf("bitwarden verification code rejected")
+}
+
+func bitwardenInvalidCode(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Invalid TOTP") || strings.Contains(msg, "invalid verification code")
+}
+
+func readBitwardenCode(in *os.File, stderr io.Writer, label, method string) (string, error) {
+	if in == nil || !term.IsTerminal(int(in.Fd())) {
+		return "", fmt.Errorf("bitwarden vault %s needs a verification code (run from a terminal)", label)
+	}
+	if method != "" {
+		_, _ = fmt.Fprintf(stderr, "Bitwarden verification code (%s) for %s: ", method, label)
+	} else {
+		_, _ = fmt.Fprintf(stderr, "Bitwarden verification code for %s: ", label)
+	}
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read bitwarden verification code: %w", err)
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", fmt.Errorf("empty verification code")
+	}
+	return line, nil
 }
 
 func notifyApprovals(ctx context.Context, client *mgmt.Client, stderr io.Writer) {

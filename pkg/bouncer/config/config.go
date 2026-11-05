@@ -93,19 +93,24 @@ func (a Approvals) TimeoutOrDefault() time.Duration {
 // it only sees the placeholder.
 type Credential struct {
 	// Source is one of: keyring, command, env, file, ssh-agent, bitwarden, provided.
-	// "provided" values are supplied to the daemon at start and can
-	// also override any other source.
+	// "provided" values are supplied at daemon start or by PUT /_bouncer/credentials/provided.
+	// They also override any other source.
 	Source string `yaml:"source"`
 	// Command (source: command) is an argv run to fetch the secret, e.g.
 	// ["bw", "get", "password", "gitlab"]. Stdout, minus trailing newlines, is the secret.
+	// agentcon run evaluates this on the host and PUTs the value.
 	Command []string `yaml:"command"`
-	// Env (source: env) names an environment variable of the bouncer daemon.
+	// Env (source: env) names an environment variable.
+	// The daemon reads it from an overlay set by PUT /_bouncer/credentials/sources/env, then from os.LookupEnv.
 	Env string `yaml:"env"`
 	// Path (source: file) is a file containing the secret (e.g. an SSH private key).
+	// agentcon run reads this path on the host and PUTs the value.
 	Path string `yaml:"path"`
 	// Account (source: keyring) overrides the keyring account name (default: credential name).
+	// agentcon run reads the host keyring and PUTs the value.
 	Account string `yaml:"account"`
 	// Fingerprint (source: ssh-agent) selects a key from the agent by SHA256 fingerprint.
+	// agentcon run bind-mounts SSH_AUTH_SOCK into the sidecar.
 	Fingerprint string `yaml:"fingerprint"`
 	// Bitwarden (source: bitwarden) selects an item in a vault. The vault is
 	// synced and unlocked once, and stays unlocked for the life of the process.

@@ -13,6 +13,14 @@ const (
 	testImageOther     = "other:latest"
 	testImagePastdev   = "pastdev:latest"
 	testBouncerListen  = "127.0.0.1:8228"
+	testHostCursor     = "cursor.com"
+	testHostCursorStar = "*.cursor.sh"
+	testHostAnthropic  = "api.anthropic.com"
+	testHostExtra      = "extra.example.com"
+	testHarnessCursor  = "cursor"
+	testHarnessClaude  = "claude"
+	testProfileDefault = "default"
+	testProfileLocked  = "locked-down"
 )
 
 func TestNewRunRequestUsesDefaultContext(t *testing.T) {
@@ -34,7 +42,7 @@ func TestNewRunRequestUsesDefaultContext(t *testing.T) {
 		},
 	}
 
-	req, err := NewRunRequest(&cfg, "", cwd, t.TempDir())
+	req, err := NewRunRequest(&cfg, "", cwd, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("new run request: %v", err)
 	}
@@ -47,6 +55,9 @@ func TestNewRunRequestUsesDefaultContext(t *testing.T) {
 	if req.Cwd != cwd {
 		t.Fatalf("got cwd %q, want %q", req.Cwd, cwd)
 	}
+	if req.Harness != testHarnessCursor {
+		t.Fatalf("got harness %q", req.Harness)
+	}
 }
 
 func TestNewRunRequestAllowsCwdAtRoot(t *testing.T) {
@@ -58,7 +69,7 @@ func TestNewRunRequestAllowsCwdAtRoot(t *testing.T) {
 		},
 	}
 
-	req, err := NewRunRequest(&cfg, "", root, t.TempDir())
+	req, err := NewRunRequest(&cfg, "", root, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("new run request: %v", err)
 	}
@@ -77,7 +88,7 @@ func TestNewRunRequestRequiresDefaultContext(t *testing.T) {
 		},
 	}
 
-	_, err := NewRunRequest(&cfg, "", t.TempDir(), t.TempDir())
+	_, err := NewRunRequest(&cfg, "", t.TempDir(), t.TempDir(), "")
 	if err == nil {
 		t.Fatal("expected missing default")
 	}
@@ -96,7 +107,7 @@ func TestNewRunRequestRejectsCwdOutsideRoot(t *testing.T) {
 		},
 	}
 
-	_, err := NewRunRequest(&cfg, "", other, t.TempDir())
+	_, err := NewRunRequest(&cfg, "", other, t.TempDir(), "")
 	if err == nil {
 		t.Fatal("expected cwd outside root")
 	}
@@ -116,7 +127,7 @@ func TestNewRunRequestNamedRejectsCwdOutsideRoot(t *testing.T) {
 		},
 	}
 
-	_, err := NewRunRequest(&cfg, testContextPastdev, other, t.TempDir())
+	_, err := NewRunRequest(&cfg, testContextPastdev, other, t.TempDir(), "")
 	if err == nil {
 		t.Fatal("expected cwd outside named root")
 	}
@@ -141,7 +152,7 @@ func TestNewRunRequestByName(t *testing.T) {
 		},
 	}
 
-	req, err := NewRunRequest(&cfg, testContextPastdev, nested, t.TempDir())
+	req, err := NewRunRequest(&cfg, testContextPastdev, nested, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("new run request: %v", err)
 	}
@@ -150,6 +161,34 @@ func TestNewRunRequestByName(t *testing.T) {
 	}
 	if req.Cwd != nested {
 		t.Fatalf("got cwd %q, want %q", req.Cwd, nested)
+	}
+}
+
+func TestNewRunRequestHarnessOverride(t *testing.T) {
+	root := t.TempDir()
+	cfg := Config{
+		DefaultContext: testContextPastdev,
+		Contexts: map[string]ContextSpec{
+			testContextPastdev: {
+				Image:   testImagePastdev,
+				Root:    root,
+				Harness: testHarnessClaude,
+			},
+		},
+	}
+	req, err := NewRunRequest(&cfg, "", root, t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("new run request: %v", err)
+	}
+	if req.Harness != testHarnessClaude {
+		t.Fatalf("got harness %q", req.Harness)
+	}
+	req, err = NewRunRequest(&cfg, "", root, t.TempDir(), testHarnessCursor)
+	if err != nil {
+		t.Fatalf("new run request: %v", err)
+	}
+	if req.Harness != testHarnessCursor {
+		t.Fatalf("got harness %q", req.Harness)
 	}
 }
 
@@ -162,7 +201,7 @@ func TestNewRunRequestUnknownName(t *testing.T) {
 		},
 	}
 
-	_, err := NewRunRequest(&cfg, "missing", root, t.TempDir())
+	_, err := NewRunRequest(&cfg, "missing", root, t.TempDir(), "")
 	if err == nil {
 		t.Fatal("expected unknown context")
 	}
@@ -186,7 +225,7 @@ func TestNewRunRequestResolvesRoot(t *testing.T) {
 		},
 	}
 
-	req, err := NewRunRequest(&cfg, testContextPastdev, cwd, t.TempDir())
+	req, err := NewRunRequest(&cfg, testContextPastdev, cwd, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("new run request: %v", err)
 	}

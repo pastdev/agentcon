@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -31,7 +32,7 @@ func (d *Daemon) Control() http.Handler {
 			"ready": len(pending) == 0, "bitwarden_pending": pending,
 		})
 	})
-	mux.HandleFunc("POST /_bouncer/bitwarden/unlock", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /_bouncer/credentials/sources/bitwarden/unlock", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Password string `json:"password"`
 			Code     string `json:"code"`
@@ -40,8 +41,18 @@ func (d *Daemon) Control() http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		bitwarden.SetPrompt(bitwarden.StaticPrompter{Password: body.Password, Code: body.Code})
+		bitwarden.SetPrompt(&bitwarden.StaticPrompter{Password: body.Password, Code: body.Code})
 		if err := d.creds.Prepare(context.Background(), d.Config().Credentials); err != nil {
+			var need *bitwarden.NeedCodeError
+			if errors.As(err, &need) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error":  "need_code",
+					"method": need.Method,
+				})
+				return
+			}
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -119,13 +130,43 @@ func (d *Daemon) Control() http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("PUT /_bouncer/credentials/provided", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		for k, v := range body {
+			if k == "" || v == "" {
+				http.Error(w, "provided keys and values must be non-empty", http.StatusBadRequest)
+				return
+			}
+		}
+		d.creds.SetProvided(body)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("PUT /_bouncer/credentials/sources/env", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		for k, v := range body {
+			if k == "" || v == "" {
+				http.Error(w, "env overlay keys and values must be non-empty", http.StatusBadRequest)
+				return
+			}
+		}
+		d.creds.SetEnv(body)
+		w.WriteHeader(http.StatusNoContent)
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if subtle.ConstantTimeCompare([]byte(tok), []byte(d.admin)) != 1 {
 			http.Error(w, "agent-bouncer: admin token required", http.StatusUnauthorized)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		mux.ServeHTTP(w, r)
 	})
 }

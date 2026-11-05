@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/harness"
 	cobracfg "github.com/pastdev/configloader/pkg/cobra"
 	cfgldr "github.com/pastdev/configloader/pkg/config"
 	"github.com/pastdev/configloader/pkg/xdg"
@@ -46,14 +47,21 @@ func resolveOverlayDir(path string) string {
 
 type Config struct {
 	DefaultContext string                 `json:"default_context" yaml:"default_context"`
+	Harnesses      map[string]HarnessSpec `json:"harnesses,omitempty" yaml:"harnesses,omitempty"`
 	Contexts       map[string]ContextSpec `json:"contexts" yaml:"contexts"`
 	OverlayDirs    []string               `json:"-" yaml:"-"`
+}
+
+// HarnessSpec is builtin or user-overlaid metadata for one agent harness.
+type HarnessSpec struct {
+	Tunnel []string `json:"tunnel,omitempty" yaml:"tunnel,omitempty"`
 }
 
 // ContextSpec is one named workspace in the agentcon config document.
 type ContextSpec struct {
 	Image   string             `json:"image" yaml:"image"`
 	Root    string             `json:"root" yaml:"root"`
+	Harness string             `json:"harness,omitempty" yaml:"harness,omitempty"`
 	Bouncer *bouncercfg.Config `json:"bouncer,omitempty" yaml:"bouncer,omitempty"`
 }
 
@@ -109,23 +117,29 @@ func valueTemplateUnmarshal() cfgldr.UnmarshalFunc {
 func NewLoader() *Loader {
 	userDir := userConfigDir()
 	overlayDirs := []string{resolveOverlayDir(SystemConfigDir)}
-	sources := []cfgldr.SourceLoader{
-		cfgldr.DirSource{
-			Path:      SystemConfigDir,
-			Unmarshal: valueTemplateUnmarshal(),
-		},
+	unmarshal := valueTemplateUnmarshal()
+	var sources []cfgldr.SourceLoader
+	for _, data := range harness.DefaultYAML() {
+		sources = append(sources, cfgldr.RawSource{
+			Data:      data,
+			Unmarshal: unmarshal,
+		})
 	}
+	sources = append(sources, cfgldr.DirSource{
+		Path:      SystemConfigDir,
+		Unmarshal: unmarshal,
+	})
 	if userDir != "" {
 		overlayDirs = append(overlayDirs, resolveOverlayDir(userDir))
 		sources = append(sources, cfgldr.DirSource{
 			Path:      userDir,
-			Unmarshal: valueTemplateUnmarshal(),
+			Unmarshal: unmarshal,
 		})
 	}
 	overlayDirs = append(overlayDirs, resolveOverlayDir(DirectoryConfigDir))
 	sources = append(sources, cfgldr.DirSource{
 		Path:      DirectoryConfigDir,
-		Unmarshal: valueTemplateUnmarshal(),
+		Unmarshal: unmarshal,
 	})
 	return &Loader{
 		overlayDirs: overlayDirs,

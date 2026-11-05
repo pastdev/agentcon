@@ -154,7 +154,14 @@ type twoFactorError struct{ providers []int }
 
 func (e *twoFactorError) Error() string { return "two-factor authentication required" }
 
-func (a *api) login(ctx context.Context, identityBase, email, deviceID, passwordHash string, provider int, code string) (access, refresh string, err error) {
+// deviceVerifyError is returned when login needs the emailed new-device OTP.
+type deviceVerifyError struct{}
+
+func (e *deviceVerifyError) Error() string { return "new device verification required" }
+
+const newDeviceMethod = "new device email"
+
+func (a *api) login(ctx context.Context, identityBase, email, deviceID, passwordHash string, provider int, code, newDeviceOtp string) (access, refresh string, err error) {
 	form := url.Values{
 		"grant_type":       {"password"},
 		"username":         {email},
@@ -169,6 +176,9 @@ func (a *api) login(ctx context.Context, identityBase, email, deviceID, password
 		form.Set("twoFactorToken", code)
 		form.Set("twoFactorProvider", fmt.Sprintf("%d", provider))
 		form.Set("twoFactorRemember", "1")
+	}
+	if newDeviceOtp != "" {
+		form.Set("newDeviceOtp", newDeviceOtp)
 	}
 	hdr := http.Header{
 		"Content-Type": {"application/x-www-form-urlencoded"},
@@ -219,6 +229,9 @@ func parseToken(body []byte, status int, allowChallenge bool) (access, refresh s
 			return "", "", &twoFactorError{providers: ps}
 		}
 	}
+	if allowChallenge && isDeviceVerification(res) {
+		return "", "", &deviceVerifyError{}
+	}
 	if res.Error == "invalid_grant" && res.description() == "invalid_username_or_password" {
 		msg := "incorrect master password"
 		if res.ErrorModel != nil && res.ErrorModel.Message != "" {
@@ -226,13 +239,47 @@ func parseToken(body []byte, status int, allowChallenge bool) (access, refresh s
 		}
 		return "", "", &passwordError{message: msg}
 	}
-	if res.ErrorModel != nil && (res.ErrorModel.Message == "Username or password is incorrect. Try again" || strings.HasPrefix(res.ErrorModel.Message, "Invalid TOTP code")) {
+	if res.ErrorModel != nil && res.ErrorModel.Message == "Username or password is incorrect. Try again" {
 		return "", "", &passwordError{message: res.ErrorModel.Message}
+	}
+	if isInvalidVerification(res) {
+		return "", "", &invalidCodeError{}
 	}
 	if status != http.StatusOK {
 		return "", "", httpError("login", status, body)
 	}
 	return "", "", errors.New("login: empty access token")
+}
+
+// invalidCodeError is a rejected TOTP, email OTP, or new-device OTP.
+type invalidCodeError struct{}
+
+func (e *invalidCodeError) Error() string { return "invalid verification code" }
+
+func isInvalidVerification(res tokenResponse) bool {
+	msg := res.description()
+	if res.ErrorModel != nil {
+		msg += " " + res.ErrorModel.Message
+	}
+	msg = strings.ToLower(msg)
+	if strings.Contains(msg, "invalid totp") {
+		return true
+	}
+	if strings.Contains(msg, "invalid otp") {
+		return true
+	}
+	return false
+}
+
+func isDeviceVerification(res tokenResponse) bool {
+	if res.Error == "device_error" {
+		return true
+	}
+	msg := strings.ToLower(res.description())
+	if res.ErrorModel != nil {
+		msg += " " + strings.ToLower(res.ErrorModel.Message)
+	}
+	return strings.Contains(msg, "new device verification")
 }
 
 func parseProviders(raw json.RawMessage) []int {

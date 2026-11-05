@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -51,6 +52,52 @@ func TestEnvSource(t *testing.T) {
 	s := NewStore(map[string]*config.Credential{"e": {Name: "e", Source: "env", Env: "BOUNCER_TEST_SECRET"}})
 	if v, err := s.Get(context.Background(), "e"); err != nil || v != "s3cret" {
 		t.Fatalf("got %q, %v", v, err)
+	}
+}
+
+func TestEnvOverlayWinsOverOS(t *testing.T) {
+	t.Setenv("BOUNCER_TEST_SECRET", "from-os")
+	s := NewStore(map[string]*config.Credential{"e": {Name: "e", Source: "env", Env: "BOUNCER_TEST_SECRET"}})
+	v, err := s.Get(context.Background(), "e")
+	if err != nil || v != "from-os" {
+		t.Fatalf("got %q, %v", v, err)
+	}
+	s.SetEnv(map[string]string{"BOUNCER_TEST_SECRET": "from-put"})
+	v, err = s.Get(context.Background(), "e")
+	if err != nil || v != "from-put" {
+		t.Fatalf("overlay got %q, %v", v, err)
+	}
+}
+
+func TestEnvOverlayWithoutOS(t *testing.T) {
+	s := NewStore(map[string]*config.Credential{"e": {Name: "e", Source: "env", Env: "BOUNCER_TEST_UNSET"}})
+	_, err := s.Get(context.Background(), "e")
+	if err == nil {
+		t.Fatal("expected missing env")
+	}
+	s.SetEnv(map[string]string{"BOUNCER_TEST_UNSET": "from-put"})
+	v, err := s.Get(context.Background(), "e")
+	if err != nil || v != "from-put" {
+		t.Fatalf("got %q, %v", v, err)
+	}
+}
+
+func TestSetProvidedClearsCache(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/secret"
+	err := os.WriteFile(path, []byte("from-file"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewStore(map[string]*config.Credential{"tok": {Name: "tok", Source: "file", Path: path}})
+	v, err := s.Get(context.Background(), "tok")
+	if err != nil || v != "from-file" {
+		t.Fatalf("got %q, %v", v, err)
+	}
+	s.SetProvided(map[string]string{"tok": "from-put"})
+	v, err = s.Get(context.Background(), "tok")
+	if err != nil || v != "from-put" {
+		t.Fatalf("overlay got %q, %v", v, err)
 	}
 }
 

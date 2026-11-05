@@ -357,25 +357,68 @@ func (v *Vaults) masterPassword(a Account) (string, error) {
 	return v.prompt.MasterPassword(a.label())
 }
 
+const verificationCodeAttempts = 5
+
 func (v *Vaults) login(ctx context.Context, identityBase, email, deviceID string, id identity) (access, refresh string, err error) {
 	hash := base64.StdEncoding.EncodeToString(id.passwordHash)
-	access, refresh, err = v.api.login(ctx, identityBase, email, deviceID, hash, 0, "")
+	access, refresh, err = v.api.login(ctx, identityBase, email, deviceID, hash, 0, "", "")
+	var dev *deviceVerifyError
+	if errors.As(err, &dev) {
+		access, refresh, err = v.submitVerification(ctx, identityBase, email, deviceID, hash, 0, newDeviceMethod, true)
+	}
 	var tf *twoFactorError
 	if errors.As(err, &tf) {
 		provider, method, ok := pickProvider(tf.providers)
 		if !ok {
 			return "", "", fmt.Errorf("unsupported two-factor method")
 		}
-		if v.prompt == nil {
-			return "", "", fmt.Errorf("verification code (%s) required", method)
-		}
-		code, cerr := v.prompt.TwoFactorCode(email, method)
-		if cerr != nil {
-			return "", "", cerr
-		}
-		access, refresh, err = v.api.login(ctx, identityBase, email, deviceID, hash, provider, code)
+		access, refresh, err = v.submitVerification(ctx, identityBase, email, deviceID, hash, provider, method, false)
 	}
 	return access, refresh, err
+}
+
+func (v *Vaults) submitVerification(ctx context.Context, identityBase, email, deviceID, hash string, provider int, method string, device bool) (string, string, error) {
+	for range verificationCodeAttempts {
+		code, err := v.verificationCode(email, method)
+		if err != nil {
+			return "", "", err
+		}
+		var access, refresh string
+		var lerr error
+		if device {
+			access, refresh, lerr = v.api.login(ctx, identityBase, email, deviceID, hash, 0, "", code)
+		} else {
+			access, refresh, lerr = v.api.login(ctx, identityBase, email, deviceID, hash, provider, code, "")
+		}
+		if retryVerification(lerr) {
+			continue
+		}
+		return access, refresh, lerr
+	}
+	return "", "", fmt.Errorf("verification code (%s) rejected", method)
+}
+
+func retryVerification(err error) bool {
+	if err == nil {
+		return false
+	}
+	var inv *invalidCodeError
+	if errors.As(err, &inv) {
+		return true
+	}
+	var tf *twoFactorError
+	if errors.As(err, &tf) {
+		return true
+	}
+	var dev *deviceVerifyError
+	return errors.As(err, &dev)
+}
+
+func (v *Vaults) verificationCode(email, method string) (string, error) {
+	if v.prompt == nil {
+		return "", &NeedCodeError{Method: method}
+	}
+	return v.prompt.TwoFactorCode(email, method)
 }
 
 func openVault(master keys, s *syncResult) (*unlocked, error) {

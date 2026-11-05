@@ -166,6 +166,13 @@ declare module "bouncer" {
 
   export function log(message: string, fields?: Record<string, any>): void;
 
+  /**
+   * The named credential's secret. Filters are trusted.
+   * The request object does not include secrets unless a filter puts one
+   * in a respond() body.
+   */
+  export function credential(name: string): string;
+
   /** Persistent key-value storage, namespaced per filter. TTLs are "1h"-style strings or seconds. */
   export const kv: {
     get<T = any>(key: string): T | undefined;

@@ -44,6 +44,10 @@ type Env struct {
 	Approver Approver
 	Log      Logger
 	Resolver ProjectResolver
+	// Credential returns a named secret. Filters are trusted; the request
+	// object still does not carry secrets unless a filter puts one in a
+	// respond() body.
+	Credential func(ctx context.Context, name string) (string, error)
 }
 
 // Build composes filters around terminal. A filter error or panic fails

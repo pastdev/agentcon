@@ -37,6 +37,10 @@ type Store struct {
 	// provided holds values given at daemon start. They take
 	// precedence over each credential's configured source and survive reloads.
 	provided map[string]string
+	// env is an overlay for source: env lookups. agentcon run PUTs host
+	// values here so the sidecar does not need those variables in its
+	// process environment. An empty overlay falls through to os.LookupEnv.
+	env map[string]string
 }
 
 type cached struct {
@@ -45,14 +49,53 @@ type cached struct {
 }
 
 func NewStore(creds map[string]*config.Credential) *Store {
-	return &Store{creds: creds, cache: map[string]cached{}, fetch: map[string]*sync.Mutex{}, provided: map[string]string{}}
+	return &Store{
+		creds:    creds,
+		cache:    map[string]cached{},
+		fetch:    map[string]*sync.Mutex{},
+		provided: map[string]string{},
+		env:      map[string]string{},
+	}
 }
 
 // SetProvided installs startup-provided secrets, replacing any set before.
+// Empty keys and values are ignored. The fetch cache is cleared.
 func (s *Store) SetProvided(values map[string]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.provided = values
+	s.provided = map[string]string{}
+	for k, v := range values {
+		if k == "" || v == "" {
+			continue
+		}
+		s.provided[k] = v
+	}
+	s.cache = map[string]cached{}
+}
+
+// SetEnv replaces the source: env overlay. Keys are environment variable
+// names. Empty keys and values are ignored.
+func (s *Store) SetEnv(vars map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.env = map[string]string{}
+	for k, v := range vars {
+		if k == "" || v == "" {
+			continue
+		}
+		s.env[k] = v
+	}
+	s.cache = map[string]cached{}
+}
+
+func (s *Store) lookupEnv(name string) (string, bool) {
+	s.mu.Lock()
+	v, ok := s.env[name]
+	s.mu.Unlock()
+	if ok {
+		return v, true
+	}
+	return os.LookupEnv(name)
 }
 
 func (s *Store) providedValue(name string) (string, bool) {
@@ -171,7 +214,7 @@ func (s *Store) Get(ctx context.Context, name string) (string, error) {
 	}
 	s.mu.Unlock()
 
-	v, err := fetch(ctx, c)
+	v, err := s.fetchValue(ctx, c)
 	if err != nil {
 		return "", fmt.Errorf("credential %q: %w", name, err)
 	}
@@ -186,7 +229,7 @@ func (s *Store) Get(ctx context.Context, name string) (string, error) {
 	return v, nil
 }
 
-func fetch(ctx context.Context, c *config.Credential) (string, error) {
+func (s *Store) fetchValue(ctx context.Context, c *config.Credential) (string, error) {
 	switch c.Source {
 	case "keyring":
 		v, err := keyring.Get(KeyringService, c.KeyringAccount())
@@ -195,7 +238,7 @@ func fetch(ctx context.Context, c *config.Credential) (string, error) {
 		}
 		return v, err
 	case "env":
-		v, ok := os.LookupEnv(c.Env)
+		v, ok := s.lookupEnv(c.Env)
 		if !ok {
 			return "", fmt.Errorf("environment variable %s is not set in the bouncer daemon", c.Env)
 		}

@@ -1,12 +1,17 @@
 #!/bin/bash
 
-set -xeuo pipefail
+set -euo pipefail
 
 readonly HARNESS="${HARNESS:-cursor}"
 readonly USER="${USER:-agent}"
 
 readonly AGENT_DATA="${AGENT_DATA:-"/agent/${HARNESS}"}"
 readonly HOME="/home/${USER}"
+readonly XTRACE_LOG="${AGENTCON_XTRACE_LOG:-${AGENT_DATA}/entrypoint.xtrace}"
+
+mkdir --parents "$(dirname "${XTRACE_LOG}")"
+exec {BASH_XTRACEFD}>"${XTRACE_LOG}"
+set -x
 
 function error_exit {
   echo "${1}" >&2

@@ -8,7 +8,7 @@ import (
 	"github.com/pastdev/agentcon/pkg/run"
 )
 
-func NewRunRequest(cfg *Config, name, cwd, home string) (run.Request, error) {
+func NewRunRequest(cfg *Config, name, cwd, home, harness string) (run.Request, error) {
 	if cfg == nil {
 		return run.Request{}, fmt.Errorf("config is required")
 	}
@@ -19,7 +19,7 @@ func NewRunRequest(cfg *Config, name, cwd, home string) (run.Request, error) {
 		return run.Request{}, fmt.Errorf("default_context is not set")
 	}
 
-	image, root, err := cfg.contextByName(name)
+	spec, root, err := cfg.contextByName(name)
 	if err != nil {
 		return run.Request{}, err
 	}
@@ -37,31 +37,33 @@ func NewRunRequest(cfg *Config, name, cwd, home string) (run.Request, error) {
 		)
 	}
 
-	setup, err := cfg.MaterializeBouncer(name)
+	harness = cfg.activeHarness(name, harness)
+	setup, err := cfg.MaterializeBouncer(name, harness)
 	if err != nil {
 		return run.Request{}, err
 	}
 
 	return run.Request{
-		Image:   image,
+		Image:   spec.Image,
 		Root:    root,
 		Cwd:     absCwd,
 		Home:    home,
 		Context: name,
+		Harness: harness,
 		Bouncer: setup,
 	}, nil
 }
 
-func (c Config) contextByName(name string) (string, string, error) {
+func (c Config) contextByName(name string) (ContextSpec, string, error) {
 	spec, ok := c.Contexts[name]
 	if !ok {
-		return "", "", fmt.Errorf("unknown context %q", name)
+		return ContextSpec{}, "", fmt.Errorf("unknown context %q", name)
 	}
 	root, err := expandRoot(spec.Root)
 	if err != nil {
-		return "", "", fmt.Errorf("context %q: %w", name, err)
+		return ContextSpec{}, "", fmt.Errorf("context %q: %w", name, err)
 	}
-	return spec.Image, root, nil
+	return spec, root, nil
 }
 
 func expandRoot(root string) (string, error) {

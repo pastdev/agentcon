@@ -170,6 +170,9 @@ func New(opts Options) (*Daemon, error) {
 	creds.ConfigureBitwarden(opts.StateDir, opts.Logf)
 	d.creds = creds.NewStore(cfg.Credentials)
 	d.creds.SetProvided(opts.Provided)
+	d.env.Credential = func(ctx context.Context, name string) (string, error) {
+		return d.creds.Get(ctx, name)
+	}
 	if err := d.apply(cfg); err != nil {
 		return nil, err
 	}
@@ -185,8 +188,10 @@ func (d *Daemon) Config() *config.Config {
 }
 
 // checkProvided ensures startup-provided secrets and the config agree:
-// every provided name is a configured credential, and every source:
-// provided credential has a value.
+// every provided name is a configured credential. When opts.Provided is
+// non-nil, every source: provided credential must also have a value.
+// A nil map (the sidecar) skips that check so host values can be PUT after
+// serve is up.
 func (d *Daemon) checkProvided(cfg *config.Config) error {
 	var unknown, missing []string
 	for name := range d.opts.Provided {
@@ -194,9 +199,11 @@ func (d *Daemon) checkProvided(cfg *config.Config) error {
 			unknown = append(unknown, name)
 		}
 	}
-	for name, c := range cfg.Credentials {
-		if _, ok := d.opts.Provided[name]; c.Source == "provided" && !ok {
-			missing = append(missing, name)
+	if d.opts.Provided != nil {
+		for name, c := range cfg.Credentials {
+			if _, ok := d.opts.Provided[name]; c.Source == "provided" && !ok {
+				missing = append(missing, name)
+			}
 		}
 	}
 	// "a: x" + "b: y" printed without a newline between them parses as a

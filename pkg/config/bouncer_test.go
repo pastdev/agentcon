@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/harness"
+	"gopkg.in/yaml.v3"
 )
 
 func TestMaterializeBouncer(t *testing.T) {
@@ -21,7 +23,7 @@ func TestMaterializeBouncer(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		setup, err := tc.cfg.MaterializeBouncer(tc.name)
+		setup, err := tc.cfg.MaterializeBouncer(tc.name, "")
 		if tc.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("got %v, want %q", err, tc.wantErr)
@@ -292,6 +294,106 @@ func TestLoadBouncerService(t *testing.T) {
 			wantErr: "source command requires command",
 		})
 	})
+}
+
+func TestMaterializeBouncerHarnessTunnel(t *testing.T) {
+	cfg := Config{
+		Harnesses: map[string]HarnessSpec{
+			harness.Cursor: {Tunnel: []string{testHostCursor, testHostCursorStar}},
+		},
+		Contexts: map[string]ContextSpec{
+			testContextPastdev: {
+				Image: testImagePastdev,
+				Root:  t.TempDir(),
+				Bouncer: &bouncercfg.Config{
+					Listen: testBouncerListen,
+					Profiles: map[string]*bouncercfg.Profile{
+						testProfileDefault: {
+							Unmatched: bouncercfg.UnmatchedDeny,
+							Tunnel:    []string{testHostExtra},
+						},
+						testProfileLocked: {
+							Extends:   testProfileDefault,
+							Unmatched: bouncercfg.UnmatchedDeny,
+						},
+					},
+				},
+			},
+		},
+	}
+	orig := append([]string{}, cfg.Contexts[testContextPastdev].Bouncer.Profiles[testProfileDefault].Tunnel...)
+	setup, err := cfg.MaterializeBouncer(testContextPastdev, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setup == nil {
+		t.Fatal("expected setup")
+	}
+	var policy bouncercfg.Config
+	err = yaml.Unmarshal(setup.PolicyYAML, &policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := policy.Profiles[testProfileDefault].Tunnel
+	if !containsHost(got, testHostCursor) || !containsHost(got, testHostCursorStar) || !containsHost(got, testHostExtra) {
+		t.Fatalf("root tunnel %v", got)
+	}
+	if containsHost(policy.Profiles[testProfileLocked].Tunnel, testHostCursor) {
+		t.Fatalf("child should inherit, not copy: %v", policy.Profiles[testProfileLocked].Tunnel)
+	}
+	if !equalHosts(cfg.Contexts[testContextPastdev].Bouncer.Profiles[testProfileDefault].Tunnel, orig) {
+		t.Fatal("materialize mutated source tunnel")
+	}
+}
+
+func TestMaterializeBouncerIgnoresOtherHarness(t *testing.T) {
+	cfg := Config{
+		Harnesses: map[string]HarnessSpec{
+			harness.Cursor:    {Tunnel: []string{testHostCursor}},
+			testHarnessClaude: {Tunnel: []string{testHostAnthropic}},
+		},
+		Contexts: map[string]ContextSpec{
+			testContextPastdev: {
+				Image:   testImagePastdev,
+				Root:    t.TempDir(),
+				Harness: testHarnessClaude,
+				Bouncer: &bouncercfg.Config{
+					Listen: testBouncerListen,
+					Profiles: map[string]*bouncercfg.Profile{
+						testProfileDefault: {Unmatched: bouncercfg.UnmatchedDeny},
+					},
+				},
+			},
+		},
+	}
+	setup, err := cfg.MaterializeBouncer(testContextPastdev, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var policy bouncercfg.Config
+	err = yaml.Unmarshal(setup.PolicyYAML, &policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := policy.Profiles[testProfileDefault].Tunnel
+	if containsHost(got, testHostCursor) {
+		t.Fatalf("cursor hosts on claude harness: %v", got)
+	}
+	if !containsHost(got, testHostAnthropic) {
+		t.Fatalf("missing claude tunnel %v", got)
+	}
+}
+
+func equalHosts(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestBouncerLayoutDir(t *testing.T) {

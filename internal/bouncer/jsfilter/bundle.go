@@ -18,8 +18,9 @@ export const deny = h.deny;
 export const respond = h.respond;
 export const ask = h.ask;
 export const log = h.log;
+export const credential = h.credential;
 export const kv = h.kv;
-export default { defineFilter, deny, respond, ask, log, kv };
+export default { defineFilter, deny, respond, ask, log, kv, credential };
 `
 
 var bouncerPlugin = api.Plugin{

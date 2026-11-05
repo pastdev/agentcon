@@ -23,23 +23,39 @@ type Prompter interface {
 }
 
 // StaticPrompter returns a password (and optional 2FA code) supplied out
-// of band, for example from the management API.
+// of band, for example from the management API. The code is one-shot so
+// a rejected 2FA attempt can ask the host for another code.
 type StaticPrompter struct {
 	Password string
 	Code     string
+	codeUsed bool
 }
 
-func (p StaticPrompter) MasterPassword(string) (string, error) {
+func (p *StaticPrompter) MasterPassword(string) (string, error) {
 	if p.Password == "" {
 		return "", errors.New("empty master password")
 	}
 	return p.Password, nil
 }
 
-func (p StaticPrompter) TwoFactorCode(string, string) (string, error) {
-	if p.Code == "" {
-		return "", errors.New("empty verification code")
+// NeedCodeError means login succeeded far enough to require a second factor.
+// The management API maps this to HTTP 409 so the host can prompt and retry.
+type NeedCodeError struct {
+	Method string
+}
+
+func (e *NeedCodeError) Error() string {
+	if e.Method == "" {
+		return "verification code required"
 	}
+	return fmt.Sprintf("verification code (%s) required", e.Method)
+}
+
+func (p *StaticPrompter) TwoFactorCode(_ string, method string) (string, error) {
+	if p.Code == "" || p.codeUsed {
+		return "", &NeedCodeError{Method: method}
+	}
+	p.codeUsed = true
 	return p.Code, nil
 }
 

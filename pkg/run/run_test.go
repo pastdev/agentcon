@@ -14,8 +14,9 @@ import (
 var errUnused = errors.New("unused")
 
 const (
-	testImage = "pastdev.com/agentcon:latest"
-	testUser  = "1000:1000"
+	testImage     = "pastdev.com/agentcon:latest"
+	testUser      = "1000:1000"
+	testExtraHost = "host.docker.internal:host-gateway"
 )
 
 type captureRuntime struct {
@@ -116,7 +117,7 @@ func TestRunEntrypointSkipsHarnessMount(t *testing.T) {
 		User:       testUser,
 		Entrypoint: []string{"/workspace/agent"},
 		Args:       []string{"-agent", "http://example"},
-		ExtraHosts: []string{"host.docker.internal:host-gateway"},
+		ExtraHosts: []string{testExtraHost},
 		Runtime:    rt,
 	})
 	if err != nil {
