@@ -48,7 +48,7 @@ type Request struct {
 	// They overlay the host environment and are PUT to the sidecar after serve is up.
 	// They are not passed as container environment variables.
 	SidecarEnv []string
-	// Provided is extra credential-name to secret for source: provided.
+	// Provided is extra credential.slot to secret for source: provided.
 	// Host-resolved file, keyring, and command secrets are collected automatically.
 	Provided map[string]string
 }

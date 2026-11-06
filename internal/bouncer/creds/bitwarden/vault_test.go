@@ -372,6 +372,37 @@ func TestUnlockLookupAndReuse(t *testing.T) {
 		t.Fatalf("note %q %v", got, err)
 	}
 
+	raw, err := v.ItemJSON(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	err = json.Unmarshal(raw, &doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc["notes"] != "a note" {
+		t.Fatalf("item json notes %v", doc["notes"])
+	}
+	login, _ := doc["login"].(map[string]any)
+	if login["username"] != "oauth2" || login["password"] != "gl-token" {
+		t.Fatalf("item json login %v", login)
+	}
+	sshRaw, err := v.ItemJSON(context.Background(), Query{Account: q.Account, Item: "sandbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sshDoc map[string]any
+	err = json.Unmarshal(sshRaw, &sshDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshKey, _ := sshDoc["sshKey"].(map[string]any)
+	priv, _ := sshKey["privateKey"].(string)
+	if !strings.Contains(priv, "BEGIN OPENSSH PRIVATE KEY") {
+		t.Fatalf("item json ssh %v", sshKey)
+	}
+
 	matches, _ := filepath.Glob(filepath.Join(dir, "bitwarden", "*.json"))
 	if len(matches) != 1 {
 		t.Fatalf("state files: %v", matches)

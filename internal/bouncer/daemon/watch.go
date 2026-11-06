@@ -71,14 +71,24 @@ func (d *Daemon) filterPaths() []string {
 		for _, f := range p.Filters {
 			out = append(out, f.Path)
 		}
-		for _, s := range p.Services {
+		for _, s := range p.HTTP {
 			for _, f := range s.Filters {
 				out = append(out, f.Path)
+			}
+			for _, rule := range s.Rules {
+				for _, f := range rule.Filters {
+					out = append(out, f.Path)
+				}
 			}
 		}
 		for _, s := range p.SSH {
 			for _, f := range s.Filters {
 				out = append(out, f.Path)
+			}
+			for _, rule := range s.Rules {
+				for _, f := range rule.Filters {
+					out = append(out, f.Path)
+				}
 			}
 		}
 	}

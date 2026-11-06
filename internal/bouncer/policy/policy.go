@@ -23,12 +23,13 @@ type Profile struct {
 	Tunnel    []string
 	// AllowPrivate permits tunnels to non-public addresses.
 	AllowPrivate bool
-	Services     []*Service
+	HTTP         []*Service
 	SSH          []*SSHService
 }
 
 // Service is an intercepted HTTP service with its full filter chain:
 // profile filters, then service filters, then the service's rules.
+// A matching allow or approved-ask rule then runs that rule's filters.
 type Service struct {
 	Config  *config.Service
 	Filters []chain.Filter
@@ -66,20 +67,39 @@ func Compile(cfg *config.Config, env *chain.Env, store *kv.Store) (*Set, error) 
 		if err != nil {
 			return nil, err
 		}
-		for _, s := range rp.Services {
+		loadRuleFilters := func(rules []config.Rule) ([][]chain.Filter, error) {
+			out := make([][]chain.Filter, len(rules))
+			for i, rule := range rules {
+				fs, err := load(rule.Filters)
+				if err != nil {
+					return nil, err
+				}
+				out[i] = fs
+			}
+			return out, nil
+		}
+		for _, s := range rp.HTTP {
 			sf, err := load(s.Filters)
 			if err != nil {
 				return nil, err
 			}
-			fs := append(append(append([]chain.Filter{}, profileFilters...), sf...), chain.NewRules(s, env))
-			p.Services = append(p.Services, &Service{Config: s, Filters: fs})
+			rf, err := loadRuleFilters(s.Rules)
+			if err != nil {
+				return nil, err
+			}
+			fs := append(append(append([]chain.Filter{}, profileFilters...), sf...), chain.NewRules(s, env).WithRuleFilters(rf).WithUnmatched(p.Unmatched))
+			p.HTTP = append(p.HTTP, &Service{Config: s, Filters: fs})
 		}
 		for _, s := range rp.SSH {
 			sf, err := load(s.Filters)
 			if err != nil {
 				return nil, err
 			}
-			fs := append(append(append([]chain.Filter{}, profileFilters...), sf...), chain.NewSSHRules(s, env))
+			rf, err := loadRuleFilters(s.Rules)
+			if err != nil {
+				return nil, err
+			}
+			fs := append(append(append([]chain.Filter{}, profileFilters...), sf...), chain.NewSSHRules(s, env).WithRuleFilters(rf))
 			p.SSH = append(p.SSH, &SSHService{Config: s, Filters: fs})
 		}
 		set.Profiles[name] = p
@@ -87,9 +107,9 @@ func Compile(cfg *config.Config, env *chain.Env, store *kv.Store) (*Set, error) 
 	return set, nil
 }
 
-// MatchService returns the first service whose hosts match host[:port].
-func (p *Profile) MatchService(hostport string) *Service {
-	for _, s := range p.Services {
+// MatchHTTP returns the first http entry whose hosts match host[:port].
+func (p *Profile) MatchHTTP(hostport string) *Service {
+	for _, s := range p.HTTP {
 		if config.HostMatches(s.Config.Hosts, hostport) {
 			return s
 		}

@@ -56,8 +56,9 @@ func TestControlPutEnv(t *testing.T) {
 default_profile: p
 credentials:
   tok:
-    source: env
-    env: SMOKE_TOKEN
+    token:
+      source: env
+      env: SMOKE_TOKEN
 profiles:
   p: {}
 `), 0o600)
@@ -71,8 +72,8 @@ profiles:
 	}
 	t.Setenv("SMOKE_TOKEN", "from-os")
 	v, err := d.creds.Get(context.Background(), "tok")
-	if err != nil || v != "from-os" {
-		t.Fatalf("got %q, %v", v, err)
+	if err != nil || v.Token != "from-os" {
+		t.Fatalf("got %+v, %v", v, err)
 	}
 
 	srv := httptest.NewServer(d.Control())
@@ -98,8 +99,8 @@ profiles:
 		t.Fatalf("status %d %s", resp.StatusCode, body)
 	}
 	v, err = d.creds.Get(context.Background(), "tok")
-	if err != nil || v != "from-put" {
-		t.Fatalf("overlay got %q, %v", v, err)
+	if err != nil || v.Token != "from-put" {
+		t.Fatalf("overlay got %+v, %v", v, err)
 	}
 }
 
@@ -115,10 +116,12 @@ func TestControlPutProvided(t *testing.T) {
 default_profile: p
 credentials:
   tok:
-    source: file
-    path: `+secret+`
+    token:
+      source: file
+      file: `+secret+`
   extra:
-    source: provided
+    token:
+      source: provided
 profiles:
   p: {}
 `), 0o600)
@@ -131,8 +134,8 @@ profiles:
 		t.Fatal(err)
 	}
 	v, err := d.creds.Get(context.Background(), "tok")
-	if err != nil || v != "from-file" {
-		t.Fatalf("got %q, %v", v, err)
+	if err != nil || v.Token != "from-file" {
+		t.Fatalf("got %+v, %v", v, err)
 	}
 
 	srv := httptest.NewServer(d.Control())
@@ -142,7 +145,7 @@ profiles:
 		t.Fatal(err)
 	}
 
-	req, err := http.NewRequest(http.MethodPut, srv.URL+"/_bouncer/credentials/provided", strings.NewReader(`{"tok":"from-put","extra":"provided-put"}`))
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/_bouncer/credentials/provided", strings.NewReader(`{"tok.token":"from-put","extra.token":"provided-put"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,12 +161,12 @@ profiles:
 		t.Fatalf("status %d %s", resp.StatusCode, body)
 	}
 	v, err = d.creds.Get(context.Background(), "tok")
-	if err != nil || v != "from-put" {
-		t.Fatalf("overlay got %q, %v", v, err)
+	if err != nil || v.Token != "from-put" {
+		t.Fatalf("overlay got %+v, %v", v, err)
 	}
 	v, err = d.creds.Get(context.Background(), "extra")
-	if err != nil || v != "provided-put" {
-		t.Fatalf("provided got %q, %v", v, err)
+	if err != nil || v.Token != "provided-put" {
+		t.Fatalf("provided got %+v, %v", v, err)
 	}
 }
 
@@ -174,7 +177,8 @@ func TestNewAllowsProvidedSourceWhenOptsNil(t *testing.T) {
 default_profile: p
 credentials:
   tok:
-    source: provided
+    token:
+      source: provided
 profiles:
   p: {}
 `), 0o600)
@@ -194,7 +198,8 @@ func TestNewRejectsMissingProvidedWhenOptsSet(t *testing.T) {
 default_profile: p
 credentials:
   tok:
-    source: provided
+    token:
+      source: provided
 profiles:
   p: {}
 `), 0o600)

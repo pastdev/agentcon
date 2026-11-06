@@ -9,6 +9,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/moby/moby/api v1.56.1
 	github.com/moby/moby/client v0.6.2
+	github.com/ohler55/ojg v1.26.10
 	github.com/pastdev/configloader v1.1.0
 	github.com/rs/zerolog v1.35.0
 	github.com/spf13/cobra v1.10.2

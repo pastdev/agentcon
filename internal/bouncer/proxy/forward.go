@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
+	"github.com/pastdev/agentcon/internal/bouncer/creds"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
@@ -27,20 +28,24 @@ func (s *Server) forwarder(svc *policy.Service, origLength int64) chain.Handler 
 			if header.Get("Upgrade") != "" && !svc.Config.AllowUpgrade {
 				return synthetic(http.StatusForbidden, "agent-bouncer: protocol upgrades on "+svc.Config.Name+" are not allowed (the upgraded stream can't be filtered); set allow_upgrade: true to permit"), nil
 			}
-			if u.Scheme != "https" && !svc.Config.Insecure {
-				return synthetic(http.StatusForbidden, "agent-bouncer: refusing to send credentials over plain HTTP; use https (or set insecure: true on the service for local development)"), nil
-			}
-			secret, err := s.Creds.Get(req.Ctx, name)
-			if err != nil {
-				// Source errors can carry password-manager output; keep them
-				// in the daemon log, not in the agent's response.
-				s.logf("credential for service %s: %v", svc.Config.Name, err)
-				return synthetic(http.StatusBadGateway, "agent-bouncer: credential for "+svc.Config.Name+" is unavailable; see the bouncer log"), nil
-			}
 			spec := svc.Config.Inject.For(req.Git() != nil)
-			Inject(header, &u, name, spec, secret)
-			if spec != nil && spec.Query != "" {
-				injectedSecret = secret
+			if req.SkipCredential {
+				stripPlaceholder(header, &u, name, spec)
+			} else {
+				if u.Scheme != "https" && !svc.Config.Insecure {
+					return synthetic(http.StatusForbidden, "agent-bouncer: refusing to send credentials over plain HTTP; use https (or set insecure: true on the service for local development)"), nil
+				}
+				secret, err := s.Creds.Get(req.Ctx, name)
+				if err != nil {
+					// Source errors can carry password-manager output; keep them
+					// in the daemon log, not in the agent's response.
+					s.logf("credential for service %s: %v", svc.Config.Name, err)
+					return synthetic(http.StatusBadGateway, "agent-bouncer: credential for "+svc.Config.Name+" is unavailable; see the bouncer log"), nil
+				}
+				Inject(header, &u, name, spec, secret)
+				if spec != nil && spec.Query != "" {
+					injectedSecret = secret.HTTP()
+				}
 			}
 		}
 
@@ -117,19 +122,20 @@ func synthetic(status int, msg string) *chain.Response {
 // spec's header, and headers it lists in placeholder_headers. Anywhere an
 // API might store and echo a value back (other headers, the query string,
 // the body), a substituted secret would end up readable by the agent.
-func Inject(h http.Header, u *url.URL, credName string, spec *config.Inject, secret string) {
+func Inject(h http.Header, u *url.URL, credName string, spec *config.Inject, secret creds.Secret) {
 	ph := config.Placeholder(credName)
+	httpSecret := secret.HTTP()
 	for _, k := range placeholderHeaders(spec) {
 		vs := h.Values(k)
 		for i, v := range vs {
 			if strings.HasPrefix(v, "Basic ") && strings.EqualFold(k, "Authorization") {
 				if raw, err := base64.StdEncoding.DecodeString(v[len("Basic "):]); err == nil && strings.Contains(string(raw), ph) {
-					vs[i] = "Basic " + base64.StdEncoding.EncodeToString([]byte(strings.ReplaceAll(string(raw), ph, secret)))
+					vs[i] = "Basic " + base64.StdEncoding.EncodeToString([]byte(strings.ReplaceAll(string(raw), ph, httpSecret)))
 					continue
 				}
 			}
 			if strings.Contains(v, ph) {
-				vs[i] = strings.ReplaceAll(v, ph, secret)
+				vs[i] = strings.ReplaceAll(v, ph, httpSecret)
 			}
 		}
 	}
@@ -138,26 +144,83 @@ func Inject(h http.Header, u *url.URL, credName string, spec *config.Inject, sec
 	}
 	switch {
 	case spec.Bearer:
-		h.Set("Authorization", "Bearer "+secret)
+		h.Set("Authorization", "Bearer "+httpSecret)
 	case spec.Basic != nil:
-		h.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(spec.Basic.Username+":"+secret)))
+		user := secret.BasicUser(spec.Basic.Username)
+		h.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(user+":"+secret.BasicPass())))
 	case spec.Header != "":
 		v := spec.Value
 		if v == "" {
 			v = "{{secret}}"
 		}
-		h.Set(spec.Header, strings.ReplaceAll(v, "{{secret}}", secret))
+		h.Set(spec.Header, strings.ReplaceAll(v, "{{secret}}", httpSecret))
 	}
 	if spec.Query != "" {
 		// Append rather than re-encode: url.Values.Encode() drops malformed
 		// pairs and reorders the rest, so the forwarded query would differ
 		// from the one the rules evaluated.
-		pair := url.QueryEscape(spec.Query) + "=" + url.QueryEscape(secret)
+		pair := url.QueryEscape(spec.Query) + "=" + url.QueryEscape(httpSecret)
 		if u.RawQuery == "" {
 			u.RawQuery = pair
 		} else {
 			u.RawQuery += "&" + pair
 		}
+	}
+}
+
+// stripPlaceholder removes header and query values that carry the
+// credential placeholder, so an unmatched-path fallback is unauthenticated
+// instead of sending a fake token.
+func stripPlaceholder(h http.Header, u *url.URL, credName string, spec *config.Inject) {
+	ph := config.Placeholder(credName)
+	if ph == "" {
+		return
+	}
+	for _, k := range placeholderHeaders(spec) {
+		vs := h.Values(k)
+		if len(vs) == 0 {
+			continue
+		}
+		var kept []string
+		for _, v := range vs {
+			if strings.HasPrefix(v, "Basic ") && strings.EqualFold(k, "Authorization") {
+				raw, err := base64.StdEncoding.DecodeString(v[len("Basic "):])
+				if err == nil && strings.Contains(string(raw), ph) {
+					continue
+				}
+			}
+			if strings.Contains(v, ph) {
+				continue
+			}
+			kept = append(kept, v)
+		}
+		h.Del(k)
+		for _, v := range kept {
+			h.Add(k, v)
+		}
+	}
+	if u == nil || u.RawQuery == "" {
+		return
+	}
+	q := u.Query()
+	changed := false
+	for k, vs := range q {
+		kept := vs[:0]
+		for _, v := range vs {
+			if strings.Contains(v, ph) {
+				changed = true
+				continue
+			}
+			kept = append(kept, v)
+		}
+		if len(kept) == 0 {
+			q.Del(k)
+			continue
+		}
+		q[k] = kept
+	}
+	if changed {
+		u.RawQuery = q.Encode()
 	}
 }
 

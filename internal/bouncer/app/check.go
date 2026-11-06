@@ -12,7 +12,7 @@ import (
 // ProfileInfo is a compiled profile summary from Check.
 type ProfileInfo struct {
 	Name      string
-	Services  int
+	HTTP      int
 	SSH       int
 	Unmatched string
 }
@@ -42,7 +42,7 @@ func Check(cfg *config.Config) (CheckResult, error) {
 		p := set.Profiles[name]
 		out.Profiles = append(out.Profiles, ProfileInfo{
 			Name:      name,
-			Services:  len(p.Services),
+			HTTP:      len(p.HTTP),
 			SSH:       len(p.SSH),
 			Unmatched: p.Unmatched,
 		})

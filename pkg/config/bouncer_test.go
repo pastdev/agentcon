@@ -130,7 +130,7 @@ func TestMaterializeBouncer(t *testing.T) {
 						Root:  t.TempDir(),
 						Bouncer: &bouncercfg.Config{
 							Credentials: map[string]*bouncercfg.Credential{
-								"gl": {Source: "command"},
+								"gl": {Token: &bouncercfg.ValueSource{Source: "command"}},
 							},
 						},
 					},
@@ -285,7 +285,7 @@ func TestLoadBouncerService(t *testing.T) {
 	t.Run("invalid policy", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "policy.yaml")
-		err := os.WriteFile(path, []byte("credentials:\n  gl:\n    source: command\n"), 0o600)
+		err := os.WriteFile(path, []byte("credentials:\n  gl:\n    token:\n      source: command\n"), 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}

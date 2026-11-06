@@ -48,7 +48,7 @@ credentials:
 profiles:
   agent:
     unmatched: deny
-    services:
+    http:
       - name: smoke
         hosts: [%q]
         credential: %s

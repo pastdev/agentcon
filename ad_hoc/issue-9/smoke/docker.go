@@ -81,8 +81,9 @@ func runDocker() error {
 		return err
 	}
 	policy := smokePolicy("127.0.0.1:8228", "127.0.0.1:8229", hostSvc, fmt.Sprintf(`  %s:
-    source: env
-    env: SMOKE_TOKEN
+    token:
+      source: env
+      env: SMOKE_TOKEN
     export_env: [SMOKE_TOKEN]
 `, credName))
 

@@ -74,7 +74,7 @@ func setup(t *testing.T, profileYAML string) *env {
 	profileYAML = strings.ReplaceAll(profileYAML, "hosts: [localhost]", `hosts: ["localhost:`+e.port+`"]`)
 	cfg, err := config.Parse([]byte(`
 credentials:
-  tok: {source: env, env: BOUNCER_TEST_TOKEN}
+  tok: {token: {source: env, env: BOUNCER_TEST_TOKEN}}
 profiles:
 `+profileYAML), t.TempDir()+"/config.yaml")
 	if err != nil {
@@ -130,7 +130,7 @@ func (e *env) get(t *testing.T, method, rawURL string, hdr map[string]string) (i
 const scopedProfile = `
   p:
     unmatched: tunnel
-    services:
+    http:
       - name: api
         hosts: [localhost]
         credential: tok
@@ -149,8 +149,8 @@ func TestInterceptInjectAndDeny(t *testing.T) {
 		t.Fatalf("allowed request: %d %s", status, body)
 	}
 	status, body = e.get(t, "GET", base+"/api/v4/projects/group%2Fother", nil)
-	if status != 403 || !strings.Contains(body, "denied by rules:api") || strings.Contains(body, "real-secret") {
-		t.Fatalf("denied request: %d %s", status, body)
+	if status != 200 || strings.Contains(body, "real-secret") || !strings.Contains(body, "auth= ") {
+		t.Fatalf("unmatched path should forward without credential: %d %s", status, body)
 	}
 	status, _ = e.get(t, "GET", base+"/api/v4/projects/group%2Fproj/../../other", nil)
 	if status != 400 {
@@ -160,15 +160,58 @@ func TestInterceptInjectAndDeny(t *testing.T) {
 	for _, a := range e.audit {
 		decisions = append(decisions, a.Decision)
 	}
-	if strings.Join(decisions, ",") != "allow,deny,deny" {
+	if strings.Join(decisions, ",") != "allow,allow,deny" {
 		t.Errorf("audit decisions: %v", decisions)
+	}
+}
+
+func TestUnmatchedPathStripsPlaceholder(t *testing.T) {
+	e := setup(t, scopedProfile)
+	ph := config.Placeholder("tok")
+	status, body := e.get(t, "GET", "https://localhost:"+e.port+"/api/v4/projects/group%2Fother", map[string]string{
+		"Authorization": "Bearer " + ph,
+		"Private-Token": ph,
+	})
+	if status != 200 || strings.Contains(body, "real-secret") || strings.Contains(body, ph) {
+		t.Fatalf("placeholder forwarded: %d %s", status, body)
+	}
+	if !strings.Contains(body, "auth= ") || !strings.Contains(body, "private= ") {
+		t.Fatalf("auth headers not stripped: %s", body)
+	}
+}
+
+func TestUnmatchedPathDeniesWhenProfileDenies(t *testing.T) {
+	e := setup(t, strings.Replace(scopedProfile, "unmatched: tunnel", "unmatched: deny", 1))
+	status, body := e.get(t, "GET", "https://localhost:"+e.port+"/api/v4/projects/group%2Fother", nil)
+	if status != 403 || !strings.Contains(body, "denied by rules:api") || strings.Contains(body, "real-secret") {
+		t.Fatalf("denied request: %d %s", status, body)
+	}
+}
+
+func TestExplicitDefaultDeny(t *testing.T) {
+	e := setup(t, `
+  p:
+    unmatched: tunnel
+    http:
+      - name: api
+        hosts: [localhost]
+        credential: tok
+        inject: {bearer: true}
+        default: deny
+        rules:
+          - action: allow
+            gitlab_project: group/proj
+`)
+	status, body := e.get(t, "GET", "https://localhost:"+e.port+"/api/v4/projects/group%2Fother", nil)
+	if status != 403 || !strings.Contains(body, "denied by rules:api") {
+		t.Fatalf("explicit default deny: %d %s", status, body)
 	}
 }
 
 func TestPlaceholderReplacement(t *testing.T) {
 	e := setup(t, `
   p:
-    services:
+    http:
       - name: api
         hosts: [localhost]
         credential: tok
@@ -188,10 +231,55 @@ func TestPlaceholderReplacement(t *testing.T) {
 	}
 }
 
+func TestInjectBasicUsesUsernameSlot(t *testing.T) {
+	h := http.Header{}
+	u, err := url.Parse("https://example.com/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := creds.Secret{Username: "alice", Password: "s3cret"}
+	Inject(h, u, "login", &config.Inject{Basic: &config.BasicInject{}}, secret)
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("alice:s3cret"))
+	if got := h.Get("Authorization"); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+
+	h = http.Header{}
+	Inject(h, u, "login", &config.Inject{Basic: &config.BasicInject{Username: "oauth2"}}, creds.Secret{Username: "alice", Token: "pat"})
+	want = "Basic " + base64.StdEncoding.EncodeToString([]byte("oauth2:pat"))
+	if got := h.Get("Authorization"); got != want {
+		t.Fatalf("override got %q want %q", got, want)
+	}
+}
+
+func TestStripPlaceholder(t *testing.T) {
+	ph := config.Placeholder("tok")
+	h := http.Header{}
+	h.Set("Authorization", "Bearer "+ph)
+	h.Set("Private-Token", ph)
+	h.Set("X-Other", "keep")
+	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("oauth2:"+ph))
+	h.Add("Authorization", basic)
+	u, err := url.Parse("https://example.com/x?api_key=" + ph + "&ok=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripPlaceholder(h, u, "tok", &config.Inject{Query: "api_key"})
+	if h.Get("Authorization") != "" || h.Get("Private-Token") != "" {
+		t.Fatalf("headers %v", h)
+	}
+	if h.Get("X-Other") != "keep" {
+		t.Fatalf("stripped unrelated header")
+	}
+	if u.Query().Get("api_key") != "" || u.Query().Get("ok") != "1" {
+		t.Fatalf("query %q", u.RawQuery)
+	}
+}
+
 func TestInjectQuery(t *testing.T) {
 	e := setup(t, `
   p:
-    services:
+    http:
       - name: api
         hosts: [localhost]
         credential: tok
@@ -263,7 +351,7 @@ func TestNoCredentialsOverPlainHTTP(t *testing.T) {
 	e := setup(t, `
   p:
     allow_private: true
-    services:
+    http:
       - name: api
         hosts: ["127.0.0.1:`+port+`"]
         credential: tok
@@ -314,7 +402,7 @@ func TestReverseMode(t *testing.T) {
 func TestUpgradeRefusedOnCredentialedService(t *testing.T) {
 	e := setup(t, `
   p:
-    services:
+    http:
       - name: api
         hosts: [localhost]
         credential: tok
@@ -330,7 +418,7 @@ func TestUnexpectedUpstreamUpgradeRefused(t *testing.T) {
 	// upgrade on a credentialed service, bouncer must not splice it.
 	e := setup(t, `
   p:
-    services:
+    http:
       - name: api
         hosts: [localhost]
         credential: tok
@@ -345,7 +433,7 @@ func TestUnexpectedUpstreamUpgradeRefused(t *testing.T) {
 func TestUpgradePassthrough(t *testing.T) {
 	e := setup(t, `
   p:
-    services:
+    http:
       - name: api
         hosts: [localhost]
 `)
@@ -372,7 +460,7 @@ func TestUpgradePassthrough(t *testing.T) {
 func TestInjectQueryPreservesAndScrubs(t *testing.T) {
 	e := setup(t, `
   p:
-    services:
+    http:
       - name: api
         hosts: [localhost]
         credential: tok

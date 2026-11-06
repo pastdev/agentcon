@@ -50,6 +50,15 @@ const (
 	SSHKindForward = "forward"
 )
 
+// Credential slot names. A credential is a composite of these sources.
+const (
+	SlotUsername    = "username"
+	SlotPassword    = "password"
+	SlotToken       = "token"
+	SlotPrivateKey  = "private_key"
+	SlotCertificate = "certificate"
+)
+
 type Config struct {
 	Listen    string `yaml:"listen"`
 	SSHListen string `yaml:"ssh_listen"`
@@ -89,33 +98,15 @@ func (a Approvals) TimeoutOrDefault() time.Duration {
 	return a.Timeout.D
 }
 
-// Credential describes where a secret comes from. The agent never sees it;
-// it only sees the placeholder.
+// Credential is a composite of named slots. The agent never sees slot
+// values; it only sees the placeholder.
 type Credential struct {
-	// Source is one of: keyring, command, env, file, ssh-agent, bitwarden, provided.
-	// "provided" values are supplied at daemon start or by PUT /_bouncer/credentials/provided.
-	// They also override any other source.
-	Source string `yaml:"source"`
-	// Command (source: command) is an argv run to fetch the secret, e.g.
-	// ["bw", "get", "password", "gitlab"]. Stdout, minus trailing newlines, is the secret.
-	// agentcon run evaluates this on the host and PUTs the value.
-	Command []string `yaml:"command"`
-	// Env (source: env) names an environment variable.
-	// The daemon reads it from an overlay set by PUT /_bouncer/credentials/sources/env, then from os.LookupEnv.
-	Env string `yaml:"env"`
-	// Path (source: file) is a file containing the secret (e.g. an SSH private key).
-	// agentcon run reads this path on the host and PUTs the value.
-	Path string `yaml:"path"`
-	// Account (source: keyring) overrides the keyring account name (default: credential name).
-	// agentcon run reads the host keyring and PUTs the value.
-	Account string `yaml:"account"`
-	// Fingerprint (source: ssh-agent) selects a key from the agent by SHA256 fingerprint.
-	// agentcon run bind-mounts SSH_AUTH_SOCK into the sidecar.
-	Fingerprint string `yaml:"fingerprint"`
-	// Bitwarden (source: bitwarden) selects an item in a vault. The vault is
-	// synced and unlocked once, and stays unlocked for the life of the process.
-	Bitwarden *Bitwarden `yaml:"bitwarden"`
-	// Cache controls how long a fetched secret is kept in memory. Default 5m; 0s disables.
+	Username    *ValueSource `yaml:"username"`
+	Password    *ValueSource `yaml:"password"`
+	Token       *ValueSource `yaml:"token"`
+	PrivateKey  *ValueSource `yaml:"private_key"`
+	Certificate *ValueSource `yaml:"certificate"`
+	// Cache controls how long a fetched slot is kept in memory. Default 5m; 0s disables.
 	Cache *Duration `yaml:"cache"`
 	// ExportEnv lists environment variables set on the agent to this
 	// credential's placeholder so agent tooling believes it has a token.
@@ -124,25 +115,44 @@ type Credential struct {
 	Name string `yaml:"-"`
 }
 
-// Bitwarden selects a field in a Bitwarden vault. Several credentials can
-// share one vault; the master password is requested once per email and server.
-type Bitwarden struct {
-	// Email is the Bitwarden account.
-	Email string `yaml:"email"`
-	// Server is the vault base URL. Empty means bitwarden.com. A self-hosted
-	// server is the URL you open in a browser, for example https://vault.example.com.
-	Server string `yaml:"server"`
-	// Item is the item's name or id.
-	Item string `yaml:"item"`
-	// Folder disambiguates items that share a name.
-	Folder string `yaml:"folder"`
-	// Field is password (default), username, notes, totp, private_key,
-	// public_key, fingerprint, or the name of a custom field.
-	// totp is the stored secret, not a live code.
-	Field string `yaml:"field"`
-	// PasswordEnv names an environment variable holding the master password.
-	// When empty, `bouncer serve` prompts for it at startup.
+// ValueSource locates one string. Fetch the source payload, then if Path is
+// set, take that JSONPath (must be exactly one string).
+type ValueSource struct {
+	// Source is one of: keyring, command, env, file, ssh-agent, bitwarden, provided.
+	Source string `yaml:"source"`
+	// Path is a JSONPath evaluated against the source payload.
+	// Empty means the payload is the value. Bitwarden payloads are the
+	// decrypted cipher JSON, so Path is required there.
+	Path string `yaml:"path"`
+	// Command (source: command) is an argv run to fetch the secret.
+	// Stdout, minus trailing newlines, is the payload.
+	// agentcon run evaluates this on the host and PUTs the value.
+	Command []string `yaml:"command"`
+	// Env (source: env) names an environment variable.
+	// The daemon reads it from an overlay set by PUT /_bouncer/credentials/sources/env, then from os.LookupEnv.
+	Env string `yaml:"env"`
+	// File (source: file) is a file containing the payload (e.g. an SSH private key).
+	// agentcon run reads this path on the host and PUTs the value.
+	File string `yaml:"file"`
+	// Account (source: keyring) overrides the keyring account name (default: credential name).
+	// agentcon run reads the host keyring and PUTs the value.
+	Account string `yaml:"account"`
+	// Fingerprint (source: ssh-agent) selects a key from the agent by SHA256 fingerprint.
+	// agentcon run bind-mounts SSH_AUTH_SOCK into the sidecar.
+	Fingerprint string `yaml:"fingerprint"`
+	// Email, Server, Item, Folder, PasswordEnv (source: bitwarden) select
+	// an item. The vault is synced and unlocked once per email and server.
+	Email       string `yaml:"email"`
+	Server      string `yaml:"server"`
+	Item        string `yaml:"item"`
+	Folder      string `yaml:"folder"`
 	PasswordEnv string `yaml:"password_env"`
+}
+
+// Slot is one named ValueSource on a credential.
+type Slot struct {
+	Name   string
+	Source *ValueSource
 }
 
 // Placeholder is the stand-in value the agent uses in place of the secret.
@@ -158,10 +168,49 @@ func (c *Credential) CacheTTL() time.Duration {
 	return c.Cache.D
 }
 
+// Slots returns the configured sources in a stable order.
+func (c *Credential) Slots() []Slot {
+	if c == nil {
+		return nil
+	}
+	var out []Slot
+	if c.Username != nil {
+		out = append(out, Slot{Name: SlotUsername, Source: c.Username})
+	}
+	if c.Password != nil {
+		out = append(out, Slot{Name: SlotPassword, Source: c.Password})
+	}
+	if c.Token != nil {
+		out = append(out, Slot{Name: SlotToken, Source: c.Token})
+	}
+	if c.PrivateKey != nil {
+		out = append(out, Slot{Name: SlotPrivateKey, Source: c.PrivateKey})
+	}
+	if c.Certificate != nil {
+		out = append(out, Slot{Name: SlotCertificate, Source: c.Certificate})
+	}
+	return out
+}
+
+// Slot returns the named source, or nil.
+func (c *Credential) Slot(name string) *ValueSource {
+	for _, s := range c.Slots() {
+		if s.Name == name {
+			return s.Source
+		}
+	}
+	return nil
+}
+
+// ProvidedKey is the PUT / provided-map key for a credential slot.
+func ProvidedKey(cred, slot string) string {
+	return cred + "." + slot
+}
+
 type Profile struct {
-	// Extends names a parent profile whose filters and services are inherited.
+	// Extends names a parent profile whose filters, http, and ssh are inherited.
 	Extends string `yaml:"extends"`
-	// Unmatched controls HTTPS traffic to hosts with no service: tunnel (default) or deny.
+	// Unmatched controls HTTPS traffic to hosts with no http entry: tunnel (default) or deny.
 	Unmatched string `yaml:"unmatched"`
 	// Tunnel lists hosts passed through uninspected even when unmatched is
 	// deny (e.g. the agent's own LLM API).
@@ -169,12 +218,13 @@ type Profile struct {
 	// AllowPrivate lets tunneled (unmatched) traffic reach loopback, private,
 	// link-local and CGNAT addresses. Off by default: otherwise the proxy
 	// would be a way out of the network sandbox it's meant to enforce.
-	// Configured services are not affected.
+	// Configured http and ssh entries are not affected.
 	AllowPrivate *bool `yaml:"allow_private"`
-	// Filters run on every intercepted request in this profile, before service filters.
-	Filters  []FilterRef   `yaml:"filters"`
-	Services []*Service    `yaml:"services"`
-	SSH      []*SSHService `yaml:"ssh"`
+	// Filters run on every intercepted request in this profile, before
+	// http/ssh filters and before rules.
+	Filters []FilterRef   `yaml:"filters"`
+	HTTP    []*Service    `yaml:"http"`
+	SSH     []*SSHService `yaml:"ssh"`
 
 	Name string `yaml:"-"`
 }
@@ -193,9 +243,14 @@ type Service struct {
 	// Only for local development; never set it for a remote host.
 	Insecure bool    `yaml:"insecure"`
 	Inject   *Inject `yaml:"inject"`
-	// Default action when no rule matches. If omitted: deny when rules exist, allow otherwise.
-	Default string      `yaml:"default"`
-	Rules   []Rule      `yaml:"rules"`
+	// Default action when no rule matches. If omitted: allow when there are
+	// no rules. When rules exist, the profile unmatched mode decides:
+	// deny refuses leftover paths, tunnel forwards them without the credential.
+	// An explicit default: allow still attaches the credential.
+	Default string `yaml:"default"`
+	Rules   []Rule `yaml:"rules"`
+	// Filters run on every request to this service, before rules.
+	// Attach a filter to a rule instead when it should run only on that match.
 	Filters []FilterRef `yaml:"filters"`
 }
 
@@ -250,7 +305,7 @@ type SSHService struct {
 	// User, if set, restricts (and defaults) the upstream username.
 	User string `yaml:"user"`
 	Port int    `yaml:"port"`
-	// Credential must resolve to an SSH private key, or be source: ssh-agent.
+	// Credential must have a private_key slot (a secret, or source: ssh-agent).
 	Credential string `yaml:"credential"`
 	// Allow lists permitted capabilities: git, exec, shell, sftp, forward. Default [git].
 	Allow []string `yaml:"allow"`
@@ -260,9 +315,10 @@ type SSHService struct {
 	// session (a trailing * matches a prefix). Default: GIT_PROTOCOL, LANG, LC_*.
 	Env []string `yaml:"env"`
 	// HostKey optionally pins the upstream host key (authorized_keys format).
-	HostKey string      `yaml:"host_key"`
-	Default string      `yaml:"default"`
-	Rules   []Rule      `yaml:"rules"`
+	HostKey string `yaml:"host_key"`
+	Default string `yaml:"default"`
+	Rules   []Rule `yaml:"rules"`
+	// Filters run on every request to this SSH service, before rules.
 	Filters []FilterRef `yaml:"filters"`
 }
 
@@ -315,11 +371,20 @@ type Rule struct {
 	Path      string   `yaml:"path"`       // glob over the decoded path; * = one segment, ** = any
 	PathRegex string   `yaml:"path_regex"` // regex over the decoded path
 
-	GitLabProject *ProjectRef  `yaml:"gitlab_project"`
-	GitHubRepo    string       `yaml:"github_repo"`
-	Git           *GitMatch    `yaml:"git"`
-	GraphQL       *GraphQLRule `yaml:"graphql"`
-	SSH           *SSHMatch    `yaml:"ssh"`
+	GitLabProject *ProjectRef `yaml:"gitlab_project"`
+	// GitHubRepo is owner/repo names. Always a YAML list, even for one repo.
+	GitHubRepo []string `yaml:"github_repo"`
+	// GitHubSubpaths are globs relative to /repos/owner/repo/ ("" is the
+	// repo itself). Git requests never match a rule with subpaths.
+	GitHubSubpaths []string     `yaml:"github_subpaths"`
+	Git            *GitMatch    `yaml:"git"`
+	GraphQL        *GraphQLRule `yaml:"graphql"`
+	SSH            *SSHMatch    `yaml:"ssh"`
+
+	// Filters run after this rule matches with allow, or an approved ask.
+	// They are not run on deny, on other rules, or on the service default.
+	// Same path with a different config is a different instance.
+	Filters []FilterRef `yaml:"filters"`
 
 	PathRegexp *regexp.Regexp `yaml:"-"`
 }
@@ -472,33 +537,15 @@ func (c *Config) normalize() error {
 			return fmt.Errorf("credential %q: empty", name)
 		}
 		cr.Name = name
-		if cr.Bitwarden != nil && cr.Source != "bitwarden" {
-			return fmt.Errorf("credential %q: bitwarden block requires source bitwarden", name)
+		slots := cr.Slots()
+		if len(slots) == 0 {
+			return fmt.Errorf("credential %q: need username, password, token, private_key, or certificate", name)
 		}
-		switch cr.Source {
-		case "keyring", "ssh-agent", "provided":
-		case "command":
-			if len(cr.Command) == 0 {
-				return fmt.Errorf("credential %q: source command requires command", name)
+		for _, slot := range slots {
+			err := slot.Source.init(name, slot.Name, c.Dir)
+			if err != nil {
+				return err
 			}
-		case "env":
-			if cr.Env == "" {
-				return fmt.Errorf("credential %q: source env requires env", name)
-			}
-		case "file":
-			if cr.Path == "" {
-				return fmt.Errorf("credential %q: source file requires path", name)
-			}
-			cr.Path = expandPath(cr.Path, c.Dir)
-		case "bitwarden":
-			if cr.Bitwarden == nil || strings.TrimSpace(cr.Bitwarden.Email) == "" || strings.TrimSpace(cr.Bitwarden.Item) == "" {
-				return fmt.Errorf("credential %q: source bitwarden requires bitwarden.email and bitwarden.item", name)
-			}
-			if cr.Bitwarden.Field == "" {
-				cr.Bitwarden.Field = "password"
-			}
-		default:
-			return fmt.Errorf("credential %q: unknown source %q (want keyring, command, env, file, ssh-agent, bitwarden, provided)", name, cr.Source)
 		}
 	}
 	for name, p := range c.Profiles {
@@ -557,35 +604,38 @@ func (c *Config) validateProfile(p *Profile) error {
 	for i, h := range p.Tunnel {
 		p.Tunnel[i] = strings.ToLower(h)
 	}
-	for i, s := range p.Services {
+	for i, s := range p.HTTP {
 		if s == nil {
-			return fmt.Errorf("services[%d]: empty", i)
+			return fmt.Errorf("http[%d]: empty", i)
 		}
 		if s.Name == "" {
-			return fmt.Errorf("services[%d]: name is required", i)
+			return fmt.Errorf("http[%d]: name is required", i)
 		}
 		if len(s.Hosts) == 0 {
-			return fmt.Errorf("service %q: hosts is required", s.Name)
+			return fmt.Errorf("http %q: hosts is required", s.Name)
 		}
 		for j, h := range s.Hosts {
 			s.Hosts[j] = strings.ToLower(h)
 		}
 		if s.Credential != "" {
 			if _, ok := c.Credentials[s.Credential]; !ok {
-				return fmt.Errorf("service %q: unknown credential %q", s.Name, s.Credential)
+				return fmt.Errorf("http %q: unknown credential %q", s.Name, s.Credential)
 			}
 		}
 		if s.Inject != nil && s.Credential == "" {
-			return fmt.Errorf("service %q: inject requires credential", s.Name)
+			return fmt.Errorf("http %q: inject requires credential", s.Name)
 		}
 		if err := validateAction(s.Default, true); err != nil {
-			return fmt.Errorf("service %q default: %w", s.Name, err)
+			return fmt.Errorf("http %q default: %w", s.Name, err)
 		}
 		if err := normalizeRules(s.Rules); err != nil {
-			return fmt.Errorf("service %q: %w", s.Name, err)
+			return fmt.Errorf("http %q: %w", s.Name, err)
 		}
 		if err := c.normalizeFilters(s.Filters); err != nil {
-			return fmt.Errorf("service %q: %w", s.Name, err)
+			return fmt.Errorf("http %q: %w", s.Name, err)
+		}
+		if err := c.normalizeRuleFilters(s.Rules); err != nil {
+			return fmt.Errorf("http %q: %w", s.Name, err)
 		}
 	}
 	for i, s := range p.SSH {
@@ -626,6 +676,9 @@ func (c *Config) validateProfile(p *Profile) error {
 		if err := c.normalizeFilters(s.Filters); err != nil {
 			return fmt.Errorf("ssh %q: %w", s.Name, err)
 		}
+		if err := c.normalizeRuleFilters(s.Rules); err != nil {
+			return fmt.Errorf("ssh %q: %w", s.Name, err)
+		}
 	}
 	return nil
 }
@@ -636,6 +689,16 @@ func (c *Config) normalizeFilters(fs []FilterRef) error {
 			return fmt.Errorf("filters[%d]: path is required", i)
 		}
 		fs[i].Path = expandPath(fs[i].Path, c.Dir)
+	}
+	return nil
+}
+
+func (c *Config) normalizeRuleFilters(rules []Rule) error {
+	for i := range rules {
+		err := c.normalizeFilters(rules[i].Filters)
+		if err != nil {
+			return fmt.Errorf("rules[%d]: %w", i, err)
+		}
 	}
 	return nil
 }
@@ -658,6 +721,9 @@ func normalizeRules(rules []Rule) error {
 		if err := validateAction(r.Action, false); err != nil {
 			return fmt.Errorf("rules[%d]: %w", i, err)
 		}
+		if r.Action == ActionDeny && len(r.Filters) > 0 {
+			return fmt.Errorf("rules[%d]: filters are not run on action deny", i)
+		}
 		for j, m := range r.Methods {
 			r.Methods[j] = strings.ToUpper(m)
 		}
@@ -674,7 +740,19 @@ func normalizeRules(rules []Rule) error {
 				return fmt.Errorf("rules[%d]: gitlab_project needs path or id", i)
 			}
 		}
-		r.GitHubRepo = strings.Trim(strings.ToLower(r.GitHubRepo), "/")
+		if len(r.GitHubSubpaths) > 0 && len(r.GitHubRepo) == 0 {
+			return fmt.Errorf("rules[%d]: github_subpaths requires github_repo", i)
+		}
+		for j, repo := range r.GitHubRepo {
+			repo = strings.Trim(strings.ToLower(repo), "/")
+			if repo == "" || strings.Count(repo, "/") != 1 {
+				return fmt.Errorf("rules[%d]: github_repo[%d] must be owner/repo", i, j)
+			}
+			r.GitHubRepo[j] = repo
+		}
+		for j, sp := range r.GitHubSubpaths {
+			r.GitHubSubpaths[j] = strings.Trim(sp, "/")
+		}
 		if r.Git != nil {
 			switch r.Git.Service {
 			case "", "receive-pack", "upload-pack", "upload-archive":
@@ -719,7 +797,7 @@ func loopback(addr string) bool {
 }
 
 // ResolvedProfile returns a profile with its extends chain flattened: parent
-// filters first, and services/ssh entries overridden by name in the child.
+// filters first, and http/ssh entries overridden by name in the child.
 func (c *Config) ResolvedProfile(name string) (*Profile, error) {
 	p, ok := c.Profiles[name]
 	if !ok {
@@ -741,7 +819,7 @@ func (c *Config) ResolvedProfile(name string) (*Profile, error) {
 		out.AllowPrivate = parent.AllowPrivate
 	}
 	out.Filters = append(append([]FilterRef{}, parent.Filters...), p.Filters...)
-	out.Services = mergeByName(parent.Services, p.Services, func(s *Service) string { return s.Name })
+	out.HTTP = mergeByName(parent.HTTP, p.HTTP, func(s *Service) string { return s.Name })
 	out.SSH = mergeByName(parent.SSH, p.SSH, func(s *SSHService) string { return s.Name })
 	return out, nil
 }
@@ -771,12 +849,48 @@ func (p *Profile) UnmatchedMode() string {
 	return p.Unmatched
 }
 
-// KeyringAccount is the OS keyring account the credential is stored under.
-func (c *Credential) KeyringAccount() string {
-	if c.Account != "" {
-		return c.Account
+func (s *ValueSource) init(cred, slot, dir string) error {
+	if s == nil {
+		return fmt.Errorf("credential %q %s: empty", cred, slot)
 	}
-	return c.Name
+	if s.Source == "ssh-agent" && slot != SlotPrivateKey {
+		return fmt.Errorf("credential %q %s: source ssh-agent is only valid on private_key", cred, slot)
+	}
+	switch s.Source {
+	case "keyring", "provided":
+	case "ssh-agent":
+	case "command":
+		if len(s.Command) == 0 {
+			return fmt.Errorf("credential %q %s: source command requires command", cred, slot)
+		}
+	case "env":
+		if s.Env == "" {
+			return fmt.Errorf("credential %q %s: source env requires env", cred, slot)
+		}
+	case "file":
+		if s.File == "" {
+			return fmt.Errorf("credential %q %s: source file requires file", cred, slot)
+		}
+		s.File = expandPath(s.File, dir)
+	case "bitwarden":
+		if strings.TrimSpace(s.Email) == "" || strings.TrimSpace(s.Item) == "" {
+			return fmt.Errorf("credential %q %s: source bitwarden requires email and item", cred, slot)
+		}
+		if strings.TrimSpace(s.Path) == "" {
+			return fmt.Errorf("credential %q %s: source bitwarden requires path", cred, slot)
+		}
+	default:
+		return fmt.Errorf("credential %q %s: unknown source %q (want keyring, command, env, file, ssh-agent, bitwarden, provided)", cred, slot, s.Source)
+	}
+	return nil
+}
+
+// KeyringAccount is the OS keyring account this slot is stored under.
+func (s *ValueSource) KeyringAccount(credName string) string {
+	if s != nil && s.Account != "" {
+		return s.Account
+	}
+	return credName
 }
 
 func expandPath(p, base string) string {

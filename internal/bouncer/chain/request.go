@@ -67,6 +67,10 @@ type Request struct {
 
 	// AllowedBy records which rule or default let the request through, for the audit log.
 	AllowedBy string
+	// SkipCredential means forward without injecting or substituting the
+	// service credential. Used when no rule matched and the profile
+	// unmatched mode is tunnel.
+	SkipCredential bool
 
 	gitOnce sync.Once
 	git     *gitproto.Info

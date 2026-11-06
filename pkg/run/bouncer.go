@@ -47,6 +47,16 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("host credentials: %w", err)
 	}
+	sshNames, err := sshKeyCredentialNames(setup.PolicyYAML)
+	if err != nil {
+		return fmt.Errorf("ssh credentials: %w", err)
+	}
+	err = unlockHostSSHKeys(provided, sshNames, func(name string) (string, error) {
+		return readSSHKeyPassphrase(req, name)
+	})
+	if err != nil {
+		return fmt.Errorf("ssh key: %w", err)
+	}
 	sshSock, err := hostSSHAuthSock(setup.PolicyYAML)
 	if err != nil {
 		return fmt.Errorf("ssh-agent: %w", err)

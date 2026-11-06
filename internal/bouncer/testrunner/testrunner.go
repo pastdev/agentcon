@@ -174,7 +174,7 @@ func RunFile(path string) ([]Result, error) {
 			return nil, fmt.Errorf("%s: profile %q not found", path, spec.Profile)
 		}
 		httpChain = func(host string) ([]chain.Filter, string, error) {
-			svc := prof.MatchService(host)
+			svc := prof.MatchHTTP(host)
 			if svc == nil {
 				return nil, "", fmt.Errorf("no service in profile %s matches %s (it would be %sed)", prof.Name, host, prof.Unmatched)
 			}

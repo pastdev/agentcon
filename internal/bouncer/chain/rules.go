@@ -7,26 +7,59 @@ import (
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
+// actionAnonymous is the implicit HTTP default when no rule matches and the
+// profile unmatched mode is tunnel: forward, do not attach the credential.
+const actionAnonymous = "anonymous"
+
 // Rules evaluates declarative rules: first match wins, else the default.
+// Filters listed on a matching allow or approved-ask rule run after the
+// verdict, wrapping next. Deny and the service default skip them.
 type Rules struct {
-	name    string
-	rules   []config.Rule
-	def     string
-	env     *Env
-	ssh     bool
-	sshSvc  *config.SSHService
-	service string
+	name        string
+	rules       []config.Rule
+	ruleFilters [][]Filter
+	def         string
+	defYAML     string
+	env         *Env
+	ssh         bool
+	sshSvc      *config.SSHService
+	service     string
 }
 
 // NewRules builds the rules filter for an HTTP service.
 func NewRules(svc *config.Service, env *Env) *Rules {
-	return &Rules{name: "rules:" + svc.Name, rules: svc.Rules, def: svc.DefaultAction(), env: env, service: svc.Name}
+	return &Rules{name: "rules:" + svc.Name, rules: svc.Rules, def: svc.DefaultAction(), defYAML: svc.Default, env: env, service: svc.Name}
 }
 
 // NewSSHRules builds the rules filter for an SSH service. It also enforces the
 // service's capability allowlist before any rule is consulted.
 func NewSSHRules(svc *config.SSHService, env *Env) *Rules {
 	return &Rules{name: "rules:" + svc.Name, rules: svc.Rules, def: svc.DefaultAction(), env: env, ssh: true, sshSvc: svc, service: svc.Name}
+}
+
+// WithRuleFilters attaches compiled filters parallel to svc.Rules.
+// A nil or shorter slice means later rules have no extra filters.
+func (r *Rules) WithRuleFilters(filters [][]Filter) *Rules {
+	if r != nil {
+		r.ruleFilters = filters
+	}
+	return r
+}
+
+// WithUnmatched sets the implicit default from the profile unmatched mode.
+// An explicit `default:` on the http entry wins. unmatched tunnel with
+// rules and no default forwards without the credential. Unmatched deny
+// (and tests that skip this) keep deny.
+func (r *Rules) WithUnmatched(mode string) *Rules {
+	if r == nil || r.defYAML != "" || len(r.rules) == 0 {
+		return r
+	}
+	if mode == config.UnmatchedDeny {
+		r.def = config.ActionDeny
+		return r
+	}
+	r.def = actionAnonymous
+	return r
 }
 
 func (r *Rules) Name() string { return r.name }
@@ -42,16 +75,27 @@ func (r *Rules) Handle(req *Request, next Handler) (*Response, error) {
 			return nil, fmt.Errorf("rules[%d]: %w", i, err)
 		}
 		if ok {
-			return r.act(req, next, rule.Action, fmt.Sprintf("%s rules[%d]", r.name, i), rule.Reason, rule.Prompt)
+			return r.act(req, next, i, rule.Action, fmt.Sprintf("%s rules[%d]", r.name, i), rule.Reason, rule.Prompt)
 		}
 	}
-	return r.act(req, next, r.def, r.name+" default", "", "")
+	return r.act(req, next, -1, r.def, r.name+" default", "", "")
 }
 
-func (r *Rules) act(req *Request, next Handler, action, by, reason, prompt string) (*Response, error) {
+func (r *Rules) wrap(i int, next Handler) Handler {
+	if i < 0 || i >= len(r.ruleFilters) || len(r.ruleFilters[i]) == 0 {
+		return next
+	}
+	return Build(r.ruleFilters[i], next)
+}
+
+func (r *Rules) act(req *Request, next Handler, i int, action, by, reason, prompt string) (*Response, error) {
 	switch action {
 	case config.ActionAllow:
 		req.AllowedBy = by
+		return r.wrap(i, next)(req)
+	case actionAnonymous:
+		req.AllowedBy = by
+		req.SkipCredential = true
 		return next(req)
 	case config.ActionAsk:
 		if r.env == nil || r.env.Approver == nil {
@@ -71,7 +115,7 @@ func (r *Rules) act(req *Request, next Handler, action, by, reason, prompt strin
 			return Deny(by, reason), nil
 		}
 		req.AllowedBy = by + " (approved)"
-		return next(req)
+		return r.wrap(i, next)(req)
 	default:
 		if reason == "" {
 			reason = "no rule allows " + req.Describe()
@@ -112,8 +156,8 @@ func Match(req *Request, rule *config.Rule, env *Env) (bool, error) {
 			return false, err
 		}
 	}
-	if rule.GitHubRepo != "" {
-		ok, err := matchGitHubRepo(req, rule.GitHubRepo)
+	if len(rule.GitHubRepo) > 0 {
+		ok, err := matchGitHubRepo(req, rule.GitHubRepo, rule.GitHubSubpaths)
 		if err != nil || !ok {
 			return false, err
 		}

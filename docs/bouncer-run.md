@@ -5,8 +5,11 @@ The sidecar is PID 1 running `bouncer serve`.
 Secrets are not passed as container environment variables.
 After the management API is up, the host PUTs secrets into memory.
 
+Each credential is a composite of slots (`username`, `password`, `token`, `private_key`, `certificate`).
+Each slot is a source plus an optional JSONPath on the source payload.
+
 `source: env` is a map of environment variable names.
-`file`, `keyring`, `command`, and `provided` are a map of credential names.
+`file`, `keyring`, `command`, and `provided` are a map of `credential.slot` keys (for example `github-pat.token`).
 
 Bitwarden stays an unlock, not a key/value dump.
 Identity lives in the policy YAML.
@@ -85,8 +88,11 @@ curl -fsS \
   http://127.0.0.1:8228/_bouncer/status
 ```
 
-For each `source: env` credential, read the named variable on the host.
-For each `file`, `keyring`, `command`, or `provided` credential, resolve the secret on the host.
+For each `source: env` slot, read the named variable on the host.
+For each `file`, `keyring`, `command`, or `provided` slot, resolve the secret on the host.
+PUT keys are `credential.slot` (for example `github-pat.token` and `deploy.private_key`).
+If a `private_key` slot is passphrase-protected, prompt on the host TTY and PUT the unlocked PEM.
+Other slots are not parsed as keys.
 Fail on the host if any are missing.
 PUT the maps after status is up.
 
@@ -100,13 +106,17 @@ curl -fsS -X PUT \
 curl -fsS -X PUT \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
-  --data '{"deploy-key":"-----BEGIN OPENSSH PRIVATE KEY-----\\n..."}' \
+  --data '{"deploy.private_key":"-----BEGIN OPENSSH PRIVATE KEY-----\\n..."}' \
   http://127.0.0.1:8228/_bouncer/credentials/provided
 ```
 
 The daemon stores both maps in memory.
 `source: env` lookups use the overlay first, then `os.LookupEnv`.
 Lookups for other sources use the provided overlay first, then the configured source.
+
+Bitwarden slots fetch the decrypted cipher JSON.
+`path` is required.
+Use a JSONPath such as `$.notes`, `$.login.password`, `$.sshKey.privateKey`, or `$.fields[?(@.name=='API Key')].value`.
 
 If the policy uses `source: ssh-agent`, require `SSH_AUTH_SOCK` on the host before `docker create`.
 Bind-mount it and set `SSH_AUTH_SOCK=/opt/agentcon/ssh-agent.sock` on the sidecar.

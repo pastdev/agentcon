@@ -10,11 +10,14 @@ const (
 	testOtherEnv  = "OTHER_TOKEN"
 	testFromOS    = "from-os"
 	testFromExtra = "from-extra"
+	testFromFile  = "from-file"
+	testCredTok   = "tok"
 	testEnvPolicy = `
 credentials:
   tok:
-    source: env
-    env: SMOKE_TOKEN
+    token:
+      source: env
+      env: SMOKE_TOKEN
 `
 )
 
@@ -45,11 +48,13 @@ func TestHostEnvCredsMissing(t *testing.T) {
 	_, err := hostEnvCreds([]byte(`
 credentials:
   tok:
-    source: env
-    env: SMOKE_TOKEN
+    token:
+      source: env
+      env: SMOKE_TOKEN
   other:
-    source: env
-    env: OTHER_TOKEN
+    token:
+      source: env
+      env: OTHER_TOKEN
 `), nil)
 	if err == nil || !strings.Contains(err.Error(), testOtherEnv) || !strings.Contains(err.Error(), testSmokeEnv) {
 		t.Fatalf("got %v", err)
@@ -60,10 +65,11 @@ func TestHostEnvCredsSkipsOtherSources(t *testing.T) {
 	got, err := hostEnvCreds([]byte(`
 credentials:
   bw:
-    source: bitwarden
-    bitwarden:
+    token:
+      source: bitwarden
       email: user@example.com
       item: GitLab
+      path: $.login.password
 `), []string{"UNUSED=1"})
 	if err != nil {
 		t.Fatal(err)

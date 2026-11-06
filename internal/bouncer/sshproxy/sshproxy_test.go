@@ -137,7 +137,7 @@ func setupR(t *testing.T) (*upstream, string, *ca.Authority, *bool) {
 
 	cfg, err := config.Parse([]byte(fmt.Sprintf(`
 credentials:
-  key: {source: file, path: %s}
+  key: {private_key: {source: file, file: %s}}
 profiles:
   p:
     ssh:
@@ -299,7 +299,7 @@ func TestSSHPreambleLimits(t *testing.T) {
 func TestSSHPortNotAgentChosenUnlessPinned(t *testing.T) {
 	cfg, err := config.Parse([]byte(`
 credentials:
-  key: {source: env, env: UNUSED}
+  key: {private_key: {source: env, env: UNUSED}}
 profiles:
   p:
     ssh:

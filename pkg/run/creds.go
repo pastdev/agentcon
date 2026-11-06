@@ -25,16 +25,19 @@ func hostProvidedCreds(ctx context.Context, policy []byte, extra map[string]stri
 		if c == nil {
 			continue
 		}
-		switch c.Source {
-		case "file", "keyring", "command", "provided":
-		default:
-			continue
+		for _, slot := range c.Slots() {
+			switch slot.Source.Source {
+			case "file", "keyring", "command", "provided":
+			default:
+				continue
+			}
+			key := bouncercfg.ProvidedKey(name, slot.Name)
+			v, err := store.GetSlot(ctx, name, slot.Name)
+			if err != nil {
+				return nil, fmt.Errorf("host credential %s: %w", key, err)
+			}
+			out[key] = v
 		}
-		v, err := store.Get(ctx, name)
-		if err != nil {
-			return nil, fmt.Errorf("host credential %s: %w", name, err)
-		}
-		out[name] = v
 	}
 	return out, nil
 }
@@ -46,9 +49,13 @@ func hostSSHAuthSock(policy []byte) (string, error) {
 	}
 	var need bool
 	for _, c := range cfg.Credentials {
-		if c != nil && c.Source == "ssh-agent" {
-			need = true
-			break
+		if c == nil {
+			continue
+		}
+		for _, slot := range c.Slots() {
+			if slot.Source.Source == "ssh-agent" {
+				need = true
+			}
 		}
 	}
 	if !need {

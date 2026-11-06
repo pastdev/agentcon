@@ -127,6 +127,11 @@ func Get(ctx context.Context, q Query) (string, error) {
 	return current().Get(ctx, q)
 }
 
+// ItemJSON returns the decrypted cipher as Bitwarden wire JSON.
+func ItemJSON(ctx context.Context, q Query) ([]byte, error) {
+	return current().ItemJSON(ctx, q)
+}
+
 // New returns a vault set that does not share process-wide state.
 func New(opt Options) *Vaults {
 	logf := opt.Logf
@@ -188,6 +193,19 @@ func (v *Vaults) Get(ctx context.Context, q Query) (string, error) {
 		field = "password"
 	}
 	return u.lookup(q.Item, q.Folder, field)
+}
+
+// ItemJSON returns the decrypted cipher as Bitwarden wire JSON.
+func (v *Vaults) ItemJSON(ctx context.Context, q Query) ([]byte, error) {
+	u, err := v.ensure(ctx, q.Account)
+	if err != nil {
+		return nil, err
+	}
+	e, err := u.find(q.Item, q.Folder)
+	if err != nil {
+		return nil, err
+	}
+	return e.wireJSON()
 }
 
 func (v *Vaults) ensure(ctx context.Context, a Account) (*unlocked, error) {
@@ -560,6 +578,14 @@ func (u *unlocked) lookup(item, folder, field string) (string, error) {
 	if field == "" {
 		field = "password"
 	}
+	e, err := u.find(item, folder)
+	if err != nil {
+		return "", err
+	}
+	return e.field(field)
+}
+
+func (u *unlocked) find(item, folder string) (entry, error) {
 	var matches []entry
 	for _, e := range u.entries {
 		if e.id != item && e.name != item {
@@ -582,11 +608,11 @@ func (u *unlocked) lookup(item, folder, field string) (string, error) {
 	switch len(matches) {
 	case 0:
 		if folder != "" {
-			return "", fmt.Errorf("bitwarden: no item %q in folder %q", item, folder)
+			return entry{}, fmt.Errorf("bitwarden: no item %q in folder %q", item, folder)
 		}
-		return "", fmt.Errorf("bitwarden: no item %q", item)
+		return entry{}, fmt.Errorf("bitwarden: no item %q", item)
 	case 1:
-		return matches[0].field(field)
+		return matches[0], nil
 	default:
 		names := make([]string, 0, len(matches))
 		seen := map[string]bool{}
@@ -601,8 +627,58 @@ func (u *unlocked) lookup(item, folder, field string) (string, error) {
 			}
 		}
 		sort.Strings(names)
-		return "", fmt.Errorf("bitwarden: %d items named %q; set folder to one of: %s", len(matches), item, strings.Join(names, ", "))
+		return entry{}, fmt.Errorf("bitwarden: %d items named %q; set folder to one of: %s", len(matches), item, strings.Join(names, ", "))
 	}
+}
+
+func (e entry) wireJSON() ([]byte, error) {
+	m := map[string]any{}
+	if e.hasNotes {
+		m["notes"] = e.notes
+	}
+	login := map[string]any{}
+	if e.hasUsername {
+		login["username"] = e.username
+	}
+	if e.hasPassword {
+		login["password"] = e.password
+	}
+	if e.hasTotp {
+		login["totp"] = e.totp
+	}
+	if len(login) > 0 {
+		m["login"] = login
+	}
+	sshKey := map[string]any{}
+	if e.hasPrivateKey {
+		sshKey["privateKey"] = e.privateKey
+	}
+	if e.hasPublicKey {
+		sshKey["publicKey"] = e.publicKey
+	}
+	if e.hasFingerprint {
+		sshKey["keyFingerprint"] = e.fingerprint
+	}
+	if len(sshKey) > 0 {
+		m["sshKey"] = sshKey
+	}
+	if len(e.fields) > 0 {
+		names := make([]string, 0, len(e.fields))
+		for n := range e.fields {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		fields := make([]map[string]string, 0, len(names))
+		for _, n := range names {
+			fields = append(fields, map[string]string{"name": n, "value": e.fields[n]})
+		}
+		m["fields"] = fields
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("bitwarden: encode item %q: %w", e.name, err)
+	}
+	return b, nil
 }
 
 func (e entry) field(name string) (string, error) {

@@ -112,7 +112,7 @@ func checkCmd() *cobra.Command {
 				return err
 			}
 			for _, p := range got.Profiles {
-				fmt.Printf("profile %-14s %d services, %d ssh services, unmatched=%s\n", p.Name, p.Services, p.SSH, p.Unmatched)
+				fmt.Printf("profile %-14s %d http, %d ssh, unmatched=%s\n", p.Name, p.HTTP, p.SSH, p.Unmatched)
 			}
 			fmt.Printf("ok: %s\n", got.Path)
 			return nil

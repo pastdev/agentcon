@@ -140,11 +140,15 @@ func matchGitLabProject(req *Request, env *Env, p *config.ProjectRef) (bool, err
 	return p.Path != "" && strings.EqualFold(seg, p.Path), nil
 }
 
-// matchGitHubRepo reports whether req targets owner/repo via the REST API
-// (github.com or GHES /api/v3) or git.
-func matchGitHubRepo(req *Request, repo string) (bool, error) {
+// matchGitHubRepo reports whether req targets one of repos via the REST API
+// (github.com or GHES /api/v3) or git. subpaths are globs under
+// /repos/owner/repo/; git never matches when subpaths are set.
+func matchGitHubRepo(req *Request, repos, subpaths []string) (bool, error) {
 	if g := req.Git(); g != nil {
-		return strings.EqualFold(g.Repo, repo), nil
+		if len(subpaths) > 0 {
+			return false, nil
+		}
+		return githubRepoListed(g.Repo, repos), nil
 	}
 	if req.Transport != TransportHTTP {
 		return false, nil
@@ -156,10 +160,21 @@ func matchGitHubRepo(req *Request, repo string) (bool, error) {
 	if len(segs) >= 2 && segs[0] == "api" && segs[1] == "v3" {
 		segs = segs[2:]
 	}
-	if len(segs) >= 3 && segs[0] == "repos" {
-		return strings.EqualFold(segs[1]+"/"+segs[2], repo), nil
+	if len(segs) < 3 || segs[0] != "repos" {
+		return false, nil
 	}
-	return false, nil
+	if !githubRepoListed(segs[1]+"/"+segs[2], repos) {
+		return false, nil
+	}
+	if len(subpaths) == 0 {
+		return true, nil
+	}
+	sub := strings.Join(segs[3:], "/")
+	return slices.ContainsFunc(subpaths, func(g string) bool { return Glob(g, sub) }), nil
+}
+
+func githubRepoListed(got string, repos []string) bool {
+	return slices.ContainsFunc(repos, func(r string) bool { return strings.EqualFold(got, r) })
 }
 
 var methodOverrideHeaders = []string{"x-http-method-override", "x-http-method", "x-method-override"}

@@ -96,7 +96,8 @@ func run() error {
 		return err
 	}
 	policy := smokePolicy(proxyAddr, sshAddr, svcAddr, fmt.Sprintf(`  %s:
-    source: provided
+    token:
+      source: provided
     export_env: [SMOKE_TOKEN]
 `, credName))
 	err = bouncercfg.WriteLayout(bouncercfg.DirFS(dir), policy, tsFiles)
@@ -110,7 +111,7 @@ func run() error {
 	d, err := daemon.New(daemon.Options{
 		ConfigPath: filepath.Join(dir, bouncercfg.FileName),
 		StateDir:   filepath.Join(dir, "state"),
-		Provided:   map[string]string{credName: realSecret},
+		Provided:   map[string]string{bouncercfg.ProvidedKey(credName, bouncercfg.SlotToken): realSecret},
 		Logf:       func(string, ...any) {},
 		Decision: func(e audit.Entry) {
 			fmt.Printf("  bouncer: %s %s\n", strings.ToUpper(e.Decision), e.Request)

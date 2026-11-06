@@ -23,22 +23,27 @@ func hostEnvCreds(policy []byte, extra []string) (map[string]string, error) {
 	out := map[string]string{}
 	var missing []string
 	for name, c := range cfg.Credentials {
-		if c == nil || c.Source != "env" {
+		if c == nil {
 			continue
 		}
-		if c.Env == "" {
-			return nil, fmt.Errorf("credential %s: source env requires env", name)
+		for _, slot := range c.Slots() {
+			if slot.Source.Source != "env" {
+				continue
+			}
+			if slot.Source.Env == "" {
+				return nil, fmt.Errorf("credential %s %s: source env requires env", name, slot.Name)
+			}
+			if v := overlay[slot.Source.Env]; v != "" {
+				out[slot.Source.Env] = v
+				continue
+			}
+			v, ok := os.LookupEnv(slot.Source.Env)
+			if !ok || v == "" {
+				missing = append(missing, slot.Source.Env)
+				continue
+			}
+			out[slot.Source.Env] = v
 		}
-		if v := overlay[c.Env]; v != "" {
-			out[c.Env] = v
-			continue
-		}
-		v, ok := os.LookupEnv(c.Env)
-		if !ok || v == "" {
-			missing = append(missing, c.Env)
-			continue
-		}
-		out[c.Env] = v
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)

@@ -48,6 +48,55 @@ type cached struct {
 	expires time.Time
 }
 
+// Secret is the resolved slots of one credential.
+type Secret struct {
+	Username    string
+	Password    string
+	Token       string
+	PrivateKey  string
+	Certificate string
+}
+
+// HTTP is the value used for bearer, header, query, and placeholder
+// substitution: Token, else Password.
+func (s Secret) HTTP() string {
+	if s.Token != "" {
+		return s.Token
+	}
+	return s.Password
+}
+
+// BasicUser is inject.basic username: YAML override, else Username.
+func (s Secret) BasicUser(override string) string {
+	if override != "" {
+		return override
+	}
+	return s.Username
+}
+
+// BasicPass is inject.basic password: Password, else Token.
+func (s Secret) BasicPass() string {
+	if s.Password != "" {
+		return s.Password
+	}
+	return s.Token
+}
+
+func (s *Secret) set(slot, v string) {
+	switch slot {
+	case config.SlotUsername:
+		s.Username = v
+	case config.SlotPassword:
+		s.Password = v
+	case config.SlotToken:
+		s.Token = v
+	case config.SlotPrivateKey:
+		s.PrivateKey = v
+	case config.SlotCertificate:
+		s.Certificate = v
+	}
+}
+
 func NewStore(creds map[string]*config.Credential) *Store {
 	return &Store{
 		creds:    creds,
@@ -105,15 +154,24 @@ func (s *Store) providedValue(name string) (string, bool) {
 	return v, ok
 }
 
-// MissingProvided lists credentials with source: provided that have no
-// startup value.
+// MissingProvided lists credential slots with source: provided that have no
+// startup value. Names are credential.slot.
 func (s *Store) MissingProvided() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []string
 	for name, c := range s.creds {
-		if _, ok := s.provided[name]; c.Source == "provided" && !ok {
-			out = append(out, name)
+		if c == nil {
+			continue
+		}
+		for _, slot := range c.Slots() {
+			if slot.Source.Source != "provided" {
+				continue
+			}
+			key := config.ProvidedKey(name, slot.Name)
+			if _, ok := s.provided[key]; !ok {
+				out = append(out, key)
+			}
 		}
 	}
 	sort.Strings(out)
@@ -133,14 +191,20 @@ func ConfigureBitwarden(stateDir string, logf func(string, ...any)) {
 func (s *Store) Prepare(ctx context.Context, creds map[string]*config.Credential) error {
 	var accounts []bitwarden.Account
 	for _, c := range creds {
-		if c == nil || c.Source != "bitwarden" || c.Bitwarden == nil {
+		if c == nil {
 			continue
 		}
-		accounts = append(accounts, bitwarden.Account{
-			Email:       c.Bitwarden.Email,
-			Server:      c.Bitwarden.Server,
-			PasswordEnv: c.Bitwarden.PasswordEnv,
-		})
+		for _, slot := range c.Slots() {
+			src := slot.Source
+			if src == nil || src.Source != "bitwarden" {
+				continue
+			}
+			accounts = append(accounts, bitwarden.Account{
+				Email:       src.Email,
+				Server:      src.Server,
+				PasswordEnv: src.PasswordEnv,
+			})
+		}
 	}
 	if len(accounts) == 0 {
 		return nil
@@ -171,11 +235,21 @@ func (s *Store) Update(creds map[string]*config.Credential) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for name, old := range s.creds {
-		if nw, ok := creds[name]; !ok || fmt.Sprint(*nw) != fmt.Sprint(*old) {
-			delete(s.cache, name)
+		nw, ok := creds[name]
+		if !ok || old == nil || nw == nil || fmt.Sprint(*nw) != fmt.Sprint(*old) {
+			s.dropCached(name, old)
 		}
 	}
 	s.creds = creds
+}
+
+func (s *Store) dropCached(name string, c *config.Credential) {
+	if c == nil {
+		return
+	}
+	for _, slot := range c.Slots() {
+		delete(s.cache, config.ProvidedKey(name, slot.Name))
+	}
 }
 
 func (s *Store) lookup(name string) (*config.Credential, *sync.Mutex, error) {
@@ -193,58 +267,100 @@ func (s *Store) lookup(name string) (*config.Credential, *sync.Mutex, error) {
 	return c, m, nil
 }
 
-// Get returns the secret for a credential.
-func (s *Store) Get(ctx context.Context, name string) (string, error) {
+// Get returns the resolved slots for a credential.
+func (s *Store) Get(ctx context.Context, name string) (Secret, error) {
+	c, m, err := s.lookup(name)
+	if err != nil {
+		return Secret{}, err
+	}
+	m.Lock()
+	defer m.Unlock()
+	var out Secret
+	for _, slot := range c.Slots() {
+		if slot.Source.Source == "ssh-agent" {
+			continue
+		}
+		v, err := s.slotValue(ctx, c, slot)
+		if err != nil {
+			return Secret{}, fmt.Errorf("credential %q %s: %w", name, slot.Name, err)
+		}
+		out.set(slot.Name, v)
+	}
+	return out, nil
+}
+
+// GetSlot returns one named slot.
+func (s *Store) GetSlot(ctx context.Context, name, slotName string) (string, error) {
 	c, m, err := s.lookup(name)
 	if err != nil {
 		return "", err
 	}
-	if v, ok := s.providedValue(name); ok {
-		return v, nil
-	}
-	if c.Source == "ssh-agent" {
-		return "", fmt.Errorf("credential %q is an ssh-agent credential and has no secret value", name)
+	src := c.Slot(slotName)
+	if src == nil {
+		return "", fmt.Errorf("credential %q has no %s", name, slotName)
 	}
 	m.Lock()
 	defer m.Unlock()
+	v, err := s.slotValue(ctx, c, config.Slot{Name: slotName, Source: src})
+	if err != nil {
+		return "", fmt.Errorf("credential %q %s: %w", name, slotName, err)
+	}
+	return v, nil
+}
+
+func (s *Store) slotValue(ctx context.Context, c *config.Credential, slot config.Slot) (string, error) {
+	key := config.ProvidedKey(c.Name, slot.Name)
+	if v, ok := s.providedValue(key); ok {
+		return v, nil
+	}
+	cacheKey := key
 	s.mu.Lock()
-	if e, ok := s.cache[name]; ok && time.Now().Before(e.expires) {
+	if e, ok := s.cache[cacheKey]; ok && time.Now().Before(e.expires) {
 		s.mu.Unlock()
 		return e.value, nil
 	}
 	s.mu.Unlock()
 
-	v, err := s.fetchValue(ctx, c)
+	v, err := s.fetchValue(ctx, c.Name, slot.Source)
 	if err != nil {
-		return "", fmt.Errorf("credential %q: %w", name, err)
+		return "", err
 	}
 	if v == "" {
-		return "", fmt.Errorf("credential %q: empty secret", name)
+		return "", errors.New("empty secret")
 	}
 	if ttl := c.CacheTTL(); ttl > 0 {
 		s.mu.Lock()
-		s.cache[name] = cached{value: v, expires: time.Now().Add(ttl)}
+		s.cache[cacheKey] = cached{value: v, expires: time.Now().Add(ttl)}
 		s.mu.Unlock()
 	}
 	return v, nil
 }
 
-func (s *Store) fetchValue(ctx context.Context, c *config.Credential) (string, error) {
-	switch c.Source {
+func (s *Store) fetchValue(ctx context.Context, credName string, src *config.ValueSource) (string, error) {
+	raw, err := s.fetchPayload(ctx, credName, src)
+	if err != nil {
+		return "", err
+	}
+	return extractJSONPath([]byte(raw), src.Path)
+}
+
+func (s *Store) fetchPayload(ctx context.Context, credName string, src *config.ValueSource) (string, error) {
+	switch src.Source {
 	case "keyring":
-		v, err := keyring.Get(KeyringService, c.KeyringAccount())
+		acct := src.KeyringAccount(credName)
+		v, err := keyring.Get(KeyringService, acct)
 		if err == keyring.ErrNotFound {
-			return "", fmt.Errorf("not in keyring (account %s)", c.KeyringAccount())
+			return "", fmt.Errorf("not in keyring (account %s)", acct)
 		}
 		return v, err
 	case "env":
-		v, ok := s.lookupEnv(c.Env)
+		v, ok := s.lookupEnv(src.Env)
 		if !ok {
-			return "", fmt.Errorf("environment variable %s is not set in the bouncer daemon", c.Env)
+			return "", fmt.Errorf("environment variable %s is not set in the bouncer daemon", src.Env)
 		}
 		return v, nil
 	case "file":
-		b, err := os.ReadFile(c.Path)
+		b, err := os.ReadFile(src.File)
 		if err != nil {
 			return "", err
 		}
@@ -254,31 +370,30 @@ func (s *Store) fetchValue(ctx context.Context, c *config.Credential) (string, e
 	case "command":
 		ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, c.Command[0], c.Command[1:]...)
+		cmd := exec.CommandContext(ctx, src.Command[0], src.Command[1:]...)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
 		if err != nil {
 			msg := strings.TrimSpace(stderr.String())
 			if msg != "" {
-				return "", fmt.Errorf("%s: %w: %s", c.Command[0], err, msg)
+				return "", fmt.Errorf("%s: %w: %s", src.Command[0], err, msg)
 			}
-			return "", fmt.Errorf("%s: %w", c.Command[0], err)
+			return "", fmt.Errorf("%s: %w", src.Command[0], err)
 		}
 		return strings.TrimRight(string(out), "\r\n"), nil
 	case "bitwarden":
-		bw := c.Bitwarden
-		if bw == nil {
-			return "", errors.New("bitwarden block is missing")
-		}
-		return bitwarden.Get(ctx, bitwarden.Query{
-			Account: bitwarden.Account{Email: bw.Email, Server: bw.Server, PasswordEnv: bw.PasswordEnv},
-			Item:    bw.Item,
-			Folder:  bw.Folder,
-			Field:   bw.Field,
+		raw, err := bitwarden.ItemJSON(ctx, bitwarden.Query{
+			Account: bitwarden.Account{Email: src.Email, Server: src.Server, PasswordEnv: src.PasswordEnv},
+			Item:    src.Item,
+			Folder:  src.Folder,
 		})
+		if err != nil {
+			return "", err
+		}
+		return string(raw), nil
 	}
-	return "", fmt.Errorf("unsupported source %q", c.Source)
+	return "", fmt.Errorf("unsupported source %q", src.Source)
 }
 
 // SSHSigners returns signers for an SSH credential: the parsed private key
@@ -288,24 +403,33 @@ func (s *Store) SSHSigners(ctx context.Context, name string) ([]ssh.Signer, erro
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := s.providedValue(name); c.Source == "ssh-agent" && !ok {
-		return agentSigners(c)
+	src := c.PrivateKey
+	if src == nil {
+		return nil, fmt.Errorf("credential %q: no private_key", name)
 	}
-	pemData, err := s.Get(ctx, name)
+	if src.Source == "ssh-agent" {
+		if _, ok := s.providedValue(config.ProvidedKey(name, config.SlotPrivateKey)); !ok {
+			return agentSigners(c.Name, src)
+		}
+	}
+	pem, err := s.GetSlot(ctx, name, config.SlotPrivateKey)
 	if err != nil {
 		return nil, err
 	}
-	signer, err := ssh.ParsePrivateKey([]byte(pemData + "\n"))
+	if pem == "" {
+		return nil, fmt.Errorf("credential %q: empty private_key", name)
+	}
+	signer, err := ssh.ParsePrivateKey([]byte(pem + "\n"))
 	if err != nil {
 		return nil, fmt.Errorf("credential %q: not a usable SSH private key (passphrase-protected keys must use source: ssh-agent): %w", name, err)
 	}
 	return []ssh.Signer{signer}, nil
 }
 
-func agentSigners(c *config.Credential) ([]ssh.Signer, error) {
+func agentSigners(name string, src *config.ValueSource) ([]ssh.Signer, error) {
 	conn, err := dialAgent()
 	if err != nil {
-		return nil, fmt.Errorf("credential %q: connecting to ssh-agent: %w", c.Name, err)
+		return nil, fmt.Errorf("credential %q: connecting to ssh-agent: %w", name, err)
 	}
 	// The connection must stay open while the signers are in use; it is
 	// released when the process exits or the agent hangs up.
@@ -314,14 +438,14 @@ func agentSigners(c *config.Credential) ([]ssh.Signer, error) {
 		conn.Close()
 		return nil, err
 	}
-	if c.Fingerprint == "" {
+	if src.Fingerprint == "" {
 		return signers, nil
 	}
 	for _, sg := range signers {
-		if ssh.FingerprintSHA256(sg.PublicKey()) == c.Fingerprint {
+		if ssh.FingerprintSHA256(sg.PublicKey()) == src.Fingerprint {
 			return []ssh.Signer{sg}, nil
 		}
 	}
 	conn.Close()
-	return nil, fmt.Errorf("credential %q: no agent key with fingerprint %s", c.Name, c.Fingerprint)
+	return nil, fmt.Errorf("credential %q: no agent key with fingerprint %s", name, src.Fingerprint)
 }

@@ -171,7 +171,11 @@ func New(opts Options) (*Daemon, error) {
 	d.creds = creds.NewStore(cfg.Credentials)
 	d.creds.SetProvided(opts.Provided)
 	d.env.Credential = func(ctx context.Context, name string) (string, error) {
-		return d.creds.Get(ctx, name)
+		sec, err := d.creds.Get(ctx, name)
+		if err != nil {
+			return "", err
+		}
+		return sec.HTTP(), nil
 	}
 	if err := d.apply(cfg); err != nil {
 		return nil, err
@@ -194,15 +198,26 @@ func (d *Daemon) Config() *config.Config {
 // serve is up.
 func (d *Daemon) checkProvided(cfg *config.Config) error {
 	var unknown, missing []string
-	for name := range d.opts.Provided {
-		if _, ok := cfg.Credentials[name]; !ok {
-			unknown = append(unknown, name)
+	for key := range d.opts.Provided {
+		cred, slot, ok := strings.Cut(key, ".")
+		c, have := cfg.Credentials[cred]
+		if !ok || !have || c.Slot(slot) == nil {
+			unknown = append(unknown, key)
 		}
 	}
 	if d.opts.Provided != nil {
 		for name, c := range cfg.Credentials {
-			if _, ok := d.opts.Provided[name]; c.Source == "provided" && !ok {
-				missing = append(missing, name)
+			if c == nil {
+				continue
+			}
+			for _, slot := range c.Slots() {
+				if slot.Source.Source != "provided" {
+					continue
+				}
+				key := config.ProvidedKey(name, slot.Name)
+				if _, ok := d.opts.Provided[key]; !ok {
+					missing = append(missing, key)
+				}
 			}
 		}
 	}
@@ -454,7 +469,7 @@ func (d *Daemon) resolveGitLabProject(ctx context.Context, service, host, projec
 	var svc *config.Service
 	d.mu.RLock()
 	for _, p := range d.set.Profiles {
-		for _, s := range p.Services {
+		for _, s := range p.HTTP {
 			if s.Config.Name == service && config.HostMatches(s.Config.Hosts, host) {
 				svc = s.Config
 			}

@@ -16,20 +16,21 @@ import (
 func TestHostProvidedCredsFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
-	err := os.WriteFile(path, []byte("from-file\n"), 0o600)
+	err := os.WriteFile(path, []byte(testFromFile+"\n"), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got, err := hostProvidedCreds(context.Background(), []byte(`
 credentials:
   tok:
-    source: file
-    path: `+path+`
+    token:
+      source: file
+      file: `+path+`
 `), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["tok"] != "from-file" {
+	if got[testCredTok+".token"] != testFromFile {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -41,13 +42,14 @@ func TestHostProvidedCredsCommand(t *testing.T) {
 	got, err := hostProvidedCreds(context.Background(), []byte(`
 credentials:
   tok:
-    source: command
-    command: ["sh", "-c", "printf from-cmd"]
+    token:
+      source: command
+      command: ["sh", "-c", "printf from-cmd"]
 `), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["tok"] != "from-cmd" {
+	if got[testCredTok+".token"] != "from-cmd" {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -56,12 +58,13 @@ func TestHostProvidedCredsProvided(t *testing.T) {
 	got, err := hostProvidedCreds(context.Background(), []byte(`
 credentials:
   tok:
-    source: provided
-`), map[string]string{"tok": testFromExtra})
+    token:
+      source: provided
+`), map[string]string{testCredTok + ".token": testFromExtra})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["tok"] != testFromExtra {
+	if got[testCredTok+".token"] != testFromExtra {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -69,20 +72,21 @@ credentials:
 func TestHostProvidedCredsExtraWinsOverFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
-	err := os.WriteFile(path, []byte("from-file"), 0o600)
+	err := os.WriteFile(path, []byte(testFromFile), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got, err := hostProvidedCreds(context.Background(), []byte(`
 credentials:
   tok:
-    source: file
-    path: `+path+`
-`), map[string]string{"tok": testFromExtra})
+    token:
+      source: file
+      file: `+path+`
+`), map[string]string{testCredTok + ".token": testFromExtra})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["tok"] != testFromExtra {
+	if got[testCredTok+".token"] != testFromExtra {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -91,9 +95,10 @@ func TestHostProvidedCredsMissingProvided(t *testing.T) {
 	_, err := hostProvidedCreds(context.Background(), []byte(`
 credentials:
   tok:
-    source: provided
+    token:
+      source: provided
 `), nil)
-	if err == nil || !strings.Contains(err.Error(), "tok") {
+	if err == nil || !strings.Contains(err.Error(), testCredTok) {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -102,11 +107,46 @@ func TestHostProvidedCredsMissingFile(t *testing.T) {
 	_, err := hostProvidedCreds(context.Background(), []byte(`
 credentials:
   tok:
-    source: file
-    path: /no/such/agentcon-secret
+    token:
+      source: file
+      file: /no/such/agentcon-secret
 `), nil)
-	if err == nil || !strings.Contains(err.Error(), "tok") {
+	if err == nil || !strings.Contains(err.Error(), testCredTok) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestHostProvidedCredsMixedSlots(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret")
+	err := os.WriteFile(path, []byte(testFromFile+"\n"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := []byte(`
+credentials:
+  login:
+    username:
+      source: env
+      env: SMOKE_USER
+    password:
+      source: file
+      file: ` + path + `
+`)
+	t.Setenv("SMOKE_USER", "alice")
+	got, err := hostProvidedCreds(context.Background(), policy, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got["login.password"] != testFromFile {
+		t.Fatalf("provided %v", got)
+	}
+	env, err := hostEnvCreds(policy, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(env) != 1 || env["SMOKE_USER"] != "alice" {
+		t.Fatalf("env %v", env)
 	}
 }
 
@@ -114,15 +154,18 @@ func TestHostProvidedCredsSkipsEnvBitwardenAndSSH(t *testing.T) {
 	got, err := hostProvidedCreds(context.Background(), []byte(`
 credentials:
   envtok:
-    source: env
-    env: UNUSED
+    token:
+      source: env
+      env: UNUSED
   bw:
-    source: bitwarden
-    bitwarden:
+    token:
+      source: bitwarden
       email: user@example.com
       item: GitLab
+      path: $.login.password
   key:
-    source: ssh-agent
+    private_key:
+      source: ssh-agent
 `), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -134,19 +177,20 @@ credentials:
 
 func TestHostProvidedCredsKeyring(t *testing.T) {
 	keyring.MockInit()
-	err := keyring.Set(creds.KeyringService, "tok", "from-keyring")
+	err := keyring.Set(creds.KeyringService, testCredTok, "from-keyring")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got, err := hostProvidedCreds(context.Background(), []byte(`
 credentials:
   tok:
-    source: keyring
+    token:
+      source: keyring
 `), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["tok"] != "from-keyring" {
+	if got[testCredTok+".token"] != "from-keyring" {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -155,8 +199,9 @@ func TestHostSSHAuthSockUnused(t *testing.T) {
 	got, err := hostSSHAuthSock([]byte(`
 credentials:
   tok:
-    source: env
-    env: UNUSED
+    token:
+      source: env
+      env: UNUSED
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +216,8 @@ func TestHostSSHAuthSockMissingEnv(t *testing.T) {
 	_, err := hostSSHAuthSock([]byte(`
 credentials:
   key:
-    source: ssh-agent
+    private_key:
+      source: ssh-agent
 `))
 	if err == nil || (!strings.Contains(err.Error(), "SSH_AUTH_SOCK") && !strings.Contains(err.Error(), "ssh-agent")) {
 		t.Fatalf("got %v", err)
@@ -191,7 +237,8 @@ func TestHostSSHAuthSock(t *testing.T) {
 	got, err := hostSSHAuthSock([]byte(`
 credentials:
   key:
-    source: ssh-agent
+    private_key:
+      source: ssh-agent
 `))
 	if err != nil {
 		t.Fatal(err)

@@ -29,10 +29,10 @@ func upstreamOK(*Request) (*Response, error) { return &Response{Status: 200}, ni
 func loadRules(t *testing.T, yml string) *config.Service {
 	t.Helper()
 	cfg, err := config.Parse([]byte(`
-credentials: {gl: {source: keyring}}
+credentials: {gl: {token: {source: keyring}}}
 profiles:
   p:
-    services:
+    http:
       - name: gitlab
         hosts: [gitlab.com]
         credential: gl
@@ -40,7 +40,34 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	return cfg.Profiles["p"].Services[0]
+	return cfg.Profiles["p"].HTTP[0]
+}
+
+func TestUnmatchedTunnelSkipsCredential(t *testing.T) {
+	svc := loadRules(t, `
+        rules:
+          - action: allow
+            path: /allowed
+`)
+	h := Build([]Filter{NewRules(svc, nil).WithUnmatched(config.UnmatchedTunnel)}, func(req *Request) (*Response, error) {
+		if req.SkipCredential {
+			return &Response{Status: 204}, nil
+		}
+		return &Response{Status: 200}, nil
+	})
+	resp, _ := h(httpReq(t, "GET", "https://gitlab.com/allowed", nil))
+	if resp.Status != 200 || resp.Denial != nil {
+		t.Fatalf("allowed: %+v", resp)
+	}
+	resp, _ = h(httpReq(t, "GET", "https://gitlab.com/other", nil))
+	if resp.Status != 204 || resp.Denial != nil {
+		t.Fatalf("unmatched tunnel: %+v", resp)
+	}
+	h = Build([]Filter{NewRules(svc, nil).WithUnmatched(config.UnmatchedDeny)}, upstreamOK)
+	resp, _ = h(httpReq(t, "GET", "https://gitlab.com/other", nil))
+	if resp.Denial == nil {
+		t.Fatal("unmatched deny allowed")
+	}
 }
 
 func TestGitLabProjectScope(t *testing.T) {
@@ -211,11 +238,12 @@ func TestGitHubRepo(t *testing.T) {
 	svc := loadRules(t, `
         rules:
           - action: allow
-            github_repo: octo/hello
+            github_repo: [octo/hello, octo/world]
 `)
 	h := Build([]Filter{NewRules(svc, nil)}, upstreamOK)
 	for url, want := range map[string]bool{
 		"https://api.github.com/repos/octo/hello/pulls":      true,
+		"https://api.github.com/repos/octo/world/issues":     true,
 		"https://ghe.corp/api/v3/repos/Octo/Hello":           true,
 		"https://api.github.com/repos/octo/hello2":           false,
 		"https://github.com/octo/hello.git/git-upload-pack":  true,
@@ -227,6 +255,108 @@ func TestGitHubRepo(t *testing.T) {
 		if got := resp.Denial == nil; got != want {
 			t.Errorf("%s: allowed=%v want %v", url, got, want)
 		}
+	}
+}
+
+func TestGitHubSubpaths(t *testing.T) {
+	svc := loadRules(t, `
+        rules:
+          - action: allow
+            methods: [GET]
+            github_repo: [octo/hello]
+            github_subpaths: ["", "pulls/**"]
+          - action: allow
+            methods: [PUT]
+            github_repo: [octo/hello]
+            github_subpaths: ["pulls/*/merge"]
+`)
+	h := Build([]Filter{NewRules(svc, nil)}, upstreamOK)
+	for _, c := range []struct {
+		method, url string
+		allow       bool
+	}{
+		{"GET", "https://api.github.com/repos/octo/hello", true},
+		{"GET", "https://api.github.com/repos/octo/hello/pulls", true},
+		{"GET", "https://api.github.com/repos/octo/hello/pulls/1/comments", true},
+		{"GET", "https://api.github.com/repos/octo/hello/issues", false},
+		{"PUT", "https://api.github.com/repos/octo/hello/pulls/3/merge", true},
+		{"GET", "https://github.com/octo/hello.git/git-upload-pack", false},
+		{"PUT", "https://api.github.com/repos/octo/other/pulls/3/merge", false},
+	} {
+		resp, _ := h(httpReq(t, c.method, c.url, nil))
+		if got := resp.Denial == nil; got != c.allow {
+			t.Errorf("%s %s: allowed=%v want %v", c.method, c.url, got, c.allow)
+		}
+	}
+}
+
+func TestRuleFiltersRunOnlyOnMatch(t *testing.T) {
+	svc := loadRules(t, `
+        rules:
+          - action: allow
+            path: /allowed
+          - action: deny
+            path: /denied
+          - action: allow
+            path: /other
+`)
+	var ran []string
+	tag := func(name string) Filter {
+		return filterFunc(func(req *Request, next Handler) (*Response, error) {
+			ran = append(ran, name)
+			return next(req)
+		})
+	}
+	h := Build([]Filter{NewRules(svc, nil).WithRuleFilters([][]Filter{
+		{tag("allowed")},
+		{tag("denied")},
+		{tag("other")},
+	})}, upstreamOK)
+
+	ran = nil
+	resp, _ := h(httpReq(t, "GET", "https://gitlab.com/allowed", nil))
+	if resp.Denial != nil || strings.Join(ran, ",") != "allowed" {
+		t.Fatalf("allowed: denial=%+v ran=%v", resp.Denial, ran)
+	}
+	ran = nil
+	resp, _ = h(httpReq(t, "GET", "https://gitlab.com/denied", nil))
+	if resp.Denial == nil || len(ran) != 0 {
+		t.Fatalf("denied: denial=%+v ran=%v", resp.Denial, ran)
+	}
+	ran = nil
+	resp, _ = h(httpReq(t, "GET", "https://gitlab.com/other", nil))
+	if resp.Denial != nil || strings.Join(ran, ",") != "other" {
+		t.Fatalf("other: denial=%+v ran=%v", resp.Denial, ran)
+	}
+	ran = nil
+	resp, _ = h(httpReq(t, "GET", "https://gitlab.com/nope", nil))
+	if resp.Denial == nil || len(ran) != 0 {
+		t.Fatalf("default: denial=%+v ran=%v", resp.Denial, ran)
+	}
+}
+
+func TestRuleFiltersRunAfterAskYes(t *testing.T) {
+	svc := loadRules(t, `
+        rules:
+          - action: ask
+            methods: [PUT]
+`)
+	var ran int
+	tag := filterFunc(func(req *Request, next Handler) (*Response, error) {
+		ran++
+		return next(req)
+	})
+	answer := false
+	env := &Env{Approver: approverFunc(func(AskRequest) bool { return answer })}
+	h := Build([]Filter{NewRules(svc, env).WithRuleFilters([][]Filter{{tag}})}, upstreamOK)
+	resp, _ := h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
+	if resp.Denial == nil || ran != 0 {
+		t.Fatalf("ask no: denial=%+v ran=%d", resp.Denial, ran)
+	}
+	answer = true
+	resp, _ = h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
+	if resp.Denial != nil || ran != 1 {
+		t.Fatalf("ask yes: denial=%+v ran=%d", resp.Denial, ran)
 	}
 }
 

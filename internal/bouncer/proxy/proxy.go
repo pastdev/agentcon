@@ -138,7 +138,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if _, port := config.SplitHostPort(target); port == "" {
 		target = net.JoinHostPort(target, "443")
 	}
-	svc := prof.MatchService(target)
+	svc := prof.MatchHTTP(target)
 	if svc == nil && !prof.Tunnels(target) {
 		e := s.entry(sess, "http", "", "CONNECT "+target)
 		e.Decision, e.Reason, e.Status, e.DurationMS = "deny", "host not allowed by profile "+prof.Name, 403, time.Since(start).Milliseconds()
@@ -228,7 +228,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "agent-bouncer: session profile no longer exists", http.StatusForbidden)
 				return
 			}
-			svc := prof.MatchService(target)
+			svc := prof.MatchHTTP(target)
 			if svc == nil {
 				http.Error(w, "agent-bouncer: host is no longer an intercepted service", http.StatusForbidden)
 				return
@@ -276,7 +276,7 @@ func (s *Server) handleAbsolute(w http.ResponseWriter, r *http.Request) {
 	}
 	u := *r.URL
 	u.Host = hostForURL(hostport, "80")
-	if svc := prof.MatchService(hostport); svc != nil {
+	if svc := prof.MatchHTTP(hostport); svc != nil {
 		s.intercept(w, r, sess, prof, svc, &u)
 		return
 	}
@@ -329,7 +329,7 @@ func (s *Server) handleReverse(w http.ResponseWriter, r *http.Request) {
 	if _, port := config.SplitHostPort(target); port == "" {
 		target = net.JoinHostPort(target, "443")
 	}
-	svc := prof.MatchService(target)
+	svc := prof.MatchHTTP(target)
 	if svc == nil {
 		http.Error(w, "agent-bouncer: "+hostport+" is not a configured service", http.StatusForbidden)
 		return
