@@ -1,6 +1,7 @@
 package root
 
 import (
+	"github.com/pastdev/agentcon/cmd/agentcon/bouncer"
 	"github.com/pastdev/agentcon/cmd/agentcon/config"
 	"github.com/pastdev/agentcon/cmd/agentcon/run"
 	"github.com/pastdev/agentcon/cmd/agentcon/version"
@@ -32,6 +33,7 @@ func New() *cobra.Command {
 	config.Add(&cmd, loader)
 	cmd.AddCommand(version.New())
 	cmd.AddCommand(run.New(loader))
+	cmd.AddCommand(bouncer.New(loader))
 
 	return &cmd
 }

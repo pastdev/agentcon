@@ -1,0 +1,19 @@
+# Builtin tunnel hosts for the Cursor harness.
+# https://cursor.com/docs/enterprise/network-configuration
+# https://cursor.com/help/troubleshooting/network
+# https://cursor.com/docs/cloud-agent/self-hosted/my-machines
+harnesses:
+  cursor:
+    tunnel:
+      - cursor.com
+      - "*.cursor.com"
+      - "*.cursor.sh"
+      - "*.cursor-cdn.com"
+      - "*.cursorapi.com"
+      - "*.cursorvm.com"
+      - accounts.spacex.ai
+      - accounts.x.ai
+      - anysphere-binaries.s3.us-east-1.amazonaws.com
+      - agent-stores.s3.us-east-1.amazonaws.com
+      - cloud-agent-artifacts.s3.us-east-1.amazonaws.com
+      - cursor.blob.core.windows.net

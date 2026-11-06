@@ -8,6 +8,17 @@ import (
 
 type Runtime interface {
 	Run(ctx context.Context, spec Spec) error
+	Create(ctx context.Context, spec Spec) (string, error)
+	Start(ctx context.Context, id string) error
+	AttachStartWait(ctx context.Context, id string, spec Spec) error
+	CopyTo(ctx context.Context, id, dest string, tar io.Reader) error
+	Exec(ctx context.Context, id string, spec Exec) error
+	Inspect(ctx context.Context, id string) (Info, error)
+	Remove(ctx context.Context, id string, force bool) error
+	CreateNetwork(ctx context.Context, spec NetworkSpec) (string, error)
+	InspectNetwork(ctx context.Context, id string) (NetworkInfo, error)
+	ConnectNetwork(ctx context.Context, networkID, containerID string) error
+	RemoveNetwork(ctx context.Context, id string) error
 }
 
 type ExitError struct {
@@ -19,18 +30,60 @@ type Mount struct {
 	Target string
 }
 
+type Port struct {
+	HostIP        string
+	HostPort      string
+	ContainerPort string
+	Protocol      string
+}
+
+type NetworkSpec struct {
+	Name     string
+	Internal bool
+	Labels   map[string]string
+}
+
+type NetworkInfo struct {
+	ID     string
+	Name   string
+	Subnet string
+}
+
+type Endpoint struct {
+	IP string
+}
+
+type Info struct {
+	ID       string
+	Networks map[string]Endpoint
+}
+
+type Exec struct {
+	Cmd    []string
+	Env    []string
+	User   string
+	Detach bool
+}
+
 type Spec struct {
-	Image    string
-	User     string
-	GroupAdd []string
-	WorkDir  string
-	Env      []string
-	Mounts   []Mount
-	Args     []string
-	Stdin    io.Reader
-	Stdout   io.Writer
-	Stderr   io.Writer
-	TTY      bool
+	Name       string
+	Image      string
+	User       string
+	GroupAdd   []string
+	WorkDir    string
+	Env        []string
+	Mounts     []Mount
+	Args       []string
+	Entrypoint []string
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
+	TTY        bool
+	AutoRemove bool
+	Networks   []string
+	Ports      []Port
+	Labels     map[string]string
+	ExtraHosts []string
 }
 
 func (e *ExitError) Error() string {

@@ -26,6 +26,16 @@ It bind-mounts `root` at `/workspace` and starts the harness.
 Harness state is bind-mounted from the host to `/agent`.
 The container sets `AGENTCON_HOST_ROOT` to that host `root`.
 
+When a context has a `bouncer` section, `run` starts a sidecar next to the agent.
+The sidecar holds credentials and filters outbound HTTP.
+See [docs/bouncer-run.md](docs/bouncer-run.md) for the container layout and the equivalent Docker commands.
+
+Each harness has a builtin `tunnel` list (Cursor is embedded today).
+`agentcon config` prints it under `harnesses`.
+`run` copies that list onto root bouncer profiles for the selected harness.
+Add extra hosts on `profiles.<name>.tunnel` in the context bouncer config.
+Replacing `harnesses.<name>.tunnel` in agentcon config replaces the builtin list for that harness.
+
 ## Handoff scratch space
 
 Agents write host-side handoff scripts under `.agentcon/` at the project root.
