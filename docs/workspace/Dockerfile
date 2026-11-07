@@ -38,8 +38,12 @@ function mock_agent {
   exec "$@"
 }
 
-setup_user
-mock_agent "$@"
+function main {
+  setup_user
+  mock_agent "$@"
+}
+
+main "$@"
 EOF
 
 RUN chmod 0755 /entrypoint.sh

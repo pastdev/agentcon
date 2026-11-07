@@ -11,12 +11,6 @@ readonly XTRACE_LOG="${AGENTCON_XTRACE_LOG:-${CURSOR_STATE}/entrypoint.xtrace}"
 export HOME
 export AGENT_CLI_CREDENTIAL_STORE="${AGENT_CLI_CREDENTIAL_STORE:-file}"
 
-if [[ "${AGENTCON_XTRACE:-}" == "1" ]]; then
-  mkdir --parents "$(dirname "${XTRACE_LOG}")"
-  exec {BASH_XTRACEFD}>"${XTRACE_LOG}"
-  set -x
-fi
-
 function setup_user {
   printf '%s:%s:%s:%s:%s:%s:%s\n' \
     "${AGENT_USER}" \
@@ -94,8 +88,17 @@ function install_cursor {
   curl https://cursor.com/install -fsS | bash
 }
 
-setup_user
-source_profiles
-link_cursor_state
-install_cursor
-exec agent "$@"
+function main {
+  if [[ "${AGENTCON_XTRACE:-}" == "1" ]]; then
+    mkdir --parents "$(dirname "${XTRACE_LOG}")"
+    exec {BASH_XTRACEFD}>"${XTRACE_LOG}"
+    set -x
+  fi
+  setup_user
+  source_profiles
+  link_cursor_state
+  install_cursor
+  exec agent "$@"
+}
+
+main "$@"
