@@ -14,20 +14,21 @@ import (
 )
 
 var (
-	configPath   string
-	stateDir     string
-	fileFlag     string
-	contextFlag  string
-	stateFlag    string
-	contextName  string
-	homeDir      string
-	projectFlag  string
-	slugFlag     string
-	configLoader *pkgcfg.Loader
+	configPath     string
+	stateDir       string
+	fileFlag       string
+	contextNamePtr *string
+	stateFlag      string
+	contextName    string
+	homeDir        string
+	projectFlag    string
+	slugFlag       string
+	configLoader   *pkgcfg.Loader
 )
 
-func New(loader *pkgcfg.Loader) *cobra.Command {
+func New(loader *pkgcfg.Loader, contextFlag *string) *cobra.Command {
 	configLoader = loader
+	contextNamePtr = contextFlag
 	cmd := &cobra.Command{
 		Use:   "bouncer",
 		Short: "Credential broker sidecar and host control plane",
@@ -52,7 +53,6 @@ Host commands pick a live session by --slug, then --project, then cwd.`,
 		},
 	}
 	cmd.PersistentFlags().StringVar(&fileFlag, "file", "", "bouncer policy file or directory")
-	cmd.PersistentFlags().StringVar(&contextFlag, "context", "", "agentcon context whose bouncer section to use")
 	cmd.PersistentFlags().StringVar(&projectFlag, "project", "", "project path relative to the context root")
 	cmd.PersistentFlags().StringVar(&slugFlag, "slug", "", "session slug")
 	cmd.PersistentFlags().StringVar(&stateFlag, "state-dir", "", "bouncer state directory")
@@ -74,7 +74,7 @@ func resolve() error {
 		return fmt.Errorf("home directory: %w", err)
 	}
 	homeDir = home
-	contextName = contextFlag
+	contextName = flagContext()
 	stateDir = stateFlag
 
 	if fileFlag != "" {
@@ -93,7 +93,7 @@ func resolve() error {
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}
-		name := contextFlag
+		name := flagContext()
 		if name == "" {
 			name = cfg.DefaultContext
 		}
@@ -114,7 +114,7 @@ func resolve() error {
 		}
 	}
 
-	return fmt.Errorf("bouncer policy not set: add a bouncer section to the agentcon context or pass --file")
+	return fmt.Errorf("bouncer policy not set: set contexts.<name>.bouncer or pass --file")
 }
 
 func policyPath(flag string) (string, error) {
@@ -123,6 +123,13 @@ func policyPath(flag string) (string, error) {
 		return filepath.Join(flag, bouncercfg.FileName), nil
 	}
 	return flag, nil
+}
+
+func flagContext() string {
+	if contextNamePtr == nil {
+		return ""
+	}
+	return *contextNamePtr
 }
 
 func loadBouncerService() (*bouncercfg.Config, error) {

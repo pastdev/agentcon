@@ -30,15 +30,3 @@ func BouncerLoader(path string) func() (*bouncercfg.Config, error) {
 		return LoadBouncerService(path)
 	}
 }
-
-func (c *Config) bouncerService(name string) (*bouncercfg.Config, error) {
-	spec, ok := c.Contexts[name]
-	if !ok || spec.Bouncer == nil {
-		return nil, nil
-	}
-	err := spec.Bouncer.Init()
-	if err != nil {
-		return nil, fmt.Errorf("init bouncer config: %w", err)
-	}
-	return spec.Bouncer, nil
-}

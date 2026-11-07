@@ -2,8 +2,6 @@ package config
 
 import (
 	"testing"
-
-	"github.com/pastdev/agentcon/pkg/harness"
 )
 
 func TestLoaderEmpty(t *testing.T) {
@@ -15,17 +13,7 @@ func TestLoaderEmpty(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("expected config")
 	}
-	spec, ok := cfg.Harnesses[harness.Cursor]
-	if !ok || !containsHost(spec.Tunnel, testHostCursor) {
-		t.Fatalf("harnesses.cursor %v", spec.Tunnel)
+	if len(cfg.Agents) != 0 {
+		t.Fatalf("unexpected builtin agents %v", cfg.Agents)
 	}
-}
-
-func containsHost(hosts []string, want string) bool {
-	for _, h := range hosts {
-		if h == want {
-			return true
-		}
-	}
-	return false
 }

@@ -6,13 +6,29 @@ Bouncer policy and sidecar layout are in [bouncer.md](bouncer.md).
 
 ## CLI from source
 
+This tree has an `agentcons` snapshot script, the same idea as `askais`.
+It builds `agentcon-snapshot` under `~/.local/bin` and leaves a released `agentcon` alone.
+Symlink it onto your `PATH`:
+
 ```bash
-go build -o "${HOME}/.local/bin/agentcon" ./cmd/agentcon
+ln -s "$(pwd)/agentcons" "${HOME}/.local/bin/agentcons"
+```
+
+Then run from the project you want to open:
+
+```bash
+agentcons run
+```
+
+Rebuild when the source changes:
+
+```bash
+REBUILD=1 agentcons run
 ```
 
 `go run ./cmd/agentcon` works from a checkout.
 `go run` of this module from another directory does not.
-Build the binary, then invoke it so cwd stays the project you want to open.
+The snapshot binary keeps the caller's cwd.
 
 ## Tests and lint
 
@@ -24,16 +40,22 @@ golangci-lint run
 ## Image
 
 A context may use any Linux image that honors the workspace contract in the [README](../README.md).
-This tree ships one implementation.
+This tree does not ship a product image.
+[docs/cursor/image](cursor/image) is a maintained Cursor example.
 
 ```bash
-docker build --progress plain --tag pastdev.com/agentcon:latest image/base/
+docker build --progress plain --tag pastdev.com/agentcon-cursor:latest docs/cursor/image
 ```
 
-That entrypoint prepares a writable home for an arbitrary container UID, links harness state under `/agent`, and starts the harness.
+Copy that tree into the config directory for a real agent.
+The [README](../README.md) getting-started path does that copy and the YAML.
+Set `build.context` with `{{relativeDir "cursor"}}` so it resolves against that file before configs merge.
+When `build` is set, `run` always builds and relies on the daemon cache.
+Build progress is logged at info.
+
 When bouncer is enabled, `run` starts the sidecar from `registry.access.redhat.com/ubi10/ubi-minimal:10.2` and replaces the entrypoint with a copied `agentcon` binary.
 Entrypoint xtrace is off unless `AGENTCON_XTRACE=1`.
-When that is set, bash writes the trace to `/agent/<harness>/entrypoint.xtrace` (host `~/.cursor/entrypoint.xtrace` for Cursor).
+When that is set, the Cursor example writes the trace to `/agent/cursor/entrypoint.xtrace` (host `~/.cursor/entrypoint.xtrace`).
 Override the path with `AGENTCON_XTRACE_LOG`.
 
 ## Go layout

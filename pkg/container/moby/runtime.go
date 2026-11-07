@@ -88,6 +88,11 @@ type apiClient interface {
 		networkID string,
 		options client.NetworkRemoveOptions,
 	) (client.NetworkRemoveResult, error)
+	ImageBuild(
+		ctx context.Context,
+		buildContext io.Reader,
+		options client.ImageBuildOptions,
+	) (client.ImageBuildResult, error)
 	Close() error
 }
 

@@ -1,6 +1,6 @@
 # Bouncer
 
-The [README](../README.md) covers enabling bouncer and a minimal GitHub overlay.
+The [README](../README.md) getting-started path ends with a GitHub overlay you can add after a session already starts.
 This page is policy shape, credentials, sessions, and the sidecar layout `agentcon run` implements.
 
 `agentcon bouncer --help` lists flags.
@@ -33,9 +33,9 @@ A filter may `allow`, `deny`, or `ask`.
 Put files under `ts/` next to the config.
 `agentcon bouncer check` compiles them.
 
-Cursor product hosts are unioned onto root profiles from `pkg/harness/<name>/default.yml`.
-`agentcon config` prints that list under `harnesses`.
-Setting `harnesses.cursor.tunnel` in your own config replaces the builtin list.
+Agent `tunnel` hosts are unioned onto root profiles.
+`agentcon config` prints that list under `agents`.
+There is no builtin host list in the binary.
 
 ## Credentials
 
@@ -227,7 +227,7 @@ docker create \
   --env http_proxy="${PROXY}" \
   --env NO_PROXY=localhost,127.0.0.1,::1 \
   --env no_proxy=localhost,127.0.0.1,::1 \
-  pastdev.com/agentcon:latest
+  pastdev.com/agentcon-cursor:latest
 
 docker cp agent.tar agentcon-github-com-example-agentcon-deadbeef-agent:/
 docker start -ai agentcon-github-com-example-agentcon-deadbeef-agent
@@ -241,25 +241,27 @@ The SSH config `ProxyCommand` is `agentcon bouncer ssh-connect`.
 Extra hosts belong on the sidecar only.
 The agent reaches the outside through the proxy.
 
-## Harness tunnels
+## Agent tunnels
 
-Builtin harness host lists live in `pkg/harness/<name>/default.yml` and load as the first config source.
-`run` unions only the active harness list onto each bouncer profile that does not `extends` another profile.
+`run` unions the active agent's `tunnel` list onto each bouncer profile that does not `extends` another profile.
 Child profiles inherit that list.
 
-The active harness is `--harness`, then `$HARNESS`, then `contexts.<name>.harness`, then `cursor`.
+The active agent is `--agent`, then `contexts.<name>.agent`.
 
-If a vendor host is missing, add it on the profile:
+If a vendor host is missing, add it on the agent or on the profile:
 
 ```yaml
-contexts:
-  git:
-    bouncer:
-      profiles:
-        locked-down:
-          unmatched: deny
-          tunnel:
-            - extra.vendor.example
+agents:
+  cursor:
+    tunnel:
+      - extra.vendor.example
+bouncers:
+  github:
+    profiles:
+      locked-down:
+        unmatched: deny
+        tunnel:
+          - extra.vendor.example
 ```
 
-When the gap belongs in the product, add it to `pkg/harness/<name>/default.yml`.
+A Cursor example list is in [cursor.md](cursor.md).

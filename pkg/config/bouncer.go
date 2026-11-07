@@ -7,7 +7,6 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
-	"github.com/pastdev/agentcon/pkg/harness"
 	"github.com/pastdev/agentcon/pkg/run"
 	"gopkg.in/yaml.v3"
 )
@@ -17,38 +16,52 @@ func BouncerLayoutDir(home, context string) string {
 	return filepath.Join(home, ".local", "state", "agentcon", running.FileName(context), "bouncer")
 }
 
-func (c *Config) MaterializeBouncer(name, active string) (*run.BouncerSetup, error) {
-	spec, ok := c.Contexts[name]
-	if !ok || spec.Bouncer == nil {
+func (c *Config) MaterializeBouncer(contextName, bouncerName string, agent AgentSpec) (*run.BouncerSetup, error) {
+	if bouncerName == "" {
+		return nil, nil
+	}
+	doc, err := c.bouncerByName(bouncerName)
+	if err != nil {
+		return nil, err
+	}
+	if doc == nil {
 		return nil, nil
 	}
 
-	_, err := c.bouncerService(name)
-	if err != nil {
-		return nil, fmt.Errorf("bouncer config: %w", err)
-	}
-	policyDoc := withHarnessTunnel(spec.Bouncer, c.harnessTunnel(c.activeHarness(name, active)))
+	policyDoc := withAgentTunnel(doc, agent.Tunnel)
 	policy, err := yaml.Marshal(policyDoc)
 	if err != nil {
 		return nil, fmt.Errorf("encode bouncer config: %w", err)
 	}
-	policy = bouncercfg.RewriteTSPaths(policy, c.OverlayDirs)
-	files, err := bouncercfg.CollectTSFiles(c.OverlayDirs)
+	overlayDirs := []string{}
+	if c != nil {
+		overlayDirs = c.OverlayDirs
+	}
+	policy = bouncercfg.RewriteTSPaths(policy, overlayDirs)
+	files, err := bouncercfg.CollectTSFiles(overlayDirs)
 	if err != nil {
 		return nil, fmt.Errorf("collect ts files: %w", err)
 	}
 
 	return &run.BouncerSetup{
-		ContextName: name,
+		ContextName: contextName,
 		PolicyYAML:  policy,
 		TSFiles:     files,
 	}, nil
 }
 
 // WriteBouncer writes the folder-layer layout for a context onto dir.
-// It returns the policy file path, or "" when the context has no bouncer section.
+// It returns the policy file path, or "" when the context has no bouncer.
 func (c *Config) WriteBouncer(name, dir string) (string, error) {
-	setup, err := c.MaterializeBouncer(name, "")
+	spec, ok := c.Contexts[name]
+	if !ok {
+		return "", nil
+	}
+	agent := AgentSpec{}
+	if spec.Agent != "" && c.Agents != nil {
+		agent = c.Agents[spec.Agent]
+	}
+	setup, err := c.MaterializeBouncer(name, spec.Bouncer, agent)
 	if err != nil {
 		return "", err
 	}
@@ -62,24 +75,25 @@ func (c *Config) WriteBouncer(name, dir string) (string, error) {
 	return filepath.Join(dir, bouncercfg.FileName), nil
 }
 
-func (c *Config) activeHarness(name, override string) string {
-	if override != "" {
-		return override
+func (c *Config) bouncerByName(name string) (*bouncercfg.Config, error) {
+	if name == "" {
+		return nil, nil
 	}
-	if spec, ok := c.Contexts[name]; ok && spec.Harness != "" {
-		return spec.Harness
+	if c == nil || c.Bouncers == nil {
+		return nil, fmt.Errorf("unknown bouncer %q", name)
 	}
-	return harness.Cursor
+	doc, ok := c.Bouncers[name]
+	if !ok || doc == nil {
+		return nil, fmt.Errorf("unknown bouncer %q", name)
+	}
+	err := doc.Init()
+	if err != nil {
+		return nil, fmt.Errorf("init bouncer config: %w", err)
+	}
+	return doc, nil
 }
 
-func (c *Config) harnessTunnel(name string) []string {
-	if c == nil || c.Harnesses == nil {
-		return nil
-	}
-	return c.Harnesses[name].Tunnel
-}
-
-func withHarnessTunnel(doc *bouncercfg.Config, hosts []string) *bouncercfg.Config {
+func withAgentTunnel(doc *bouncercfg.Config, hosts []string) *bouncercfg.Config {
 	if doc == nil || len(hosts) == 0 || len(doc.Profiles) == 0 {
 		return doc
 	}

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
-	"github.com/pastdev/agentcon/pkg/harness"
 	cobracfg "github.com/pastdev/configloader/pkg/cobra"
 	cfgldr "github.com/pastdev/configloader/pkg/config"
 	"github.com/pastdev/configloader/pkg/xdg"
@@ -17,6 +16,8 @@ import (
 const (
 	DirectoryConfigDir = "./agentcon.d"
 	SystemConfigDir    = "/etc/agentcon.d"
+	defaultDockerfile  = "Dockerfile"
+	agentImagePrefix   = "agentcon/"
 )
 
 func userConfigDir() string {
@@ -46,23 +47,40 @@ func resolveOverlayDir(path string) string {
 }
 
 type Config struct {
-	DefaultContext string                 `json:"default_context" yaml:"default_context"`
-	Harnesses      map[string]HarnessSpec `json:"harnesses,omitempty" yaml:"harnesses,omitempty"`
-	Contexts       map[string]ContextSpec `json:"contexts" yaml:"contexts"`
-	OverlayDirs    []string               `json:"-" yaml:"-"`
+	DefaultContext string                        `json:"default_context" yaml:"default_context"`
+	Agents         map[string]AgentSpec          `json:"agents,omitempty" yaml:"agents,omitempty"`
+	Bouncers       map[string]*bouncercfg.Config `json:"bouncers,omitempty" yaml:"bouncers,omitempty"`
+	Contexts       map[string]ContextSpec        `json:"contexts" yaml:"contexts"`
+	OverlayDirs    []string                      `json:"-" yaml:"-"`
 }
 
-// HarnessSpec is builtin or user-overlaid metadata for one agent harness.
-type HarnessSpec struct {
-	Tunnel []string `json:"tunnel,omitempty" yaml:"tunnel,omitempty"`
+// AgentSpec is one named agent image, its binds, and the hosts it must reach.
+type AgentSpec struct {
+	Image  string      `json:"image,omitempty" yaml:"image,omitempty"`
+	Build  *BuildSpec  `json:"build,omitempty" yaml:"build,omitempty"`
+	Mounts []MountSpec `json:"mounts,omitempty" yaml:"mounts,omitempty"`
+	Tunnel []string    `json:"tunnel,omitempty" yaml:"tunnel,omitempty"`
 }
 
-// ContextSpec is one named workspace in the agentcon config document.
+// BuildSpec is a Compose-style image build.
+// Context is relative to the config directory that supplied it, or absolute / ~.
+type BuildSpec struct {
+	Context    string `json:"context" yaml:"context"`
+	Dockerfile string `json:"dockerfile,omitempty" yaml:"dockerfile,omitempty"`
+}
+
+// MountSpec is a host-to-container bind for an agent.
+// Source is relative to the host home unless it is absolute or starts with ~.
+type MountSpec struct {
+	Source string `json:"source" yaml:"source"`
+	Target string `json:"target" yaml:"target"`
+}
+
+// ContextSpec binds an agent, a workspace root, and an optional bouncer.
 type ContextSpec struct {
-	Image   string             `json:"image" yaml:"image"`
-	Root    string             `json:"root" yaml:"root"`
-	Harness string             `json:"harness,omitempty" yaml:"harness,omitempty"`
-	Bouncer *bouncercfg.Config `json:"bouncer,omitempty" yaml:"bouncer,omitempty"`
+	Agent   string `json:"agent,omitempty" yaml:"agent,omitempty"`
+	Root    string `json:"root" yaml:"root"`
+	Bouncer string `json:"bouncer,omitempty" yaml:"bouncer,omitempty"`
 }
 
 type Loader struct {
@@ -118,17 +136,12 @@ func NewLoader() *Loader {
 	userDir := userConfigDir()
 	overlayDirs := []string{resolveOverlayDir(SystemConfigDir)}
 	unmarshal := valueTemplateUnmarshal()
-	var sources []cfgldr.SourceLoader
-	for _, data := range harness.DefaultYAML() {
-		sources = append(sources, cfgldr.RawSource{
-			Data:      data,
+	sources := []cfgldr.SourceLoader{
+		cfgldr.DirSource{
+			Path:      SystemConfigDir,
 			Unmarshal: unmarshal,
-		})
+		},
 	}
-	sources = append(sources, cfgldr.DirSource{
-		Path:      SystemConfigDir,
-		Unmarshal: unmarshal,
-	})
 	if userDir != "" {
 		overlayDirs = append(overlayDirs, resolveOverlayDir(userDir))
 		sources = append(sources, cfgldr.DirSource{

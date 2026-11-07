@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
-	"github.com/pastdev/agentcon/pkg/harness"
 	"gopkg.in/yaml.v3"
 )
 
@@ -15,6 +14,7 @@ func TestMaterializeBouncer(t *testing.T) {
 	type testCase struct {
 		cfg        Config
 		name       string
+		bouncer    string
 		home       string
 		wantNil    bool
 		wantErr    string
@@ -23,7 +23,7 @@ func TestMaterializeBouncer(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		setup, err := tc.cfg.MaterializeBouncer(tc.name, "")
+		setup, err := tc.cfg.MaterializeBouncer(tc.name, tc.bouncer, AgentSpec{})
 		if tc.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("got %v, want %q", err, tc.wantErr)
@@ -78,7 +78,7 @@ func TestMaterializeBouncer(t *testing.T) {
 		tester(t, testCase{
 			cfg: Config{
 				Contexts: map[string]ContextSpec{
-					testContextPastdev: {Image: testImagePastdev, Root: t.TempDir()},
+					testContextPastdev: {Agent: testAgentCursor, Root: t.TempDir()},
 				},
 			},
 			name:    testContextPastdev,
@@ -86,11 +86,12 @@ func TestMaterializeBouncer(t *testing.T) {
 		})
 	})
 
-	t.Run("unknown context", func(t *testing.T) {
+	t.Run("unknown bouncer", func(t *testing.T) {
 		tester(t, testCase{
 			cfg:     Config{Contexts: map[string]ContextSpec{}},
 			name:    testContextPastdev,
-			wantNil: true,
+			bouncer: testBouncerGithub,
+			wantErr: `unknown bouncer "github"`,
 		})
 	})
 
@@ -98,23 +99,27 @@ func TestMaterializeBouncer(t *testing.T) {
 		tester(t, testCase{
 			cfg: Config{
 				OverlayDirs: []string{overlay},
-				Contexts: map[string]ContextSpec{
-					testContextPastdev: {
-						Image: testImagePastdev,
-						Root:  t.TempDir(),
-						Bouncer: &bouncercfg.Config{
-							Listen: testBouncerListen,
-							Dir:    overlay,
-							Profiles: map[string]*bouncercfg.Profile{
-								"default": {
-									Filters: []bouncercfg.FilterRef{{Path: filter}},
-								},
+				Bouncers: map[string]*bouncercfg.Config{
+					testBouncerGithub: {
+						Listen: testBouncerListen,
+						Dir:    overlay,
+						Profiles: map[string]*bouncercfg.Profile{
+							"default": {
+								Filters: []bouncercfg.FilterRef{{Path: filter}},
 							},
 						},
 					},
 				},
+				Contexts: map[string]ContextSpec{
+					testContextPastdev: {
+						Agent:   testAgentCursor,
+						Root:    t.TempDir(),
+						Bouncer: testBouncerGithub,
+					},
+				},
 			},
 			name:       testContextPastdev,
+			bouncer:    testBouncerGithub,
 			home:       home,
 			wantListen: testBouncerListen,
 			wantTS:     "filters/deny.ts",
@@ -124,19 +129,23 @@ func TestMaterializeBouncer(t *testing.T) {
 	t.Run("invalid policy", func(t *testing.T) {
 		tester(t, testCase{
 			cfg: Config{
+				Bouncers: map[string]*bouncercfg.Config{
+					testBouncerGithub: {
+						Credentials: map[string]*bouncercfg.Credential{
+							"gl": {Token: &bouncercfg.ValueSource{Source: "command"}},
+						},
+					},
+				},
 				Contexts: map[string]ContextSpec{
 					testContextPastdev: {
-						Image: testImagePastdev,
-						Root:  t.TempDir(),
-						Bouncer: &bouncercfg.Config{
-							Credentials: map[string]*bouncercfg.Credential{
-								"gl": {Token: &bouncercfg.ValueSource{Source: "command"}},
-							},
-						},
+						Agent:   testAgentCursor,
+						Root:    t.TempDir(),
+						Bouncer: testBouncerGithub,
 					},
 				},
 			},
 			name:    testContextPastdev,
+			bouncer: testBouncerGithub,
 			wantErr: "source command requires command",
 		})
 	})
@@ -205,13 +214,16 @@ func TestWriteBouncer(t *testing.T) {
 		tester(t, testCase{
 			cfg: Config{
 				OverlayDirs: []string{overlay},
+				Bouncers: map[string]*bouncercfg.Config{
+					testBouncerGithub: {
+						Listen: testBouncerListen,
+					},
+				},
 				Contexts: map[string]ContextSpec{
 					testContextPastdev: {
-						Image: testImagePastdev,
-						Root:  t.TempDir(),
-						Bouncer: &bouncercfg.Config{
-							Listen: testBouncerListen,
-						},
+						Agent:   testAgentCursor,
+						Root:    t.TempDir(),
+						Bouncer: testBouncerGithub,
 					},
 				},
 			},
@@ -225,7 +237,7 @@ func TestWriteBouncer(t *testing.T) {
 		tester(t, testCase{
 			cfg: Config{
 				Contexts: map[string]ContextSpec{
-					testContextPastdev: {Image: testImagePastdev, Root: t.TempDir()},
+					testContextPastdev: {Agent: testAgentCursor, Root: t.TempDir()},
 				},
 			},
 			name:      testContextPastdev,
@@ -296,33 +308,37 @@ func TestLoadBouncerService(t *testing.T) {
 	})
 }
 
-func TestMaterializeBouncerHarnessTunnel(t *testing.T) {
-	cfg := Config{
-		Harnesses: map[string]HarnessSpec{
-			harness.Cursor: {Tunnel: []string{testHostCursor, testHostCursorStar}},
-		},
-		Contexts: map[string]ContextSpec{
-			testContextPastdev: {
-				Image: testImagePastdev,
-				Root:  t.TempDir(),
-				Bouncer: &bouncercfg.Config{
-					Listen: testBouncerListen,
-					Profiles: map[string]*bouncercfg.Profile{
-						testProfileDefault: {
-							Unmatched: bouncercfg.UnmatchedDeny,
-							Tunnel:    []string{testHostExtra},
-						},
-						testProfileLocked: {
-							Extends:   testProfileDefault,
-							Unmatched: bouncercfg.UnmatchedDeny,
-						},
-					},
-				},
+func TestMaterializeBouncerAgentTunnel(t *testing.T) {
+	doc := &bouncercfg.Config{
+		Listen: testBouncerListen,
+		Profiles: map[string]*bouncercfg.Profile{
+			testProfileDefault: {
+				Unmatched: bouncercfg.UnmatchedDeny,
+				Tunnel:    []string{testHostExtra},
+			},
+			testProfileLocked: {
+				Extends:   testProfileDefault,
+				Unmatched: bouncercfg.UnmatchedDeny,
 			},
 		},
 	}
-	orig := append([]string{}, cfg.Contexts[testContextPastdev].Bouncer.Profiles[testProfileDefault].Tunnel...)
-	setup, err := cfg.MaterializeBouncer(testContextPastdev, "")
+	cfg := Config{
+		Agents: map[string]AgentSpec{
+			testAgentCursor: {Image: testImagePastdev, Tunnel: []string{testHostCursor, testHostCursorStar}},
+		},
+		Bouncers: map[string]*bouncercfg.Config{
+			testBouncerGithub: doc,
+		},
+		Contexts: map[string]ContextSpec{
+			testContextPastdev: {
+				Agent:   testAgentCursor,
+				Root:    t.TempDir(),
+				Bouncer: testBouncerGithub,
+			},
+		},
+	}
+	orig := append([]string{}, doc.Profiles[testProfileDefault].Tunnel...)
+	setup, err := cfg.MaterializeBouncer(testContextPastdev, testBouncerGithub, cfg.Agents[testAgentCursor])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,32 +357,34 @@ func TestMaterializeBouncerHarnessTunnel(t *testing.T) {
 	if containsHost(policy.Profiles[testProfileLocked].Tunnel, testHostCursor) {
 		t.Fatalf("child should inherit, not copy: %v", policy.Profiles[testProfileLocked].Tunnel)
 	}
-	if !equalHosts(cfg.Contexts[testContextPastdev].Bouncer.Profiles[testProfileDefault].Tunnel, orig) {
+	if !equalHosts(doc.Profiles[testProfileDefault].Tunnel, orig) {
 		t.Fatal("materialize mutated source tunnel")
 	}
 }
 
-func TestMaterializeBouncerIgnoresOtherHarness(t *testing.T) {
+func TestMaterializeBouncerUsesSelectedAgentTunnel(t *testing.T) {
 	cfg := Config{
-		Harnesses: map[string]HarnessSpec{
-			harness.Cursor:    {Tunnel: []string{testHostCursor}},
-			testHarnessClaude: {Tunnel: []string{testHostAnthropic}},
+		Agents: map[string]AgentSpec{
+			testAgentCursor: {Image: testImagePastdev, Tunnel: []string{testHostCursor}},
+			testAgentClaude: {Image: testImageOther, Tunnel: []string{testHostAnthropic}},
 		},
-		Contexts: map[string]ContextSpec{
-			testContextPastdev: {
-				Image:   testImagePastdev,
-				Root:    t.TempDir(),
-				Harness: testHarnessClaude,
-				Bouncer: &bouncercfg.Config{
-					Listen: testBouncerListen,
-					Profiles: map[string]*bouncercfg.Profile{
-						testProfileDefault: {Unmatched: bouncercfg.UnmatchedDeny},
-					},
+		Bouncers: map[string]*bouncercfg.Config{
+			testBouncerGithub: {
+				Listen: testBouncerListen,
+				Profiles: map[string]*bouncercfg.Profile{
+					testProfileDefault: {Unmatched: bouncercfg.UnmatchedDeny},
 				},
 			},
 		},
+		Contexts: map[string]ContextSpec{
+			testContextPastdev: {
+				Agent:   testAgentClaude,
+				Root:    t.TempDir(),
+				Bouncer: testBouncerGithub,
+			},
+		},
 	}
-	setup, err := cfg.MaterializeBouncer(testContextPastdev, "")
+	setup, err := cfg.MaterializeBouncer(testContextPastdev, testBouncerGithub, cfg.Agents[testAgentClaude])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +395,7 @@ func TestMaterializeBouncerIgnoresOtherHarness(t *testing.T) {
 	}
 	got := policy.Profiles[testProfileDefault].Tunnel
 	if containsHost(got, testHostCursor) {
-		t.Fatalf("cursor hosts on claude harness: %v", got)
+		t.Fatalf("cursor hosts on claude agent: %v", got)
 	}
 	if !containsHost(got, testHostAnthropic) {
 		t.Fatalf("missing claude tunnel %v", got)
@@ -394,6 +412,15 @@ func equalHosts(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func containsHost(hosts []string, want string) bool {
+	for _, h := range hosts {
+		if h == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBouncerLayoutDir(t *testing.T) {

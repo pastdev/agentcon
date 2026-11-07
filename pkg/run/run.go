@@ -10,12 +10,11 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/container"
+	"github.com/pastdev/agentcon/pkg/log"
 )
 
 const (
 	groupRoot           = "0"
-	harnessCursor       = "cursor"
-	harnessCursorMount  = "/agent/cursor"
 	hostRootEnv         = "AGENTCON_HOST_ROOT"
 	xtraceEnv           = "AGENTCON_XTRACE"
 	workspaceMountPoint = "/workspace"
@@ -43,13 +42,21 @@ type BouncerSetup struct {
 	TSFiles     map[string]string
 }
 
+type ImageBuild struct {
+	Context    string
+	Dockerfile string
+	Tags       []string
+}
+
 type Request struct {
 	Image   string
+	Build   *ImageBuild
+	Mounts  []container.Mount
 	Root    string
 	Cwd     string
 	Home    string
 	User    string
-	Harness string
+	Agent   string
 	Args    []string
 	TTY     bool
 	Stdin   io.Reader
@@ -88,6 +95,20 @@ func Run(ctx context.Context, req Request) error {
 		return err
 	}
 
+	if req.Build != nil {
+		out := log.InfoWriter()
+		err = req.Runtime.Build(ctx, container.Build{
+			Context:    req.Build.Context,
+			Dockerfile: req.Build.Dockerfile,
+			Tags:       req.Build.Tags,
+			Output:     out,
+		})
+		out.Flush()
+		if err != nil {
+			return fmt.Errorf("build image: %w", err)
+		}
+	}
+
 	spec, err := specFrom(req)
 	if err != nil {
 		return fmt.Errorf("container spec: %w", err)
@@ -115,12 +136,12 @@ func Run(ctx context.Context, req Request) error {
 
 func prepareHost(spec container.Spec) error {
 	for _, m := range spec.Mounts {
-		if m.Target != harnessCursorMount {
+		if m.Source == "" || m.Target == workspaceMountPoint {
 			continue
 		}
 		err := os.MkdirAll(m.Source, 0o700)
 		if err != nil {
-			return fmt.Errorf("create harness dir: %w", err)
+			return fmt.Errorf("create mount dir %s: %w", m.Source, err)
 		}
 	}
 	return nil
@@ -133,11 +154,6 @@ func specFrom(req Request) (container.Spec, error) {
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		rel = "."
-	}
-
-	harness := req.Harness
-	if harness == "" {
-		harness = harnessCursor
 	}
 
 	spec := container.Spec{
@@ -161,20 +177,7 @@ func specFrom(req Request) (container.Spec, error) {
 		spec.Name = running.ResourceName(req.Project, req.Slug, roleAgent)
 		spec.Labels = sessionLabels(req.Context, req.Project, req.Slug, roleAgent)
 	}
-
-	if len(req.Entrypoint) > 0 {
-		return spec, nil
-	}
-
-	switch harness {
-	case harnessCursor:
-		spec.Mounts = append(spec.Mounts, container.Mount{
-			Source: filepath.Join(req.Home, ".cursor"),
-			Target: harnessCursorMount,
-		})
-	default:
-		return container.Spec{}, fmt.Errorf("unsupported harness %q", harness)
-	}
+	spec.Mounts = append(spec.Mounts, req.Mounts...)
 
 	return spec, nil
 }

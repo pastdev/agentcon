@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"crypto"
 	"encoding/pem"
 	"errors"
@@ -83,7 +84,7 @@ func unlockSSHKey(pemData string, prompt func(name string) (string, error), name
 	return "", fmt.Errorf("ssh key passphrase rejected")
 }
 
-func readSSHKeyPassphrase(req Request, name string) (string, error) {
+func readSSHKeyPassphrase(ctx context.Context, req Request, name string) (string, error) {
 	fd := -1
 	if f, ok := req.Stdin.(*os.File); ok {
 		fd = int(f.Fd())
@@ -92,7 +93,7 @@ func readSSHKeyPassphrase(req Request, name string) (string, error) {
 		return "", fmt.Errorf("encrypted ssh key %s needs a passphrase (run from a terminal)", name)
 	}
 	_, _ = fmt.Fprintf(req.Stderr, "SSH key passphrase for %s: ", name)
-	pw, err := term.ReadPassword(fd)
+	pw, err := readSecret(ctx, fd)
 	_, _ = fmt.Fprintln(req.Stderr)
 	if err != nil {
 		return "", fmt.Errorf("read ssh key passphrase: %w", err)

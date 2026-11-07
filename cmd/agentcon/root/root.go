@@ -14,6 +14,7 @@ import (
 func New() *cobra.Command {
 	var logFormat string
 	var logLevel string
+	var contextName string
 
 	cmd := cobra.Command{
 		Use:   "agentcon",
@@ -28,12 +29,13 @@ func New() *cobra.Command {
 
 	cmd.PersistentFlags().StringVar(&logFormat, "log-format", "pretty", "log format (pretty|json)")
 	cmd.PersistentFlags().StringVar(&logLevel, "log", "info", "log level")
+	cmd.PersistentFlags().StringVar(&contextName, "context", "", "named context (default: default_context)")
 
 	loader := pkgcfg.NewLoader()
 	config.Add(&cmd, loader)
 	cmd.AddCommand(version.New())
-	cmd.AddCommand(run.New(loader))
-	cmd.AddCommand(bouncer.New(loader))
+	cmd.AddCommand(run.New(loader, &contextName))
+	cmd.AddCommand(bouncer.New(loader, &contextName))
 
 	return &cmd
 }

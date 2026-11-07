@@ -4,8 +4,8 @@ RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked \
     <<'EOF'
 set -exo pipefail
 dnf install --assumeyes --setopt=keepcache=1 git tar gzip findutils
-mkdir --parents /agent/cursor
-chmod g=u /etc/passwd /home /agent/cursor
+mkdir --parents /agent/cursor /agent/cursor-config
+chmod g=u /etc/passwd /home /agent/cursor /agent/cursor-config
 EOF
 
 COPY contrib/ /

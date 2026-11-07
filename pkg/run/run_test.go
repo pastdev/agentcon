@@ -22,7 +22,8 @@ const (
 )
 
 type captureRuntime struct {
-	spec container.Spec
+	spec  container.Spec
+	build container.Build
 }
 
 func (c *captureRuntime) Run(_ context.Context, spec container.Spec) error {
@@ -57,6 +58,10 @@ func (c *captureRuntime) ConnectNetwork(context.Context, string, string) error {
 	return errUnused
 }
 func (c *captureRuntime) RemoveNetwork(context.Context, string) error { return errUnused }
+func (c *captureRuntime) Build(_ context.Context, spec container.Build) error {
+	c.build = spec
+	return nil
+}
 
 func TestRunBuildsSpec(t *testing.T) {
 	root := t.TempDir()
@@ -68,8 +73,12 @@ func TestRunBuildsSpec(t *testing.T) {
 	}
 
 	rt := &captureRuntime{}
+	cursorMount := filepath.Join(home, ".cursor")
 	err = Run(context.Background(), Request{
-		Image:   testImage,
+		Image: testImage,
+		Mounts: []container.Mount{
+			{Source: cursorMount, Target: "/agent/cursor"},
+		},
 		Root:    root,
 		Cwd:     cwd,
 		Home:    home,
@@ -104,11 +113,10 @@ func TestRunBuildsSpec(t *testing.T) {
 	if rt.spec.Mounts[0].Source != root || rt.spec.Mounts[0].Target != workspaceMountPoint {
 		t.Fatalf("workspace mount %v", rt.spec.Mounts[0])
 	}
-	wantCursor := filepath.Join(home, ".cursor")
-	if rt.spec.Mounts[1].Source != wantCursor || rt.spec.Mounts[1].Target != harnessCursorMount {
+	if rt.spec.Mounts[1].Source != cursorMount || rt.spec.Mounts[1].Target != "/agent/cursor" {
 		t.Fatalf("cursor mount %v", rt.spec.Mounts[1])
 	}
-	if _, statErr := os.Stat(wantCursor); statErr != nil {
+	if _, statErr := os.Stat(cursorMount); statErr != nil {
 		t.Fatalf("cursor dir: %v", statErr)
 	}
 	if len(rt.spec.Args) != 1 || rt.spec.Args[0] != "--help" {
@@ -177,7 +185,37 @@ func TestFillSessionIdentity(t *testing.T) {
 	}
 }
 
-func TestRunEntrypointSkipsHarnessMount(t *testing.T) {
+func TestRunBuildsImageBeforeStart(t *testing.T) {
+	root := t.TempDir()
+	rt := &captureRuntime{}
+	err := Run(context.Background(), Request{
+		Image: testImage,
+		Build: &ImageBuild{
+			Context:    root,
+			Dockerfile: "Dockerfile",
+			Tags:       []string{testImage},
+		},
+		Root:    root,
+		Cwd:     root,
+		Home:    t.TempDir(),
+		User:    testUser,
+		Runtime: rt,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rt.build.Context != root || rt.build.Dockerfile != "Dockerfile" {
+		t.Fatalf("build %+v", rt.build)
+	}
+	if len(rt.build.Tags) != 1 || rt.build.Tags[0] != testImage {
+		t.Fatalf("tags %v", rt.build.Tags)
+	}
+	if rt.spec.Image != testImage {
+		t.Fatalf("image %q", rt.spec.Image)
+	}
+}
+
+func TestRunWithoutAgentMounts(t *testing.T) {
 	root := t.TempDir()
 	rt := &captureRuntime{}
 	err := Run(context.Background(), Request{

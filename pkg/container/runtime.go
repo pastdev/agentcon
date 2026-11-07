@@ -8,6 +8,7 @@ import (
 
 type Runtime interface {
 	Run(ctx context.Context, spec Spec) error
+	Build(ctx context.Context, spec Build) error
 	Create(ctx context.Context, spec Spec) (string, error)
 	Start(ctx context.Context, id string) error
 	AttachStartWait(ctx context.Context, id string, spec Spec) error
@@ -84,6 +85,13 @@ type Spec struct {
 	Ports      []Port
 	Labels     map[string]string
 	ExtraHosts []string
+}
+
+type Build struct {
+	Context    string
+	Dockerfile string
+	Tags       []string
+	Output     io.Writer
 }
 
 func (e *ExitError) Error() string {

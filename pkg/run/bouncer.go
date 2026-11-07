@@ -54,7 +54,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("ssh credentials: %w", err)
 	}
 	err = unlockHostSSHKeys(provided, sshNames, func(name string) (string, error) {
-		return readSSHKeyPassphrase(req, name)
+		return readSSHKeyPassphrase(ctx, req, name)
 	})
 	if err != nil {
 		return fmt.Errorf("ssh key: %w", err)
@@ -410,7 +410,7 @@ func waitReady(ctx context.Context, client *mgmt.Client, req Request) error {
 			return nil
 		}
 		if len(status.BitwardenPending) > 0 {
-			err = unlockBitwarden(client, req, status.BitwardenPending[0])
+			err = unlockBitwarden(ctx, client, req, status.BitwardenPending[0])
 			if err != nil {
 				return fmt.Errorf("bitwarden unlock: %w", err)
 			}
@@ -421,7 +421,7 @@ func waitReady(ctx context.Context, client *mgmt.Client, req Request) error {
 	return fmt.Errorf("timed out waiting for bouncer management API")
 }
 
-func unlockBitwarden(client *mgmt.Client, req Request, label string) error {
+func unlockBitwarden(ctx context.Context, client *mgmt.Client, req Request, label string) error {
 	fd := -1
 	var in *os.File
 	if f, ok := req.Stdin.(*os.File); ok {
@@ -432,7 +432,7 @@ func unlockBitwarden(client *mgmt.Client, req Request, label string) error {
 		return fmt.Errorf("bitwarden vault %s needs a master password (run from a terminal)", label)
 	}
 	_, _ = fmt.Fprintf(req.Stderr, "Bitwarden master password for %s: ", label)
-	pw, err := term.ReadPassword(fd)
+	pw, err := readSecret(ctx, fd)
 	_, _ = fmt.Fprintln(req.Stderr)
 	if err != nil {
 		return fmt.Errorf("read bitwarden password: %w", err)
