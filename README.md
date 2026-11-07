@@ -9,7 +9,7 @@ Command flags live in `--help`.
 
 ## Getting started
 
-This path uses the maintained Cursor example image.
+This path starts from the Cursor example image.
 Any Linux image that honors the [workspace contract](#workspace-contract) can replace it later.
 
 ### 1. Install the CLI
@@ -34,6 +34,9 @@ See [docs/development.md](docs/development.md) to build from source.
 
 ### 2. Copy the example image
 
+[docs/cursor/image](docs/cursor/image) is a starting point, not a product image.
+Copy it into `~/.config/agentcon.d/cursor`, then edit that copy's Dockerfile to add project-specific tools.
+
 Config is loaded from `/etc/agentcon.d`, `~/.config/agentcon.d`, and `./agentcon.d`.
 Maps merge.
 Slices replace.
@@ -49,9 +52,16 @@ cp -a docs/cursor/image ~/.config/agentcon.d/cursor
 From a release-only install:
 
 ```bash
-mkdir -p ~/.config/agentcon.d
-git clone --depth 1 https://github.com/pastdev/agentcon.git /tmp/agentcon
-cp -a /tmp/agentcon/docs/cursor/image ~/.config/agentcon.d/cursor
+mkdir -p ~/.config/agentcon.d/cursor
+curl --fail --location \
+  https://github.com/pastdev/agentcon/archive/refs/heads/master.tar.gz \
+  | tar \
+      --directory ~/.config/agentcon.d/cursor \
+      --extract \
+      --gzip \
+      --strip-components 4 \
+      --wildcards \
+      '*/docs/cursor/image'
 ```
 
 ### 3. Write agent and context files

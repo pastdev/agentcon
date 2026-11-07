@@ -5,20 +5,41 @@ A Cursor session is an agent image that starts `agent`, plus config that names t
 The image still has to honor the [workspace contract](../README.md#workspace-contract).
 This example adds Cursor binds and an entrypoint on top of that minimum.
 
-The [README](../README.md) is the install-to-`run` path, including the example `agents.yaml` and `contexts.yaml`.
+The [README](../README.md#getting-started) is the install-to-`run` path, including the example `agents.yaml` and `contexts.yaml`.
 This page is the Cursor-specific contract behind those files.
 
-This repository's [image](image) is a maintained working example.
-It is not a product image.
+## Get started
 
-## Image and binds
-
-Copy the example image into the config directory.
+[docs/cursor/image](cursor/image) is a starting point, not a product image.
+Copy it into `~/.config/agentcon.d/cursor`, then edit that copy's Dockerfile to add project-specific tools.
 That directory can later be its own git repo.
 
+From a clone of this repository:
+
 ```bash
+mkdir -p ~/.config/agentcon.d
 cp -a docs/cursor/image ~/.config/agentcon.d/cursor
 ```
+
+From a release-only install:
+
+```bash
+mkdir -p ~/.config/agentcon.d/cursor
+curl --fail --location \
+  https://github.com/pastdev/agentcon/archive/refs/heads/master.tar.gz \
+  | tar \
+      --directory ~/.config/agentcon.d/cursor \
+      --extract \
+      --gzip \
+      --strip-components 4 \
+      --wildcards \
+      '*/docs/cursor/image'
+```
+
+Then write `agents.yaml` and `contexts.yaml` as in the README.
+Set `build.context` to `'{{relativeDir "cursor"}}'` so it resolves against that copy.
+
+## Image and binds
 
 Linux CLI chats live in `~/.cursor`.
 Linux CLI login lives in `~/.config/cursor/auth.json`.
