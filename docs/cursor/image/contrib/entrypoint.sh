@@ -65,9 +65,6 @@ function link_cursor_agent_bin {
   ln --symbolic --force \
     "${version_dir}/cursor-agent" \
     "${HOME}/.local/bin/agent"
-  ln --symbolic --force \
-    "${version_dir}/cursor-agent" \
-    "${HOME}/.local/bin/cursor-agent"
 }
 
 function link_cursor_state {

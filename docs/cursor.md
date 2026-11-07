@@ -71,8 +71,8 @@ This example also bind-mounts the Cursor dirs above and uses this entrypoint:
 2. Links `/agent/cursor` to `$HOME/.cursor`
 3. Links `/agent/cursor-config` to `$HOME/.config/cursor`
 4. Links `$HOME/.local/share/cursor-agent` to `/agent/cursor/local/share/cursor-agent` on that same bind.
-   `cursor.com/install` unpacks the CLI there and puts `agent` and `cursor-agent` in `~/.local/bin`.
-   On later starts, the entrypoint recreates those two wrappers from the persisted version dir.
+   `cursor.com/install` unpacks the CLI there and puts `agent` in `~/.local/bin`.
+   On later starts, the entrypoint recreates that wrapper from the persisted version dir.
 5. `exec agent` with the container args
 
 `AGENT_CLI_CREDENTIAL_STORE=file` keeps Linux login on disk instead of a keyring.
