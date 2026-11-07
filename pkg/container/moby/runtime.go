@@ -8,7 +8,6 @@ import (
 	"os"
 
 	"github.com/moby/moby/api/pkg/stdcopy"
-	apictn "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 	"github.com/pastdev/agentcon/pkg/container"
@@ -29,6 +28,11 @@ type apiClient interface {
 		ctx context.Context,
 		options client.ContainerCreateOptions,
 	) (client.ContainerCreateResult, error)
+	ContainerInspect(
+		ctx context.Context,
+		id string,
+		options client.ContainerInspectOptions,
+	) (client.ContainerInspectResult, error)
 	ContainerRemove(
 		ctx context.Context,
 		id string,
@@ -49,6 +53,46 @@ type apiClient interface {
 		id string,
 		options client.ContainerWaitOptions,
 	) client.ContainerWaitResult
+	CopyToContainer(
+		ctx context.Context,
+		id string,
+		options client.CopyToContainerOptions,
+	) (client.CopyToContainerResult, error)
+	ExecCreate(
+		ctx context.Context,
+		id string,
+		options client.ExecCreateOptions,
+	) (client.ExecCreateResult, error)
+	ExecStart(
+		ctx context.Context,
+		id string,
+		options client.ExecStartOptions,
+	) (client.ExecStartResult, error)
+	NetworkConnect(
+		ctx context.Context,
+		networkID string,
+		options client.NetworkConnectOptions,
+	) (client.NetworkConnectResult, error)
+	NetworkCreate(
+		ctx context.Context,
+		name string,
+		options client.NetworkCreateOptions,
+	) (client.NetworkCreateResult, error)
+	NetworkInspect(
+		ctx context.Context,
+		networkID string,
+		options client.NetworkInspectOptions,
+	) (client.NetworkInspectResult, error)
+	NetworkRemove(
+		ctx context.Context,
+		networkID string,
+		options client.NetworkRemoveOptions,
+	) (client.NetworkRemoveResult, error)
+	ImageBuild(
+		ctx context.Context,
+		buildContext io.Reader,
+		options client.ImageBuildOptions,
+	) (client.ImageBuildResult, error)
 	Close() error
 }
 
@@ -64,92 +108,24 @@ func (r *Runtime) Close() error {
 }
 
 func (r *Runtime) Run(ctx context.Context, spec container.Spec) error {
-	hostConfig := &apictn.HostConfig{
-		AutoRemove: true,
-		GroupAdd:   spec.GroupAdd,
-		Mounts:     mounts(spec.Mounts),
-	}
-	if height, width, ok := consoleSize(spec); ok {
-		hostConfig.ConsoleSize = [2]uint{height, width}
-	}
-
-	created, err := r.api.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Config: &apictn.Config{
-			User:         spec.User,
-			AttachStdin:  true,
-			AttachStdout: true,
-			AttachStderr: true,
-			Tty:          spec.TTY,
-			OpenStdin:    true,
-			StdinOnce:    true,
-			Env:          spec.Env,
-			Cmd:          spec.Args,
-			Image:        spec.Image,
-			WorkingDir:   spec.WorkDir,
-		},
-		HostConfig: hostConfig,
-	})
+	spec.AutoRemove = true
+	id, err := r.Create(ctx, spec)
 	if err != nil {
-		return fmt.Errorf("create container: %w", err)
+		return fmt.Errorf("run create: %w", err)
 	}
-
 	started := false
+	cleanup := context.WithoutCancel(ctx)
 	defer func() {
 		if started {
 			return
 		}
-		_, _ = r.api.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{
-			Force: true,
-		})
+		_ = r.Remove(cleanup, id, true)
 	}()
-
-	attach, err := r.api.ContainerAttach(ctx, created.ID, client.ContainerAttachOptions{
-		Stream: true,
-		Stdin:  true,
-		Stdout: true,
-		Stderr: true,
-	})
+	err = r.AttachStartWait(ctx, id, spec)
 	if err != nil {
-		return fmt.Errorf("attach container: %w", err)
-	}
-	defer attach.Close()
-
-	restoreTTY, err := prepareTTY(spec)
-	if err != nil {
-		return err
-	}
-	defer restoreTTY()
-
-	_, err = r.api.ContainerStart(ctx, created.ID, client.ContainerStartOptions{})
-	if err != nil {
-		return fmt.Errorf("start container: %w", err)
+		return fmt.Errorf("run attach: %w", err)
 	}
 	started = true
-	stopResize := r.monitorTtySize(ctx, created.ID, spec)
-	defer stopResize()
-
-	wait := r.api.ContainerWait(ctx, created.ID, client.ContainerWaitOptions{
-		Condition: apictn.WaitConditionNotRunning,
-	})
-	err = streamAttach(spec, attach)
-	if err != nil {
-		return err
-	}
-	var status apictn.WaitResponse
-	select {
-	case waitErr := <-wait.Error:
-		if waitErr != nil {
-			return fmt.Errorf("wait container: %w", waitErr)
-		}
-		status = <-wait.Result
-	case status = <-wait.Result:
-	}
-	if status.Error != nil && status.Error.Message != "" {
-		return fmt.Errorf("wait container: %s", status.Error.Message)
-	}
-	if status.StatusCode != 0 {
-		return &container.ExitError{Code: int(status.StatusCode)}
-	}
 	return nil
 }
 

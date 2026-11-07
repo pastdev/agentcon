@@ -1,0 +1,97 @@
+# Overlay for ~/.config/agentcon.d.
+# Adds a named github bouncer and binds it on the git context.
+# Does not set agent or root.
+# Repo list is github_repo. Add another identical repo to that list.
+# unmatched: tunnel splices unknown hosts, and leftover paths on github.com go unauthenticated.
+# github.com and api.github.com are a service, so they stay filtered.
+
+bouncers:
+  github:
+    default_profile: default
+    credentials:
+      github-pat:
+        token:
+          source: bitwarden
+          email: agent@pastdev.com
+          item: pat-github-agent
+          path: $.notes
+        export_env: [GH_TOKEN, GITHUB_TOKEN]
+      github-ssh:
+        private_key:
+          source: bitwarden
+          email: agent@pastdev.com
+          item: ssh-github
+          path: $.sshKey.privateKey
+
+    profiles:
+      default:
+        unmatched: tunnel
+        http:
+          - name: github
+            hosts: [github.com, api.github.com]
+            credential: github-pat
+            inject:
+              bearer: true
+              git: {basic: {username: x-access-token}}
+            rules:
+              - action: allow
+                methods: [GET]
+                path: /user
+              - action: allow
+                methods: [POST]
+                path: /graphql
+                filters:
+                  - path: ts/filters/require-approval-merge.ts
+                  - path: ts/filters/github-graphql-guard.ts
+                    config:
+                      deny:
+                        - deleteRepository
+                        - archiveRepository
+                        - transferRepository
+                        - updateRepository
+                        - deleteRef
+                        - updateRef
+                        - updateBranchProtectionRule
+                        - deleteBranchProtectionRule
+                        - createDeployment
+                        - addCollaborator
+                        - createCommitOnBranch
+                        - createRef
+              - action: allow
+                git: {}
+                github_repo: [pastdev/agentcon]
+                filters:
+                  - path: ts/filters/git-protect-branches.ts
+                    config: {branches: [main, master]}
+              - action: allow
+                methods: [GET]
+                github_repo: [pastdev/agentcon]
+                github_subpaths: ["", "pulls/**", "issues/**", "commits/**", "compare/**", "branches/**"]
+              - action: allow
+                methods: [POST]
+                github_repo: [pastdev/agentcon]
+                github_subpaths: ["pulls", "pulls/*/comments", "pulls/*/reviews", "issues", "issues/*/comments"]
+              - action: ask
+                methods: [PUT]
+                github_repo: [pastdev/agentcon]
+                github_subpaths: ["pulls/*/merge"]
+                prompt: "Merge a pull request?"
+
+        ssh:
+          - name: github-ssh
+            hosts: [github.com, ssh.github.com]
+            user: git
+            credential: github-ssh
+            allow: [git]
+            host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+            rules:
+              - action: allow
+                git: {}
+                github_repo: [pastdev/agentcon]
+                filters:
+                  - path: ts/filters/git-protect-branches.ts
+                    config: {branches: [main, master]}
+
+contexts:
+  git:
+    bouncer: github

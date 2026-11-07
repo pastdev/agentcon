@@ -1,9 +1,9 @@
 package run
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	pkgcfg "github.com/pastdev/agentcon/pkg/config"
 	"github.com/pastdev/agentcon/pkg/container/moby"
@@ -12,18 +12,45 @@ import (
 	"golang.org/x/term"
 )
 
-func New(loader *pkgcfg.Loader) *cobra.Command {
-	return &cobra.Command{
-		Use:   "run [context] [-- harness-args...]",
-		Short: "Run an agent in a configured context",
-		Args:  cobra.ArbitraryArgs,
+func New(loader *pkgcfg.Loader, contextName *string) *cobra.Command {
+	var agent, bouncerName, project, slug string
+	var noBouncer bool
+	cmd := &cobra.Command{
+		Use:          "run [-- agent-args...]",
+		Short:        "Run an agent in a configured context",
+		Args:         cobra.ArbitraryArgs,
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return execute(cmd, loader, args)
+			flags := pkgcfg.RunFlags{
+				Agent:     agent,
+				Bouncer:   bouncerName,
+				NoBouncer: noBouncer,
+			}
+			if contextName != nil {
+				flags.Context = *contextName
+			}
+			return execute(cmd, loader, args, flags, project, slug)
 		},
 	}
+	cmd.Flags().StringVar(&agent, "agent", "", "agent name (default: context agent)")
+	cmd.Flags().StringVar(&bouncerName, "bouncer", "", "bouncer name (default: context bouncer)")
+	cmd.Flags().BoolVar(&noBouncer, "no-bouncer", false, "skip the bouncer sidecar")
+	cmd.Flags().StringVar(&project, "project", "", "project path relative to the context root (default: cwd)")
+	cmd.Flags().StringVar(&slug, "slug", "", "session slug (default: generated)")
+	return cmd
 }
 
-func execute(cmd *cobra.Command, loader *pkgcfg.Loader, args []string) error {
+func execute(
+	cmd *cobra.Command,
+	loader *pkgcfg.Loader,
+	args []string,
+	flags pkgcfg.RunFlags,
+	project, slug string,
+) error {
+	if flags.NoBouncer && flags.Bouncer != "" {
+		return fmt.Errorf("--bouncer and --no-bouncer cannot be used together")
+	}
+
 	cfg, err := loader.Config()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -38,14 +65,7 @@ func execute(cmd *cobra.Command, loader *pkgcfg.Loader, args []string) error {
 		return fmt.Errorf("home directory: %w", err)
 	}
 
-	name := ""
-	harnessArgs := args
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		name = args[0]
-		harnessArgs = args[1:]
-	}
-
-	req, err := pkgcfg.NewRunRequest(cfg, name, cwd)
+	req, err := pkgcfg.NewRunRequest(cfg, flags, cwd, home)
 	if err != nil {
 		return fmt.Errorf("run request: %w", err)
 	}
@@ -59,9 +79,10 @@ func execute(cmd *cobra.Command, loader *pkgcfg.Loader, args []string) error {
 	}()
 
 	req.Home = home
+	req.Project = project
+	req.Slug = slug
 	req.User = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
-	req.Harness = os.Getenv("HARNESS")
-	req.Args = harnessArgs
+	req.Args = args
 	req.TTY = term.IsTerminal(int(os.Stdin.Fd()))
 	req.Stdin = cmd.InOrStdin()
 	req.Stdout = cmd.OutOrStdout()
@@ -70,6 +91,9 @@ func execute(cmd *cobra.Command, loader *pkgcfg.Loader, args []string) error {
 
 	err = pkgrun.Run(cmd.Context(), req)
 	if err != nil {
+		if errors.Is(err, pkgrun.ErrInterrupted) {
+			cmd.SilenceErrors = true
+		}
 		return fmt.Errorf("run: %w", err)
 	}
 	return nil

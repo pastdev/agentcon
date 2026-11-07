@@ -26,7 +26,7 @@ Start with a conversation that captures the bug or feature requirements.
 After a brief discussion, create an issue on the remote repository.
 
 Create a local `ad_hoc/issue-<num>/` folder only when needed.
-That folder may hold `<use_case>.plan.md` and short-lived notes or prototypes.
+That folder may hold `<use_case>.plan.md` and notes or prototypes from the work.
 Choose a short `<use_case>` that names the feature or bug fix.
 Use `notes.md` for context that does not belong in the README.
 
@@ -48,9 +48,10 @@ After implementation, ensure tests, lint, and compile succeed.
 Run smoke checks that verify end-to-end behavior when practical.
 Then use the handoff process for merge requests or other elevated actions.
 
-After merge, when asked to close out the conversation, remove ephemeral files.
-That includes `ad_hoc/` content created for the work.
-It also includes leftover handoff scripts, test artifacts, and local branches.
+After merge, when asked to close out the conversation, remove leftover handoff scripts, test artifacts, and local branches.
+Keep `ad_hoc/` for the issue.
+That folder is forensic.
+Do not put passwords, keys, tokens, or other secrets in it.
 Then propose `AGENTS.md` updates from issues found during this work.
 
 ### Go layout

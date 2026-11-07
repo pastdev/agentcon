@@ -2,30 +2,90 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
+	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
 	cobracfg "github.com/pastdev/configloader/pkg/cobra"
 	cfgldr "github.com/pastdev/configloader/pkg/config"
+	"github.com/pastdev/configloader/pkg/xdg"
 	"github.com/spf13/cobra"
 )
 
 const (
 	DirectoryConfigDir = "./agentcon.d"
 	SystemConfigDir    = "/etc/agentcon.d"
-	UserConfigDir      = "~/.config/agentcon.d"
+	defaultDockerfile  = "Dockerfile"
+	agentImagePrefix   = "agentcon/"
 )
 
-type Config struct {
-	DefaultContext string                 `json:"default_context" yaml:"default_context"`
-	Contexts       map[string]contextSpec `json:"contexts" yaml:"contexts"`
+func userConfigDir() string {
+	dir, err := xdg.ConfigHome()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "agentcon.d")
 }
 
-type contextSpec struct {
-	Image string `json:"image" yaml:"image"`
-	Root  string `json:"root" yaml:"root"`
+func resolveOverlayDir(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			if path == "~" {
+				path = home
+			} else {
+				path = filepath.Join(home, path[2:])
+			}
+		}
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
+}
+
+type Config struct {
+	DefaultContext string                        `json:"default_context" yaml:"default_context"`
+	Agents         map[string]AgentSpec          `json:"agents,omitempty" yaml:"agents,omitempty"`
+	Bouncers       map[string]*bouncercfg.Config `json:"bouncers,omitempty" yaml:"bouncers,omitempty"`
+	Contexts       map[string]ContextSpec        `json:"contexts" yaml:"contexts"`
+	OverlayDirs    []string                      `json:"-" yaml:"-"`
+}
+
+// AgentSpec is one named agent image, its binds, and the hosts it must reach.
+type AgentSpec struct {
+	Image  string      `json:"image,omitempty" yaml:"image,omitempty"`
+	Build  *BuildSpec  `json:"build,omitempty" yaml:"build,omitempty"`
+	Mounts []MountSpec `json:"mounts,omitempty" yaml:"mounts,omitempty"`
+	Tunnel []string    `json:"tunnel,omitempty" yaml:"tunnel,omitempty"`
+}
+
+// BuildSpec is a Compose-style image build.
+// Context is relative to the config directory that supplied it, or absolute / ~.
+type BuildSpec struct {
+	Context    string `json:"context" yaml:"context"`
+	Dockerfile string `json:"dockerfile,omitempty" yaml:"dockerfile,omitempty"`
+}
+
+// MountSpec is a host-to-container bind for an agent.
+// Source is relative to the host home unless it is absolute or starts with ~.
+type MountSpec struct {
+	Source string `json:"source" yaml:"source"`
+	Target string `json:"target" yaml:"target"`
+}
+
+// ContextSpec binds an agent, a workspace root, and an optional bouncer.
+type ContextSpec struct {
+	Agent   string `json:"agent,omitempty" yaml:"agent,omitempty"`
+	Root    string `json:"root" yaml:"root"`
+	Bouncer string `json:"bouncer,omitempty" yaml:"bouncer,omitempty"`
 }
 
 type Loader struct {
-	source cobracfg.ConfigLoader[Config]
+	source      cobracfg.ConfigLoader[Config]
+	overlayDirs []string
 }
 
 func (l *Loader) AddCommand(root *cobra.Command) {
@@ -33,13 +93,27 @@ func (l *Loader) AddCommand(root *cobra.Command) {
 }
 
 func (l *Loader) AddFlags(root *cobra.Command) {
-	l.source.PersistentFlags(root).DirSourceVarP(
-		cfgldr.YamlUnmarshal[Config](),
+	unmarshal := valueTemplateUnmarshal()
+	flags := l.source.PersistentFlags(root)
+	flags.SourceVarP(
+		func(path string) cfgldr.SourceLoader {
+			l.overlayDirs = append(l.overlayDirs, resolveOverlayDir(path))
+			return cfgldr.DirSource{
+				Path:      path,
+				Unmarshal: unmarshal,
+			}
+		},
 		"config-dir",
 		"d",
 		"location of one or more config directories")
-	l.source.PersistentFlags(root).FileSourceVarP(
-		cfgldr.YamlUnmarshal[Config](),
+	flags.SourceVarP(
+		func(path string) cfgldr.SourceLoader {
+			l.overlayDirs = append(l.overlayDirs, resolveOverlayDir(filepath.Dir(path)))
+			return cfgldr.FileSource{
+				Path:      path,
+				Unmarshal: unmarshal,
+			}
+		},
 		"config",
 		"c",
 		"location of one or more config files")
@@ -50,26 +124,40 @@ func (l *Loader) Config() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config load: %w", err)
 	}
+	cfg.OverlayDirs = append([]string{}, l.overlayDirs...)
 	return cfg, nil
 }
 
+func valueTemplateUnmarshal() cfgldr.UnmarshalFunc {
+	return cfgldr.YamlValueTemplateUnmarshal(cfgldr.NewTemplate(cfgldr.DefaultFuncMap()))
+}
+
 func NewLoader() *Loader {
+	userDir := userConfigDir()
+	overlayDirs := []string{resolveOverlayDir(SystemConfigDir)}
+	unmarshal := valueTemplateUnmarshal()
+	sources := []cfgldr.SourceLoader{
+		cfgldr.DirSource{
+			Path:      SystemConfigDir,
+			Unmarshal: unmarshal,
+		},
+	}
+	if userDir != "" {
+		overlayDirs = append(overlayDirs, resolveOverlayDir(userDir))
+		sources = append(sources, cfgldr.DirSource{
+			Path:      userDir,
+			Unmarshal: unmarshal,
+		})
+	}
+	overlayDirs = append(overlayDirs, resolveOverlayDir(DirectoryConfigDir))
+	sources = append(sources, cfgldr.DirSource{
+		Path:      DirectoryConfigDir,
+		Unmarshal: unmarshal,
+	})
 	return &Loader{
+		overlayDirs: overlayDirs,
 		source: cobracfg.ConfigLoader[Config]{
-			DefaultSources: cfgldr.Sources[Config]{
-				cfgldr.DirSource[Config]{
-					Path:      SystemConfigDir,
-					Unmarshal: cfgldr.YamlUnmarshal[Config](),
-				},
-				cfgldr.DirSource[Config]{
-					Path:      UserConfigDir,
-					Unmarshal: cfgldr.YamlUnmarshal[Config](),
-				},
-				cfgldr.DirSource[Config]{
-					Path:      DirectoryConfigDir,
-					Unmarshal: cfgldr.YamlUnmarshal[Config](),
-				},
-			},
+			DefaultSources: cfgldr.Sources[Config]{Sources: sources},
 		},
 	}
 }

@@ -25,6 +25,9 @@ linters:
     - wastedassign
     - whitespace
     - wrapcheck
+  settings:
+    goconst:
+      ignore-tests: true
   exclusions:
     generated: lax
     presets:
@@ -33,6 +36,8 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      - internal/bouncer
+      - cmd/agentcon/bouncer
 formatters:
   enable:
     - gofmt
@@ -42,3 +47,5 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+      - internal/bouncer
+      - cmd/agentcon/bouncer

@@ -1,0 +1,483 @@
+# Bouncer
+
+The [README](../README.md) getting-started path ends with a GitHub overlay you can add after a session already starts.
+This page is policy shape, credentials, sessions, and the sidecar layout `agentcon run` implements.
+
+`agentcon bouncer --help` lists flags.
+Host commands pick a live session by `--slug`, then `--project`, then cwd.
+
+## Policy
+
+`default_profile` is required.
+A session with no profile uses that name.
+
+Each HTTP or SSH service is a host list, an optional credential, inject rules, and an ordered `rules` list.
+The first matching rule wins.
+`unmatched` applies to hosts that no service claims.
+`tunnel` splices those hosts.
+`deny` blocks them.
+Leftover paths on an intercepted host skip the credential and strip placeholder auth.
+
+`git: {}` is a git-smart-HTTP matcher, not an HTTP method.
+It matches info/refs, git-upload-pack, and git-receive-pack.
+Path globs are not a substitute.
+They miss receive-pack and nested `.git` paths.
+
+`github_repo` is a YAML list of `owner/repo`.
+`github_subpaths` limits REST paths under that repo.
+Git traffic never matches a subpath rule.
+
+TypeScript filters hang on a profile, a service, or a rule.
+Rule filters run only after that rule matches.
+A filter may call `next()`, `deny()`, `respond()`, or `ask()`.
+Put files under `ts/` next to the overlay YAML.
+How to write them is in [bouncer-filters.md](bouncer-filters.md).
+
+Agent `tunnel` hosts are unioned onto root profiles.
+`agentcon config` prints that list under `agents`.
+There is no builtin host list in the binary.
+
+## Credentials
+
+Each credential is a composite of slots (`username`, `password`, `token`, `private_key`, `certificate`).
+Each slot has a `source` and the fields that source needs.
+
+`export_env` lists agent environment variables set to that credential's placeholder.
+`cache` is how long a fetched slot is kept.
+Default is 5m.
+`0s` disables it.
+
+`path` is a JSONPath on the source payload.
+Empty means the payload is the value.
+Bitwarden requires `path` because the payload is the whole decrypted cipher JSON.
+
+`file`, `keyring`, `command`, and `provided` are resolved on the host and PUT as `credential.slot` keys, for example `github-pat.token`.
+
+### bitwarden
+
+The sidecar unlocks the vault.
+Identity stays in the YAML.
+The host prompts for the master password and POSTs `/_bouncer/credentials/sources/bitwarden/unlock`.
+
+Required: `email`, `item`, `path`.
+Optional: `server` (default bitwarden.com), `folder` (unset), `password_env` (unset, so `run` prompts).
+
+The named item must already exist in that account's vault.
+`path` must select exactly one string from the decrypted cipher JSON.
+Examples: `$.notes`, `$.login.password`, `$.login.username`, `$.sshKey.privateKey`, `$.fields[?(@.name=='API Key')].value`.
+
+```yaml
+credentials:
+  github-pat:
+    token:
+      source: bitwarden
+      email: you@example.com
+      item: pat-github-agent
+      path: $.notes
+    export_env: [GH_TOKEN, GITHUB_TOKEN]
+  gitlab-login:
+    username:
+      source: bitwarden
+      email: you@example.com
+      item: GitLab
+      path: $.login.username
+    password:
+      source: bitwarden
+      email: you@example.com
+      item: GitLab
+      path: $.login.password
+```
+
+### env
+
+Reads a host environment variable.
+`agentcon run` PUTs those names after status is up.
+
+Required: `env`.
+
+```yaml
+credentials:
+  slack:
+    token:
+      source: env
+      env: SLACK_BOT_TOKEN
+    export_env: [SLACK_TOKEN]
+```
+
+### file
+
+Reads a file on the host.
+
+Required: `file`.
+
+In `agentcon.d` YAML, home is `{{home}}`.
+Configloader does not expand `~`.
+Relative paths resolve against the config file.
+
+```yaml
+credentials:
+  sandbox-key:
+    private_key:
+      source: file
+      file: "{{home}}/.ssh/id_ed25519_sandbox"
+```
+
+### keyring
+
+Reads the OS keyring.
+The service name is always `agent-bouncer`.
+That name is not a YAML field.
+
+Required: none beyond `source`.
+Optional: `account` (default is the credential name).
+
+Store the secret under service `agent-bouncer` and that account before `run`.
+
+```yaml
+credentials:
+  gitlab:
+    token:
+      source: keyring
+      account: gitlab
+    export_env: [GITLAB_TOKEN]
+```
+
+### command
+
+Runs an argv on the host.
+Stdout, minus trailing newlines, is the payload.
+
+Required: `command`.
+
+```yaml
+credentials:
+  github-cli:
+    token:
+      source: command
+      command: [gh, auth, token]
+    cache: 15m
+    export_env: [GH_TOKEN]
+```
+
+### ssh-agent
+
+Valid only on `private_key`.
+The YAML does not name a key file or a socket.
+`agentcon run` bind-mounts `$SSH_AUTH_SOCK` at `/opt/agentcon/ssh-agent.sock`.
+This source is not a PUT.
+
+Required: none beyond `source`.
+Optional: `fingerprint` (default is every key currently in the agent).
+`fingerprint` is the `SHA256:...` line from `ssh-add -l -E sha256`.
+
+```yaml
+credentials:
+  github-ssh:
+    private_key:
+      source: ssh-agent
+      fingerprint: SHA256:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+### provided
+
+The host supplies the value at start.
+PUT key is `credential.slot`.
+
+Required: none beyond `source`.
+
+```yaml
+credentials:
+  deploy:
+    private_key:
+      source: provided
+```
+
+A service names a credential, then `inject` says how it is attached:
+
+```yaml
+profiles:
+  default:
+    unmatched: tunnel
+    http:
+      - name: github
+        hosts: [github.com, api.github.com]
+        credential: github-pat
+        inject:
+          bearer: true
+          git: {basic: {username: x-access-token}}
+          # header: PRIVATE-TOKEN
+          # value: "{{secret}}"
+          # basic: {username: oauth2}
+          # query: token
+        rules:
+          - action: allow
+            git: {}
+            github_repo: [your-org/your-repo]
+    ssh:
+      - name: github-ssh
+        hosts: [github.com, ssh.github.com]
+        user: git
+        credential: github-ssh
+        allow: [git]
+        rules:
+          - action: allow
+            git: {}
+            github_repo: [your-org/your-repo]
+```
+
+A full GitHub overlay is the [GitHub starting point](#github-starting-point).
+
+## GitHub starting point
+
+[docs/bouncer/github](github) is a starting point, not a product policy.
+Copy it into `~/.config/agentcon.d`, then edit `github.yaml` for your repo and Bitwarden items.
+It adds a named `github` bouncer, binds it on the `git` context, and ships the three filters that overlay uses.
+
+From a clone of this repository:
+
+```bash
+mkdir -p ~/.config/agentcon.d
+cp -a docs/bouncer/github/. ~/.config/agentcon.d/
+```
+
+From a release-only install:
+
+```bash
+mkdir -p ~/.config/agentcon.d
+curl --fail --location \
+  https://github.com/pastdev/agentcon/archive/refs/heads/master.tar.gz \
+  | tar \
+      --directory ~/.config/agentcon.d \
+      --extract \
+      --gzip \
+      --strip-components 4 \
+      --wildcards \
+      '*/docs/bouncer/github'
+```
+
+That writes `github.yaml` and `ts/` next to your existing agent and context files.
+It does not set `agent` or `root`.
+If your context is not named `git`, rename that key in `github.yaml`.
+Add another repo by appending to each `github_repo` list, not by copying the rules.
+
+`unmatched: tunnel` splices unknown hosts.
+github.com and api.github.com are intercepted.
+Leftover paths on those hosts go through without the PAT.
+`mergePullRequest` is omitted from the GraphQL deny list so `require-approval-merge.ts` can ask.
+REST merge uses the YAML `action: ask` rule.
+
+Writing filters is in [bouncer-filters.md](bouncer-filters.md).
+
+## Sessions
+
+`agentcon run` mints an 8-character hex session slug before it creates Docker objects.
+Container and network names are `agentcon-<bounded>-<slug>-<role>`.
+`<bounded>` is the project path relative to the context root, made docker-safe, and left-truncated so the full name stays at 63 characters.
+`<role>` is `agent`, `bouncer`, or `ext`.
+
+Host discovery files are `~/.local/state/agentcon/running/<slug>.yml`.
+`run` prints `agentcon session <slug> project <project>`.
+
+Decisions are appended to the sidecar audit log even when `--quiet` hides them on the TTY.
+
+## Sidecar layout
+
+`agentcon run` with a `bouncer` section starts two containers and two networks.
+The sidecar is PID 1 running `bouncer serve`.
+Secrets are not passed as container environment variables.
+After the management API is up, the host PUTs secrets into memory.
+
+The rest of this section is the equivalent Docker commands, for debugging or a custom runner.
+
+### Networks
+
+Create an internal agent network and an external management network.
+
+```bash
+docker network create --internal agentcon-github-com-example-agentcon-deadbeef-agent
+docker network create agentcon-github-com-example-agentcon-deadbeef-ext
+```
+
+Inspect each network for its subnet.
+Those CIDRs become `AGENT_NETWORK` and `MANAGEMENT_NETWORK` on the sidecar.
+
+### Sidecar payload
+
+Pack files at `/opt/agentcon` and copy them into a created, not yet started, container.
+
+Sidecar tar:
+
+- `/opt/agentcon/config.yaml`
+- `/opt/agentcon/ts/` from overlay `ts/` trees
+- `/opt/agentcon/state/admin-token`
+- `/opt/agentcon/bin/agentcon`
+
+Agent tar, copied later:
+
+- `/opt/agentcon/bin/agentcon`
+- `/opt/agentcon/ca.pem`
+- `/opt/agentcon/ca-bundle.pem`
+- `/opt/agentcon/ssh/config`
+- `/opt/agentcon/ssh/known_hosts`
+
+```bash
+docker create \
+  --name agentcon-github-com-example-agentcon-deadbeef-bouncer \
+  --user 1000:1000 \
+  --group-add 0 \
+  --network agentcon-github-com-example-agentcon-deadbeef-ext \
+  --publish 127.0.0.1:8228:8228 \
+  --add-host host.docker.internal:host-gateway \
+  --entrypoint /opt/agentcon/bin/agentcon \
+  -e AGENT_NETWORK=10.1.0.0/16 \
+  -e MANAGEMENT_NETWORK=10.2.0.0/16 \
+  -e MANAGEMENT_PORT=8228 \
+  registry.access.redhat.com/ubi10/ubi-minimal:10.2 \
+  bouncer serve \
+    --file /opt/agentcon/config.yaml \
+    --state-dir /opt/agentcon/state \
+    --quiet
+
+docker network connect agentcon-github-com-example-agentcon-deadbeef-agent \
+  agentcon-github-com-example-agentcon-deadbeef-bouncer
+docker cp sidecar.tar agentcon-github-com-example-agentcon-deadbeef-bouncer:/
+docker start agentcon-github-com-example-agentcon-deadbeef-bouncer
+```
+
+`serve` is PID 1.
+The container exits if serve exits.
+Do not pass credential values with `-e`.
+When the policy uses `source: ssh-agent`, add `--volume "${SSH_AUTH_SOCK}:/opt/agentcon/ssh-agent.sock"` and `-e SSH_AUTH_SOCK=/opt/agentcon/ssh-agent.sock`.
+
+### Management API
+
+Wait until status answers.
+
+```bash
+TOKEN=$(tar -xOf sidecar.tar opt/agentcon/state/admin-token | tr -d '\n')
+curl -fsS \
+  -H "Authorization: Bearer ${TOKEN}" \
+  http://127.0.0.1:8228/_bouncer/status
+```
+
+For each `source: env` slot, read the named variable on the host.
+For each `file`, `keyring`, `command`, or `provided` slot, resolve the secret on the host.
+PUT keys are `credential.slot` (for example `github-pat.token` and `deploy.private_key`).
+If a `private_key` slot is passphrase-protected, prompt on the host TTY and PUT the unlocked PEM.
+Other slots are not parsed as keys.
+Fail on the host if any are missing.
+PUT the maps after status is up.
+
+```bash
+curl -fsS -X PUT \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data "{\"SMOKE_TOKEN\":\"${SMOKE_TOKEN}\"}" \
+  http://127.0.0.1:8228/_bouncer/credentials/sources/env
+
+curl -fsS -X PUT \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data '{"deploy.private_key":"-----BEGIN OPENSSH PRIVATE KEY-----\\n..."}' \
+  http://127.0.0.1:8228/_bouncer/credentials/provided
+```
+
+The daemon stores both maps in memory.
+`source: env` lookups use the overlay first, then `os.LookupEnv`.
+Lookups for other sources use the provided overlay first, then the configured source.
+
+Bitwarden slots fetch the decrypted cipher JSON.
+`path` is required.
+Use a JSONPath such as `$.notes`, `$.login.password`, `$.sshKey.privateKey`, or `$.fields[?(@.name=='API Key')].value`.
+
+If the policy uses `source: ssh-agent`, require `SSH_AUTH_SOCK` on the host before `docker create`.
+Bind-mount it and set `SSH_AUTH_SOCK=/opt/agentcon/ssh-agent.sock` on the sidecar.
+Do not copy private keys out of the agent.
+
+If status reports `bitwarden_pending`, unlock the vault.
+Do not send item secrets.
+A new sidecar has no remembered Bitwarden device, so the first login often needs a 2FA code or the emailed new-device OTP.
+
+```bash
+curl -fsS -X POST \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data '{"password":"..."}' \
+  http://127.0.0.1:8228/_bouncer/credentials/sources/bitwarden/unlock
+```
+
+If that responds `409` with `{"error":"need_code","method":"..."}`, prompt for the code and POST again with `password` and `code`.
+`method` is `authenticator app` for TOTP, or `new device email` for the code Bitwarden emails on an unknown device.
+Ask for the code at submit time, not before `serve` is up.
+TOTP values expire.
+
+Create a session, then fetch the CA.
+
+```bash
+curl -fsS -X POST \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data '{"label":"agentcon"}' \
+  http://127.0.0.1:8228/_bouncer/sessions
+
+curl -fsS \
+  -H "Authorization: Bearer ${TOKEN}" \
+  http://127.0.0.1:8228/_bouncer/ca
+```
+
+### Agent container
+
+Connect the agent only to the internal network.
+Point proxy and CA paths at the sidecar IP on that network.
+Copy the agent tar, then start.
+
+```bash
+PROXY=http://bouncer:SESSION@${SIDECAR_AGENT_IP}:8228
+docker create \
+  --name agentcon-github-com-example-agentcon-deadbeef-agent \
+  --user 1000:1000 \
+  --network agentcon-github-com-example-agentcon-deadbeef-agent \
+  --env HTTPS_PROXY="${PROXY}" \
+  --env https_proxy="${PROXY}" \
+  --env HTTP_PROXY="${PROXY}" \
+  --env http_proxy="${PROXY}" \
+  --env NO_PROXY=localhost,127.0.0.1,::1 \
+  --env no_proxy=localhost,127.0.0.1,::1 \
+  pastdev.com/agentcon-cursor:latest
+
+docker cp agent.tar agentcon-github-com-example-agentcon-deadbeef-agent:/
+docker start -ai agentcon-github-com-example-agentcon-deadbeef-agent
+```
+
+`agentcon run` also sets `NODE_USE_ENV_PROXY=1` so Node 24+ honors those proxy vars.
+It sets `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `BOUNCER_*`, credential placeholders, and the other session variables.
+`GIT_SSH_COMMAND` invokes `/usr/bin/ssh -F /opt/agentcon/ssh/config`.
+The SSH config `ProxyCommand` is `agentcon bouncer ssh-connect`.
+
+Extra hosts belong on the sidecar only.
+The agent reaches the outside through the proxy.
+
+## Agent tunnels
+
+`run` unions the active agent's `tunnel` list onto each bouncer profile that does not `extends` another profile.
+Child profiles inherit that list.
+
+The active agent is `--agent`, then `contexts.<name>.agent`.
+
+If a vendor host is missing, add it on the agent or on the profile:
+
+```yaml
+agents:
+  cursor:
+    tunnel:
+      - extra.vendor.example
+bouncers:
+  github:
+    profiles:
+      locked-down:
+        unmatched: deny
+        tunnel:
+          - extra.vendor.example
+```
+
+A Cursor example list is in [cursor.md](cursor.md).

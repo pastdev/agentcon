@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly AGENTCON_SRC_DIR="${AGENTCON_SRC_DIR:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")}"
+readonly AGENTCON_SNAPSHOT_BIN_DIR="${AGENTCON_SNAPSHOT_BIN_DIR:-${HOME}/.local/bin}"
+readonly AGENTCON_SNAPSHOT_BIN="${AGENTCON_SNAPSHOT_BIN_DIR}/agentcon-snapshot"
+
+function snapshot_version {
+  local base_version major minor patch
+  base_version="$(git -C "${AGENTCON_SRC_DIR}" describe --tags --abbrev=0)"
+  IFS='.' read -r major minor patch <<<"${base_version#v}"
+  printf '%s.%s.%s-SNAPSHOT\n' "${major}" "${minor}" "$((patch + 1))"
+}
+
+function build_snapshot {
+  local version
+  version="$(snapshot_version)"
+  mkdir --parents "${AGENTCON_SNAPSHOT_BIN_DIR}"
+  go -C "${AGENTCON_SRC_DIR}" build \
+    -ldflags "-X github.com/pastdev/agentcon/pkg/version.version=${version}" \
+    -o "${AGENTCON_SNAPSHOT_BIN}" \
+    ./cmd/agentcon
+  chmod 0755 "${AGENTCON_SNAPSHOT_BIN}"
+}
+
+if [[ -v REBUILD ]] || [[ ! -x "${AGENTCON_SNAPSHOT_BIN}" ]]; then
+  build_snapshot
+fi
+
+exec "${AGENTCON_SNAPSHOT_BIN}" "$@"
