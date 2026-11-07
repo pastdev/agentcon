@@ -18,7 +18,3 @@ func (r secretReader) Read(buf []byte) (int, error) {
 	}
 	return int(n), nil
 }
-
-func secretLineEnd(b byte) bool {
-	return b == '\r'
-}

@@ -1,7 +1,6 @@
 package run
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -423,9 +422,7 @@ func waitReady(ctx context.Context, client *mgmt.Client, req Request) error {
 
 func unlockBitwarden(ctx context.Context, client *mgmt.Client, req Request, label string) error {
 	fd := -1
-	var in *os.File
 	if f, ok := req.Stdin.(*os.File); ok {
-		in = f
 		fd = int(f.Fd())
 	}
 	if fd < 0 || !term.IsTerminal(fd) {
@@ -438,7 +435,7 @@ func unlockBitwarden(ctx context.Context, client *mgmt.Client, req Request, labe
 		return fmt.Errorf("read bitwarden password: %w", err)
 	}
 	err = completeBitwardenUnlock(client.UnlockBitwarden, string(pw), func(method string) (string, error) {
-		return readBitwardenCode(in, req.Stderr, label, method)
+		return readBitwardenCode(ctx, fd, req.Stderr, label, method)
 	})
 	if err != nil {
 		return fmt.Errorf("unlock bitwarden: %w", err)
@@ -483,8 +480,8 @@ func bitwardenInvalidCode(err error) bool {
 	return strings.Contains(msg, "Invalid TOTP") || strings.Contains(msg, "invalid verification code")
 }
 
-func readBitwardenCode(in *os.File, stderr io.Writer, label, method string) (string, error) {
-	if in == nil || !term.IsTerminal(int(in.Fd())) {
+func readBitwardenCode(ctx context.Context, fd int, stderr io.Writer, label, method string) (string, error) {
+	if fd < 0 || !term.IsTerminal(fd) {
 		return "", fmt.Errorf("bitwarden vault %s needs a verification code (run from a terminal)", label)
 	}
 	if method != "" {
@@ -492,11 +489,12 @@ func readBitwardenCode(in *os.File, stderr io.Writer, label, method string) (str
 	} else {
 		_, _ = fmt.Fprintf(stderr, "Bitwarden verification code for %s: ", label)
 	}
-	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
+	b, err := readTerminalLine(ctx, fd, stderr)
+	_, _ = fmt.Fprintln(stderr)
+	if err != nil {
 		return "", fmt.Errorf("read bitwarden verification code: %w", err)
 	}
-	line = strings.TrimSpace(line)
+	line := strings.TrimSpace(string(b))
 	if line == "" {
 		return "", fmt.Errorf("empty verification code")
 	}
