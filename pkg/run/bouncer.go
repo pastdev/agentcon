@@ -27,6 +27,7 @@ const (
 	sidecarHome       = optDir
 	sidecarConfigPath = optDir + "/config.yaml"
 	sidecarBinPath    = optDir + "/bin/agentcon"
+	sidecarImage      = "registry.access.redhat.com/ubi10/ubi-minimal:10.2"
 	sidecarStatePath  = optDir + "/state"
 	agentBinPath      = sidecarBinPath
 	agentCACertPath   = optDir + "/ca.pem"
@@ -72,6 +73,8 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	agentNetName := running.ResourceName(req.Project, req.Slug, roleAgent)
 	extNetName := running.ResourceName(req.Project, req.Slug, roleExt)
 
+	cleanup := context.WithoutCancel(ctx)
+
 	agentNetID, err := req.Runtime.CreateNetwork(ctx, container.NetworkSpec{
 		Name:     agentNetName,
 		Internal: true,
@@ -80,7 +83,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("create agent network: %w", err)
 	}
-	defer func() { _ = req.Runtime.RemoveNetwork(ctx, agentNetID) }()
+	defer func() { _ = req.Runtime.RemoveNetwork(cleanup, agentNetID) }()
 
 	extNetID, err := req.Runtime.CreateNetwork(ctx, container.NetworkSpec{
 		Name:   extNetName,
@@ -89,7 +92,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("create external network: %w", err)
 	}
-	defer func() { _ = req.Runtime.RemoveNetwork(ctx, extNetID) }()
+	defer func() { _ = req.Runtime.RemoveNetwork(cleanup, extNetID) }()
 
 	agentNet, err := req.Runtime.InspectNetwork(ctx, agentNetID)
 	if err != nil {
@@ -107,7 +110,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("create bouncer sidecar: %w", err)
 	}
-	defer func() { _ = req.Runtime.Remove(ctx, sidecarID, true) }()
+	defer func() { _ = req.Runtime.Remove(cleanup, sidecarID, true) }()
 
 	token := daemon.NewAdminToken()
 	err = copySidecarPayload(ctx, req, sidecarID, token)
@@ -187,7 +190,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("create agent container: %w", err)
 	}
-	defer func() { _ = req.Runtime.Remove(ctx, id, true) }()
+	defer func() { _ = req.Runtime.Remove(cleanup, id, true) }()
 
 	err = copyAgentFiles(ctx, req, id, client)
 	if err != nil {
@@ -209,7 +212,7 @@ func bouncerSidecarSpec(
 ) container.Spec {
 	return container.Spec{
 		Name:       running.ResourceName(req.Project, req.Slug, roleBouncer),
-		Image:      req.Image,
+		Image:      sidecarImage,
 		User:       req.User,
 		GroupAdd:   []string{groupRoot},
 		Entrypoint: []string{sidecarBinPath},

@@ -23,11 +23,15 @@ golangci-lint run
 
 ## Image
 
+A context may use any Linux image that honors the workspace contract in the [README](../README.md).
+This tree ships one implementation.
+
 ```bash
 docker build --progress plain --tag pastdev.com/agentcon:latest image/base/
 ```
 
-The image entrypoint prepares a writable home for an arbitrary container UID, links harness state under `/agent`, and starts the harness.
+That entrypoint prepares a writable home for an arbitrary container UID, links harness state under `/agent`, and starts the harness.
+When bouncer is enabled, `run` starts the sidecar from `registry.access.redhat.com/ubi10/ubi-minimal:10.2` and replaces the entrypoint with a copied `agentcon` binary.
 Entrypoint xtrace is off unless `AGENTCON_XTRACE=1`.
 When that is set, bash writes the trace to `/agent/<harness>/entrypoint.xtrace` (host `~/.cursor/entrypoint.xtrace` for Cursor).
 Override the path with `AGENTCON_XTRACE_LOG`.

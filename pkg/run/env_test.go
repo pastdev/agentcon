@@ -109,6 +109,9 @@ func TestBouncerSidecarSpecServeIsPID1(t *testing.T) {
 	if spec.Name != "agentcon-github-com-pastdev-agentcon-deadbeef-bouncer" {
 		t.Fatalf("name %q", spec.Name)
 	}
+	if spec.Image != sidecarImage {
+		t.Fatalf("image %q", spec.Image)
+	}
 	if len(spec.Entrypoint) != 1 || spec.Entrypoint[0] != sidecarBinPath {
 		t.Fatalf("entrypoint %v", spec.Entrypoint)
 	}

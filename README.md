@@ -28,14 +28,6 @@ chmod 0755 "${binary}"
 
 Add `~/.local/bin` to `PATH` if it is not already there.
 
-You also need the workspace image locally.
-There is no published registry tag yet.
-
-```bash
-docker build --progress plain --tag pastdev.com/agentcon:latest image/base/
-```
-
-Run that from a clone of this repository.
 See [docs/development.md](docs/development.md) for building the CLI from source.
 
 ### Configure
@@ -43,6 +35,12 @@ See [docs/development.md](docs/development.md) for building the CLI from source.
 Config is loaded from `/etc/agentcon.d`, `~/.config/agentcon.d`, and `./agentcon.d`.
 Maps merge.
 Slices replace.
+
+`image` is any Linux image that honors the workspace contract.
+`run` starts it as your host UID, mounts the context `root` at `/workspace`, sets `AGENTCON_HOST_ROOT` to that host path, and for Cursor bind-mounts host `~/.cursor` at `/agent/cursor`.
+The image entrypoint is responsible for a writable home and for starting the harness.
+
+This repository's `image/base` is one implementation of that contract.
 
 ```yaml
 default_context: git
@@ -55,8 +53,6 @@ contexts:
 `agentcon run` uses `default_context`.
 `agentcon run NAME` uses that context.
 Cwd must be at or under the selected `root`.
-The context `root` is mounted at `/workspace`.
-Harness state for Cursor is your host `~/.cursor`.
 
 ### Run
 

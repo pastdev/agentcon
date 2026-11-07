@@ -109,11 +109,12 @@ func (r *Runtime) Run(ctx context.Context, spec container.Spec) error {
 		return fmt.Errorf("run create: %w", err)
 	}
 	started := false
+	cleanup := context.WithoutCancel(ctx)
 	defer func() {
 		if started {
 			return
 		}
-		_ = r.Remove(ctx, id, true)
+		_ = r.Remove(cleanup, id, true)
 	}()
 	err = r.AttachStartWait(ctx, id, spec)
 	if err != nil {

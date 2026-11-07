@@ -80,6 +80,9 @@ func Run(ctx context.Context, req Request) error {
 		return fmt.Errorf("container runtime is required")
 	}
 
+	ctx, stop := notifyRunSignals(ctx)
+	defer stop()
+
 	err := fillSessionIdentity(&req)
 	if err != nil {
 		return err

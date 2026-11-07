@@ -116,7 +116,7 @@ docker create \
   -e AGENT_NETWORK=10.1.0.0/16 \
   -e MANAGEMENT_NETWORK=10.2.0.0/16 \
   -e MANAGEMENT_PORT=8228 \
-  pastdev.com/agentcon:latest \
+  registry.access.redhat.com/ubi10/ubi-minimal:10.2 \
   bouncer serve \
     --file /opt/agentcon/config.yaml \
     --state-dir /opt/agentcon/state \
