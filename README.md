@@ -198,6 +198,59 @@ The image does not need Cursor, `/agent/*` binds, or a particular distro.
 Those are agent-specific.
 Declare extra binds on `agents.<name>.mounts` and document them with that agent.
 
+[`docs/workspace/Dockerfile`](docs/workspace/Dockerfile) is that minimum.
+It only creates a user and home, then starts a mock agent.
+
+```dockerfile
+# Minimal image that honors the README workspace contract.
+# It is not an agent.
+# The entrypoint creates a passwd line and home, then starts a mock.
+
+FROM registry.access.redhat.com/ubi10/ubi-minimal:10.2
+
+RUN mkdir --parents /home \
+    && chmod g=u /etc/passwd /home
+
+COPY <<'EOF' /entrypoint.sh
+#!/bin/bash
+set -euo pipefail
+
+readonly AGENT_USER="${USER:-agent}"
+readonly HOME="/home/${AGENT_USER}"
+export HOME
+
+function setup_user {
+  printf '%s:x:%s:%s:Agent:%s:/bin/bash\n' \
+    "${AGENT_USER}" \
+    "$(id -u)" \
+    "$(id -g)" \
+    "${HOME}" \
+    >> /etc/passwd
+  mkdir --parents "${HOME}"
+}
+
+function mock_agent {
+  printf 'mock agent uid=%s gid=%s home=%s cwd=%s host_root=%s\n' \
+    "$(id -u)" \
+    "$(id -g)" \
+    "${HOME}" \
+    "$(pwd)" \
+    "${AGENTCON_HOST_ROOT:-}"
+  if [[ "$#" -eq 0 ]]; then
+    exec /bin/bash
+  fi
+  exec "$@"
+}
+
+setup_user
+mock_agent "$@"
+EOF
+
+RUN chmod 0755 /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
 ### When a bouncer is attached
 
 The sidecar is a separate image.
@@ -279,6 +332,7 @@ Policy shape, credentials, sessions, filters, and the sidecar layout are in [doc
 ## See also
 
 - [Workspace contract](#workspace-contract) for the minimum agent image
+- [docs/workspace/Dockerfile](docs/workspace/Dockerfile) for a mock image that only honors that contract
 - [docs/cursor.md](docs/cursor.md) for the Cursor image, binds, and vendor hosts
 - [docs/bouncer.md](docs/bouncer.md) for bouncer design and policy details
 - [docs/development.md](docs/development.md) for building, testing, and snapshots

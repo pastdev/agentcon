@@ -41,6 +41,7 @@ golangci-lint run
 
 A context may use any Linux image that honors the [workspace contract](../README.md#workspace-contract).
 This tree does not ship a product image.
+[docs/workspace/Dockerfile](workspace/Dockerfile) is a mock that only honors the contract.
 [docs/cursor/image](cursor/image) is a maintained Cursor example.
 
 ```bash
