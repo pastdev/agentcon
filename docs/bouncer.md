@@ -105,16 +105,19 @@ credentials:
 ### file
 
 Reads a file on the host.
-`~` and paths relative to the config file are expanded.
 
 Required: `file`.
+
+In `agentcon.d` YAML, home is `{{home}}`.
+Configloader does not expand `~`.
+Relative paths resolve against the config file.
 
 ```yaml
 credentials:
   sandbox-key:
     private_key:
       source: file
-      file: ~/.ssh/id_ed25519_sandbox
+      file: "{{home}}/.ssh/id_ed25519_sandbox"
 ```
 
 ### keyring
