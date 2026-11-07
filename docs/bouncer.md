@@ -40,13 +40,29 @@ There is no builtin host list in the binary.
 ## Credentials
 
 Each credential is a composite of slots (`username`, `password`, `token`, `private_key`, `certificate`).
-Each slot is a source plus an optional JSONPath on the source payload.
+Each slot has a `source` and the fields that source needs.
+
 `export_env` lists agent environment variables set to that credential's placeholder.
 `cache` is how long a fetched slot is kept.
 Default is 5m.
 `0s` disables it.
 
-`source` is one of `bitwarden`, `env`, `file`, `keyring`, `command`, `ssh-agent`, or `provided`.
+`path` is a JSONPath on the source payload.
+Empty means the payload is the value.
+Bitwarden requires `path` because the payload is the whole decrypted cipher JSON.
+
+`file`, `keyring`, `command`, and `provided` are resolved on the host and PUT as `credential.slot` keys, for example `github-pat.token`.
+
+### bitwarden
+
+The sidecar unlocks the vault.
+Identity stays in the YAML.
+The host prompts for the master password and POSTs `/_bouncer/credentials/sources/bitwarden/unlock`.
+
+Required: `email`, `item`, `path`.
+Optional: `server` (default bitwarden.com), `folder` (unset), `password_env` (unset, so `run` prompts).
+
+`path` examples: `$.notes`, `$.login.password`, `$.login.username`, `$.sshKey.privateKey`, `$.fields[?(@.name=='API Key')].value`.
 
 ```yaml
 credentials:
@@ -56,11 +72,7 @@ credentials:
       email: you@example.com
       item: pat-github-agent
       path: $.notes
-      # server: https://vault.example.com
-      # folder: Agent
-      # password_env: BITWARDEN_MASTER_PASSWORD
     export_env: [GH_TOKEN, GITHUB_TOKEN]
-
   gitlab-login:
     username:
       source: bitwarden
@@ -72,57 +84,108 @@ credentials:
       email: you@example.com
       item: GitLab
       path: $.login.password
+```
 
+### env
+
+Reads a host environment variable.
+`agentcon run` PUTs those names after status is up.
+
+Required: `env`.
+
+```yaml
+credentials:
   slack:
     token:
       source: env
       env: SLACK_BOT_TOKEN
     export_env: [SLACK_TOKEN]
+```
 
+### file
+
+Reads a file on the host.
+`~` and paths relative to the config file are expanded.
+
+Required: `file`.
+
+```yaml
+credentials:
   sandbox-key:
     private_key:
       source: file
       file: ~/.ssh/id_ed25519_sandbox
+```
 
+### keyring
+
+Reads the OS keyring.
+The service name is always `agent-bouncer`.
+That name is not a YAML field.
+
+Required: none beyond `source`.
+Optional: `account` (default is the credential name).
+
+Store the secret under service `agent-bouncer` and that account before `run`.
+
+```yaml
+credentials:
   gitlab:
     token:
       source: keyring
-      # account: gitlab
+      account: gitlab
     export_env: [GITLAB_TOKEN]
+```
 
+### command
+
+Runs an argv on the host.
+Stdout, minus trailing newlines, is the payload.
+
+Required: `command`.
+
+```yaml
+credentials:
   github-cli:
     token:
       source: command
       command: [gh, auth, token]
     cache: 15m
     export_env: [GH_TOKEN]
+```
 
+### ssh-agent
+
+Valid only on `private_key`.
+The YAML does not name a key file or a socket.
+`agentcon run` bind-mounts `$SSH_AUTH_SOCK` at `/opt/agentcon/ssh-agent.sock`.
+This source is not a PUT.
+
+Required: none beyond `source`.
+Optional: `fingerprint` (default is every key currently in the agent).
+`fingerprint` is the `SHA256:...` line from `ssh-add -l -E sha256`.
+
+```yaml
+credentials:
   github-ssh:
     private_key:
       source: ssh-agent
-      # fingerprint: SHA256:...
+      fingerprint: SHA256:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
 
+### provided
+
+The host supplies the value at start.
+PUT key is `credential.slot`.
+
+Required: none beyond `source`.
+
+```yaml
+credentials:
   deploy:
     private_key:
       source: provided
 ```
-
-Bitwarden `email`, `item`, and `path` are required.
-`path` is a JSONPath on the decrypted cipher JSON, such as `$.notes`, `$.login.password`, `$.sshKey.privateKey`, or `$.fields[?(@.name=='API Key')].value`.
-The host prompts for the master password and POSTs `/_bouncer/credentials/sources/bitwarden/unlock`.
-It does not dump item secrets into the policy.
-
-`source: env` names one host environment variable per slot.
-`agentcon run` PUTs those names after status is up.
-
-`file`, `keyring`, `command`, and `provided` are resolved on the host and PUT as `credential.slot` keys, for example `github-pat.token` and `deploy.private_key`.
-Keyring `account` defaults to the credential name.
-`source: command` is an argv.
-Stdout, minus trailing newlines, is the payload.
-
-`source: ssh-agent` is valid only on `private_key`.
-It is a socket, not a PUT.
-Bind-mount `$SSH_AUTH_SOCK` at `/opt/agentcon/ssh-agent.sock` and set that path on the sidecar.
 
 A service names a credential, then `inject` says how it is attached:
 
