@@ -13,20 +13,22 @@ import (
 )
 
 func New(loader *pkgcfg.Loader) *cobra.Command {
-	var harness string
+	var harness, project, slug string
 	cmd := &cobra.Command{
 		Use:   "run [context] [-- harness-args...]",
 		Short: "Run an agent in a configured context",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return execute(cmd, loader, args, harness)
+			return execute(cmd, loader, args, harness, project, slug)
 		},
 	}
 	cmd.Flags().StringVar(&harness, "harness", "", "harness to run (default: $HARNESS, context harness, or cursor)")
+	cmd.Flags().StringVar(&project, "project", "", "project path relative to the context root (default: cwd)")
+	cmd.Flags().StringVar(&slug, "slug", "", "session slug (default: generated)")
 	return cmd
 }
 
-func execute(cmd *cobra.Command, loader *pkgcfg.Loader, args []string, harness string) error {
+func execute(cmd *cobra.Command, loader *pkgcfg.Loader, args []string, harness, project, slug string) error {
 	cfg, err := loader.Config()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -66,6 +68,8 @@ func execute(cmd *cobra.Command, loader *pkgcfg.Loader, args []string, harness s
 	}()
 
 	req.Home = home
+	req.Project = project
+	req.Slug = slug
 	req.User = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	req.Args = harnessArgs
 	req.TTY = term.IsTerminal(int(os.Stdin.Fd()))

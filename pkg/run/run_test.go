@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/container"
 )
 
@@ -17,6 +18,7 @@ const (
 	testImage     = "pastdev.com/agentcon:latest"
 	testUser      = "1000:1000"
 	testExtraHost = "host.docker.internal:host-gateway"
+	testSlug      = "deadbeef"
 )
 
 type captureRuntime struct {
@@ -72,6 +74,8 @@ func TestRunBuildsSpec(t *testing.T) {
 		Cwd:     cwd,
 		Home:    home,
 		User:    testUser,
+		Context: "git",
+		Slug:    testSlug,
 		Args:    []string{"--help"},
 		Runtime: rt,
 	})
@@ -81,6 +85,12 @@ func TestRunBuildsSpec(t *testing.T) {
 
 	if rt.spec.Image != testImage {
 		t.Fatalf("image %q", rt.spec.Image)
+	}
+	if rt.spec.Name != "agentcon-github-com-example-agentcon-deadbeef-agent" {
+		t.Fatalf("name %q", rt.spec.Name)
+	}
+	if rt.spec.Labels[labelSlug] != testSlug || rt.spec.Labels[labelProject] != "github.com/example/agentcon" {
+		t.Fatalf("labels %v", rt.spec.Labels)
 	}
 	if rt.spec.WorkDir != "/workspace/github.com/example/agentcon" {
 		t.Fatalf("workdir %q", rt.spec.WorkDir)
@@ -103,6 +113,67 @@ func TestRunBuildsSpec(t *testing.T) {
 	}
 	if len(rt.spec.Args) != 1 || rt.spec.Args[0] != "--help" {
 		t.Fatalf("args %v", rt.spec.Args)
+	}
+}
+
+func TestRunPassesXtraceEnv(t *testing.T) {
+	t.Setenv(xtraceEnv, "1")
+	root := t.TempDir()
+	rt := &captureRuntime{}
+	err := Run(context.Background(), Request{
+		Image:   testImage,
+		Root:    root,
+		Cwd:     root,
+		Home:    t.TempDir(),
+		User:    testUser,
+		Runtime: rt,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	found := false
+	for _, e := range rt.spec.Env {
+		if e == xtraceEnv+"=1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("env %v", rt.spec.Env)
+	}
+}
+
+func TestFillSessionIdentity(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(root, "github.com", "pastdev", "agentcon")
+	req := Request{Root: root, Cwd: cwd}
+	err := fillSessionIdentity(&req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !running.ValidSlug(req.Slug) {
+		t.Fatalf("slug %q", req.Slug)
+	}
+	if req.Project != "github.com/pastdev/agentcon" {
+		t.Fatalf("project %q", req.Project)
+	}
+
+	req = Request{Root: root, Cwd: cwd, Slug: "DEADBEEF", Project: "other/path"}
+	err = fillSessionIdentity(&req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Slug != testSlug {
+		t.Fatalf("slug %q", req.Slug)
+	}
+	if req.Project != "other/path" {
+		t.Fatalf("project %q", req.Project)
+	}
+
+	req = Request{Slug: "nope"}
+	err = fillSessionIdentity(&req)
+	if err == nil {
+		t.Fatal("expected invalid slug")
 	}
 }
 

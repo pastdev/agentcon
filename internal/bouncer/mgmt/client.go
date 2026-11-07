@@ -4,6 +4,7 @@ package mgmt
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,13 +68,16 @@ func (c *Client) ReloadToken(stateDir string) {
 	c.token = LoadToken(stateDir)
 }
 
-// DialContext prefers ~/.local/state/agentcon/running/<context>.yml, then
-// falls back to Dial(stateDir, configPath).
-func DialContext(home, contextName, stateDir, configPath string) (*Client, error) {
-	if home != "" && contextName != "" {
-		rec, err := running.Read(home, contextName)
+// DialContext prefers a matching running record, then Dial(stateDir, configPath).
+func DialContext(home string, q running.Query, stateDir, configPath string) (*Client, error) {
+	if home != "" {
+		rec, err := running.Find(home, q)
 		if err == nil {
 			return newClient("http://"+rec.ControlAddr, rec.Token, cliTimeout), nil
+		}
+		var amb *running.AmbiguousError
+		if errors.As(err, &amb) || (stateDir == "" && configPath == "") {
+			return nil, err
 		}
 	}
 	return Dial(stateDir, configPath)
@@ -156,9 +160,10 @@ func (c *Client) EndSession(id string) error {
 	return c.do(http.MethodDelete, "/_bouncer/sessions/"+id, nil, nil)
 }
 
-func (c *Client) CreateSession(profile, label, ttl string) (daemon.NewSession, error) {
+func (c *Client) CreateSession(id, profile, label, ttl string) (daemon.NewSession, error) {
 	var rec daemon.NewSession
 	err := c.do(http.MethodPost, "/_bouncer/sessions", map[string]string{
+		"id":      id,
 		"profile": profile,
 		"label":   label,
 		"ttl":     ttl,

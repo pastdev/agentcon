@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
+	"github.com/pastdev/agentcon/internal/bouncer/running"
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
 	pkgcfg "github.com/pastdev/agentcon/pkg/config"
 	"github.com/spf13/cobra"
@@ -20,6 +21,8 @@ var (
 	stateFlag    string
 	contextName  string
 	homeDir      string
+	projectFlag  string
+	slugFlag     string
 	configLoader *pkgcfg.Loader
 )
 
@@ -34,7 +37,9 @@ host to lint policy and talk to a running sidecar.
 
   agentcon bouncer check                validate policy and compile filters
   agentcon bouncer approvals            list pending asks
-  agentcon bouncer approve ID           allow a pending request`,
+  agentcon bouncer approve ID           allow a pending request
+
+Host commands pick a live session by --slug, then --project, then cwd.`,
 		SilenceUsage: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if p := cmd.Root(); p != nil && p.PersistentPreRun != nil {
@@ -48,6 +53,8 @@ host to lint policy and talk to a running sidecar.
 	}
 	cmd.PersistentFlags().StringVar(&fileFlag, "file", "", "bouncer policy file or directory")
 	cmd.PersistentFlags().StringVar(&contextFlag, "context", "", "agentcon context whose bouncer section to use")
+	cmd.PersistentFlags().StringVar(&projectFlag, "project", "", "project path relative to the context root")
+	cmd.PersistentFlags().StringVar(&slugFlag, "slug", "", "session slug")
 	cmd.PersistentFlags().StringVar(&stateFlag, "state-dir", "", "bouncer state directory")
 	cmd.AddCommand(
 		serveCmd(),
@@ -127,5 +134,17 @@ func bouncerLoader() func() (*bouncercfg.Config, error) {
 }
 
 func dial() (*mgmt.Client, error) {
-	return mgmt.DialContext(homeDir, contextName, stateDir, configPath)
+	if fileFlag != "" || stateFlag != "" {
+		return mgmt.Dial(stateDir, configPath)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("working directory: %w", err)
+	}
+	return mgmt.DialContext(homeDir, running.Query{
+		Context: contextName,
+		Project: projectFlag,
+		Slug:    slugFlag,
+		Cwd:     cwd,
+	}, "", "")
 }

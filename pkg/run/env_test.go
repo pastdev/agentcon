@@ -3,6 +3,8 @@ package run
 import (
 	"strings"
 	"testing"
+
+	"github.com/pastdev/agentcon/internal/bouncer/daemon"
 )
 
 const (
@@ -91,20 +93,26 @@ func TestBouncerSidecarSpecServeIsPID1(t *testing.T) {
 		Request{
 			Image:             testImage,
 			User:              testUser,
+			Context:           "git",
+			Project:           "github.com/pastdev/agentcon",
+			Slug:              testSlug,
 			SidecarExtraHosts: []string{testExtraHost},
 			SidecarEnv:        []string{testSmokeEnv + "=should-not-appear"},
 		},
-		map[string]string{"agentcon.role": "bouncer"},
+		map[string]string{labelRole: roleBouncer},
 		"ext-net",
 		"agent-net",
 		"10.1.0.0/16",
 		"10.2.0.0/16",
 		18228,
 	)
+	if spec.Name != "agentcon-github-com-pastdev-agentcon-deadbeef-bouncer" {
+		t.Fatalf("name %q", spec.Name)
+	}
 	if len(spec.Entrypoint) != 1 || spec.Entrypoint[0] != sidecarBinPath {
 		t.Fatalf("entrypoint %v", spec.Entrypoint)
 	}
-	if len(spec.Args) < 2 || spec.Args[0] != "bouncer" || spec.Args[1] != "serve" {
+	if len(spec.Args) < 2 || spec.Args[0] != roleBouncer || spec.Args[1] != "serve" {
 		t.Fatalf("args %v", spec.Args)
 	}
 	if len(spec.ExtraHosts) != 1 || spec.ExtraHosts[0] != testExtraHost {
@@ -136,5 +144,24 @@ func TestBouncerSidecarSpecServeIsPID1(t *testing.T) {
 		if got[k] != v {
 			t.Fatalf("%s=%q want %q", k, got[k], v)
 		}
+	}
+}
+
+func TestBouncerAgentEnvGitSSHCommand(t *testing.T) {
+	env := bouncerAgentEnv(daemon.NewSession{SessionRecord: daemon.SessionRecord{Token: "tok"}}, "10.1.0.2")
+	got := map[string]string{}
+	for _, e := range env {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok {
+			t.Fatalf("env %q", e)
+		}
+		got[k] = v
+	}
+	want := `"` + agentSSHClient + `" -F "` + agentSSHConfig + `"`
+	if got["GIT_SSH_COMMAND"] != want {
+		t.Fatalf("GIT_SSH_COMMAND=%q want %q", got["GIT_SSH_COMMAND"], want)
+	}
+	if strings.Contains(got["GIT_SSH_COMMAND"], agentBinPath) {
+		t.Fatalf("GIT_SSH_COMMAND should invoke ssh, not agentcon: %q", got["GIT_SSH_COMMAND"])
 	}
 }

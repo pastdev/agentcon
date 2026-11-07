@@ -136,7 +136,7 @@ func run() error {
 		return fmt.Errorf("bouncer listen: %w", err)
 	}
 
-	session, err := d.CreateSession("agent", "smoke-agent", 0)
+	session, err := d.CreateSession("", "agent", "smoke-agent", 0)
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}

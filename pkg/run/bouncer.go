@@ -33,6 +33,7 @@ const (
 	agentCABundlePath = optDir + "/ca-bundle.pem"
 	agentSSHConfig    = optDir + "/ssh/config"
 	agentKnownHosts   = optDir + "/ssh/known_hosts"
+	agentSSHClient    = "/usr/bin/ssh"
 	defaultProxyPort  = "8228"
 	defaultSSHPort    = "8229"
 )
@@ -67,13 +68,9 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("management port: %w", err)
 	}
 
-	labels := map[string]string{
-		"agentcon.context": setup.ContextName,
-		"agentcon.role":    "bouncer",
-	}
-	suffix := strconv.Itoa(os.Getpid())
-	agentNetName := fmt.Sprintf("agentcon-%s-agent-%s", sanitizeName(setup.ContextName), suffix)
-	extNetName := fmt.Sprintf("agentcon-%s-ext-%s", sanitizeName(setup.ContextName), suffix)
+	labels := sessionLabels(setup.ContextName, req.Project, req.Slug, roleBouncer)
+	agentNetName := running.ResourceName(req.Project, req.Slug, roleAgent)
+	extNetName := running.ResourceName(req.Project, req.Slug, roleExt)
 
 	agentNetID, err := req.Runtime.CreateNetwork(ctx, container.NetworkSpec{
 		Name:     agentNetName,
@@ -143,6 +140,9 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 
 	err = running.Write(req.Home, running.Record{
 		Context:     setup.ContextName,
+		Project:     req.Project,
+		Slug:        req.Slug,
+		Cwd:         req.Cwd,
 		ControlAddr: fmt.Sprintf("127.0.0.1:%d", hostPort),
 		Token:       token,
 		ContainerID: sidecarID,
@@ -152,9 +152,9 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("write running record: %w", err)
 	}
-	defer func() { _ = running.Remove(req.Home, setup.ContextName) }()
+	defer func() { _ = running.Remove(req.Home, req.Slug) }()
 
-	session, err := client.CreateSession("", "agentcon", "")
+	session, err := client.CreateSession(req.Slug, "", "agentcon", "")
 	if err != nil {
 		return fmt.Errorf("bouncer session: %w", err)
 	}
@@ -168,8 +168,18 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("bouncer sidecar has no IP on the agent network")
 	}
 
+	agentSpec.Name = running.ResourceName(req.Project, req.Slug, roleAgent)
+	agentSpec.Labels = sessionLabels(setup.ContextName, req.Project, req.Slug, roleAgent)
 	agentSpec.Networks = []string{agentNetName}
 	agentSpec.Env = append(agentSpec.Env, bouncerAgentEnv(session, agentIP)...)
+
+	if req.Stderr != nil {
+		project := req.Project
+		if project == "" {
+			project = "."
+		}
+		_, _ = fmt.Fprintf(req.Stderr, "agentcon session %s project %s\n", req.Slug, project)
+	}
 
 	go notifyApprovals(ctx, client, req.Stderr)
 
@@ -198,12 +208,13 @@ func bouncerSidecarSpec(
 	hostPort int,
 ) container.Spec {
 	return container.Spec{
+		Name:       running.ResourceName(req.Project, req.Slug, roleBouncer),
 		Image:      req.Image,
 		User:       req.User,
 		GroupAdd:   []string{groupRoot},
 		Entrypoint: []string{sidecarBinPath},
 		Args: []string{
-			"bouncer", "serve",
+			roleBouncer, "serve",
 			"--file", sidecarConfigPath,
 			"--state-dir", sidecarStatePath,
 			"--quiet",
@@ -347,7 +358,7 @@ func bouncerAgentEnv(session daemon.NewSession, agentIP string) []string {
 		SessionID:    session.ID,
 		CACert:       agentCACertPath,
 		CABundle:     agentCABundlePath,
-		SSHCommand:   fmt.Sprintf(`"%s" -F "%s"`, agentBinPath, agentSSHConfig),
+		SSHCommand:   fmt.Sprintf(`"%s" -F "%s"`, agentSSHClient, agentSSHConfig),
 		Placeholders: session.Placeholders,
 	})
 	out := make([]string, 0, len(env.Vars))
@@ -355,22 +366,6 @@ func bouncerAgentEnv(session daemon.NewSession, agentIP string) []string {
 		out = append(out, kv[0]+"="+kv[1])
 	}
 	return out
-}
-
-func sanitizeName(name string) string {
-	out := strings.Builder{}
-	for _, r := range strings.ToLower(name) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			out.WriteRune(r)
-			continue
-		}
-		out.WriteByte('-')
-	}
-	s := strings.Trim(out.String(), "-")
-	if s == "" {
-		return "ctx"
-	}
-	return s
 }
 
 func freeLocalPort() (int, error) {

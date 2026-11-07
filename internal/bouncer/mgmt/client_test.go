@@ -118,6 +118,7 @@ func TestDialContextUsesRunningRecord(t *testing.T) {
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	err := running.Write(home, running.Record{
 		Context:     "foo",
+		Slug:        "deadbeef",
 		ControlAddr: addr,
 		Token:       "from-record",
 		PID:         1,
@@ -125,7 +126,7 @@ func TestDialContextUsesRunningRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := DialContext(home, "foo", "", "")
+	c, err := DialContext(home, running.Query{Slug: "deadbeef"}, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -328,9 +328,18 @@ func (d *Daemon) Profile(name string) (*policy.Profile, bool) {
 	return p, ok
 }
 
+// SessionIDLength is the hex length of a session id (slug).
+const SessionIDLength = 8
+
+// NewSessionID returns an 8-character hex session id.
+func NewSessionID() string {
+	return randHex(SessionIDLength / 2)
+}
+
 // CreateSession registers a new agent session.
 // A ttl of 0 means the session lasts until revoked.
-func (d *Daemon) CreateSession(profile, label string, ttl time.Duration) (*SessionRecord, error) {
+// An empty id mints a new session id.
+func (d *Daemon) CreateSession(id, profile, label string, ttl time.Duration) (*SessionRecord, error) {
 	d.mu.Lock()
 	if profile == "" {
 		profile = d.cfg.DefaultProfile
@@ -343,7 +352,26 @@ func (d *Daemon) CreateSession(profile, label string, ttl time.Duration) (*Sessi
 		d.mu.Unlock()
 		return nil, fmt.Errorf("unknown profile %q", profile)
 	}
-	rec := &SessionRecord{Session: chain.Session{ID: randHex(8), Label: label, Profile: profile}, Token: randHex(24), Created: time.Now()}
+	if id == "" {
+		id = NewSessionID()
+	} else {
+		if len(id) != SessionIDLength {
+			d.mu.Unlock()
+			return nil, fmt.Errorf("session id %q must be %d hex characters", id, SessionIDLength)
+		}
+		if _, err := hex.DecodeString(id); err != nil {
+			d.mu.Unlock()
+			return nil, fmt.Errorf("session id %q must be %d hex characters", id, SessionIDLength)
+		}
+		id = strings.ToLower(id)
+		for _, s := range d.sessions {
+			if s.ID == id && !s.expired() {
+				d.mu.Unlock()
+				return nil, fmt.Errorf("session %q already exists", id)
+			}
+		}
+	}
+	rec := &SessionRecord{Session: chain.Session{ID: id, Label: label, Profile: profile}, Token: randHex(24), Created: time.Now()}
 	if ttl > 0 {
 		rec.Expires = rec.Created.Add(ttl)
 	}

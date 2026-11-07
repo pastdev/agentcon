@@ -1,6 +1,7 @@
 package bouncer
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,11 +22,18 @@ Decisions are printed here and appended to the audit log.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("working directory: %w", err)
+			}
 			return app.Serve(ctx, app.ServeOptions{
 				ConfigPath:  configPath,
 				StateDir:    stateDir,
 				Context:     contextName,
 				Home:        homeDir,
+				Project:     projectFlag,
+				Slug:        slugFlag,
+				Cwd:         cwd,
 				Quiet:       quiet,
 				ShowTunnels: showTunnels,
 				Log:         os.Stderr,

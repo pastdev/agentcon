@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/container"
 )
 
@@ -16,8 +17,25 @@ const (
 	harnessCursor       = "cursor"
 	harnessCursorMount  = "/agent/cursor"
 	hostRootEnv         = "AGENTCON_HOST_ROOT"
+	xtraceEnv           = "AGENTCON_XTRACE"
 	workspaceMountPoint = "/workspace"
+	labelContext        = "agentcon.context"
+	labelProject        = "agentcon.project"
+	labelSlug           = "agentcon.slug"
+	labelRole           = "agentcon.role"
+	roleAgent           = "agent"
+	roleBouncer         = "bouncer"
+	roleExt             = "ext"
 )
+
+func sessionLabels(contextName, project, slug, role string) map[string]string {
+	return map[string]string{
+		labelContext: contextName,
+		labelProject: project,
+		labelSlug:    slug,
+		labelRole:    role,
+	}
+}
 
 type BouncerSetup struct {
 	ContextName string
@@ -26,19 +44,23 @@ type BouncerSetup struct {
 }
 
 type Request struct {
-	Image             string
-	Root              string
-	Cwd               string
-	Home              string
-	User              string
-	Harness           string
-	Args              []string
-	TTY               bool
-	Stdin             io.Reader
-	Stdout            io.Writer
-	Stderr            io.Writer
-	Runtime           container.Runtime
-	Context           string
+	Image   string
+	Root    string
+	Cwd     string
+	Home    string
+	User    string
+	Harness string
+	Args    []string
+	TTY     bool
+	Stdin   io.Reader
+	Stdout  io.Writer
+	Stderr  io.Writer
+	Runtime container.Runtime
+	Context string
+	// Project is relative to Root. Empty is the context root. Derived from Cwd when unset.
+	Project string
+	// Slug is the 8-character session id. Minted when unset.
+	Slug              string
 	Bouncer           *BouncerSetup
 	LinuxBinary       string
 	Entrypoint        []string
@@ -56,6 +78,11 @@ type Request struct {
 func Run(ctx context.Context, req Request) error {
 	if req.Runtime == nil {
 		return fmt.Errorf("container runtime is required")
+	}
+
+	err := fillSessionIdentity(&req)
+	if err != nil {
+		return err
 	}
 
 	spec, err := specFrom(req)
@@ -115,7 +142,7 @@ func specFrom(req Request) (container.Spec, error) {
 		User:       req.User,
 		GroupAdd:   []string{groupRoot},
 		WorkDir:    filepath.ToSlash(filepath.Join(workspaceMountPoint, rel)),
-		Env:        []string{hostRootEnv + "=" + req.Root},
+		Env:        agentEnv(req),
 		Args:       req.Args,
 		Entrypoint: req.Entrypoint,
 		Stdin:      req.Stdin,
@@ -126,6 +153,10 @@ func specFrom(req Request) (container.Spec, error) {
 		Mounts: []container.Mount{
 			{Source: req.Root, Target: workspaceMountPoint},
 		},
+	}
+	if req.Slug != "" {
+		spec.Name = running.ResourceName(req.Project, req.Slug, roleAgent)
+		spec.Labels = sessionLabels(req.Context, req.Project, req.Slug, roleAgent)
 	}
 
 	if len(req.Entrypoint) > 0 {
@@ -143,4 +174,28 @@ func specFrom(req Request) (container.Spec, error) {
 	}
 
 	return spec, nil
+}
+
+func agentEnv(req Request) []string {
+	env := []string{hostRootEnv + "=" + req.Root}
+	if v := os.Getenv(xtraceEnv); v != "" {
+		env = append(env, xtraceEnv+"="+v)
+	}
+	return env
+}
+
+func fillSessionIdentity(req *Request) error {
+	if req.Slug == "" {
+		req.Slug = running.NewSlug()
+	} else {
+		req.Slug = strings.ToLower(req.Slug)
+	}
+	if !running.ValidSlug(req.Slug) {
+		return fmt.Errorf("slug %q must be %d hex characters", req.Slug, running.SlugLength)
+	}
+	if req.Project == "" {
+		req.Project = running.ProjectPath(req.Root, req.Cwd)
+	}
+	req.Project = strings.Trim(strings.ReplaceAll(req.Project, "\\", "/"), "/")
+	return nil
 }

@@ -22,6 +22,9 @@ type ServeOptions struct {
 	StateDir    string
 	Context     string
 	Home        string
+	Project     string
+	Slug        string
+	Cwd         string
 	Provided    map[string]string
 	Quiet       bool
 	ShowTunnels bool
@@ -78,8 +81,17 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		if err != nil {
 			return fmt.Errorf("read admin token: %w", err)
 		}
+		slug := strings.ToLower(opts.Slug)
+		if slug == "" {
+			slug = running.NewSlug()
+		} else if !running.ValidSlug(slug) {
+			return fmt.Errorf("slug %q must be %d hex characters", opts.Slug, running.SlugLength)
+		}
 		err = running.Write(opts.Home, running.Record{
 			Context:     opts.Context,
+			Project:     opts.Project,
+			Slug:        slug,
+			Cwd:         opts.Cwd,
 			ControlAddr: strings.TrimPrefix(cfg.Listen, "http://"),
 			Token:       strings.TrimSpace(string(token)),
 			PID:         os.Getpid(),
@@ -88,7 +100,8 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		if err != nil {
 			return fmt.Errorf("write running record: %w", err)
 		}
-		defer func() { _ = running.Remove(opts.Home, opts.Context) }()
+		logger.Printf("session %s", slug)
+		defer func() { _ = running.Remove(opts.Home, slug) }()
 	}
 	return d.Run(ctx)
 }

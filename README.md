@@ -26,6 +26,10 @@ It bind-mounts `root` at `/workspace` and starts the harness.
 Harness state is bind-mounted from the host to `/agent`.
 The container sets `AGENTCON_HOST_ROOT` to that host `root`.
 
+Entrypoint xtrace is off by default.
+`AGENTCON_XTRACE=1 agentcon run` writes it to `/agent/<harness>/entrypoint.xtrace` (host `~/.cursor/entrypoint.xtrace` for Cursor).
+Override the path with `AGENTCON_XTRACE_LOG`.
+
 When a context has a `bouncer` section, `run` starts a sidecar next to the agent.
 The sidecar holds credentials and filters outbound HTTP.
 See [docs/bouncer-run.md](docs/bouncer-run.md) for the container layout and the equivalent Docker commands.
@@ -50,7 +54,8 @@ Results go to `.agentcon/<use_case>.handoff.result`.
 ## Optional CLI allowlist
 
 `~/.cursor` inside the container is your host `~/.cursor`.
-The image does not edit that file.
+Linux CLI login is `~/.config/cursor/auth.json`, also linked to that bind.
+The image does not edit those files.
 
 If you want the agent to read and write `.agentcon/` without approval
 prompts, add allow rules in `~/.cursor/cli-config.json`.

@@ -62,7 +62,7 @@ func (d *Daemon) Control() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /_bouncer/sessions", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Profile, Label, TTL string }
+		var body struct{ ID, Profile, Label, TTL string }
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -75,7 +75,7 @@ func (d *Daemon) Control() http.Handler {
 				return
 			}
 		}
-		rec, err := d.CreateSession(body.Profile, body.Label, ttl)
+		rec, err := d.CreateSession(body.ID, body.Profile, body.Label, ttl)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

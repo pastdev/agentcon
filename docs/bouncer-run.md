@@ -18,13 +18,23 @@ The host prompts for the master password and POSTs `/_bouncer/credentials/source
 `source: ssh-agent` is a socket, not a PUT.
 Bind-mount `$SSH_AUTH_SOCK` at `/opt/agentcon/ssh-agent.sock` and set that path on the sidecar.
 
+## Session names
+
+`agentcon run` mints an 8-character hex session slug before it creates Docker objects.
+Container and network names are `agentcon-<bounded>-<slug>-<role>`.
+`<bounded>` is the project path relative to the context root, made docker-safe, and left-truncated so the full name stays at 63 characters.
+`<role>` is `agent`, `bouncer`, or `ext`.
+
+Host commands such as `agentcon bouncer approve` match a session by `--slug`, then `--project`, then the longest cwd prefix, then the only remaining record after `--context`.
+`run` prints `agentcon session <slug> project <project>` so you can pass `--slug` when more than one session matches.
+
 ## Networks
 
 Create an internal agent network and an external management network.
 
 ```bash
-docker network create --internal agentcon-ctx-agent
-docker network create agentcon-ctx-ext
+docker network create --internal agentcon-github-com-example-agentcon-deadbeef-agent
+docker network create agentcon-github-com-example-agentcon-deadbeef-ext
 ```
 
 Inspect each network for its subnet.
@@ -51,10 +61,10 @@ Agent tar, copied later:
 
 ```bash
 docker create \
-  --name agentcon-ctx-bouncer \
+  --name agentcon-github-com-example-agentcon-deadbeef-bouncer \
   --user 1000:1000 \
   --group-add 0 \
-  --network agentcon-ctx-ext \
+  --network agentcon-github-com-example-agentcon-deadbeef-ext \
   --publish 127.0.0.1:8228:8228 \
   --add-host host.docker.internal:host-gateway \
   --entrypoint /opt/agentcon/bin/agentcon \
@@ -67,9 +77,10 @@ docker create \
     --state-dir /opt/agentcon/state \
     --quiet
 
-docker network connect agentcon-ctx-agent agentcon-ctx-bouncer
-docker cp sidecar.tar agentcon-ctx-bouncer:/
-docker start agentcon-ctx-bouncer
+docker network connect agentcon-github-com-example-agentcon-deadbeef-agent \
+  agentcon-github-com-example-agentcon-deadbeef-bouncer
+docker cp sidecar.tar agentcon-github-com-example-agentcon-deadbeef-bouncer:/
+docker start agentcon-github-com-example-agentcon-deadbeef-bouncer
 ```
 
 `serve` is PID 1.
@@ -162,9 +173,9 @@ Copy the agent tar, then start.
 ```bash
 PROXY=http://bouncer:SESSION@${SIDECAR_AGENT_IP}:8228
 docker create \
-  --name agentcon-ctx-agent \
+  --name agentcon-github-com-example-agentcon-deadbeef-agent \
   --user 1000:1000 \
-  --network agentcon-ctx-agent \
+  --network agentcon-github-com-example-agentcon-deadbeef-agent \
   --env HTTPS_PROXY="${PROXY}" \
   --env https_proxy="${PROXY}" \
   --env HTTP_PROXY="${PROXY}" \
@@ -173,12 +184,14 @@ docker create \
   --env no_proxy=localhost,127.0.0.1,::1 \
   pastdev.com/agentcon:latest
 
-docker cp agent.tar agentcon-ctx-agent:/
-docker start -ai agentcon-ctx-agent
+docker cp agent.tar agentcon-github-com-example-agentcon-deadbeef-agent:/
+docker start -ai agentcon-github-com-example-agentcon-deadbeef-agent
 ```
 
 `agentcon run` also sets `NODE_USE_ENV_PROXY=1` so Node 24+ honors those proxy vars.
 It sets `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `BOUNCER_*`, credential placeholders, and the other session variables.
+`GIT_SSH_COMMAND` invokes `/usr/bin/ssh -F /opt/agentcon/ssh/config`.
+The SSH config `ProxyCommand` is `agentcon bouncer ssh-connect`.
 
 Extra hosts belong on the sidecar only.
 The agent reaches the outside through the proxy.

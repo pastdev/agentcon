@@ -26,13 +26,13 @@ func newTestDaemon(t *testing.T) *Daemon {
 
 func TestSessionTTL(t *testing.T) {
 	d := newTestDaemon(t)
-	short, err := d.CreateSession("", "short", 30*time.Millisecond)
+	short, err := d.CreateSession("", "", "short", 30*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
-	forever, _ := d.CreateSession("", "forever", 0)
-	if len(short.ID) != 16 {
-		t.Errorf("session ID %q should be 64 bits", short.ID)
+	forever, _ := d.CreateSession("", "", "forever", 0)
+	if len(short.ID) != 8 {
+		t.Errorf("session ID %q should be 32 bits", short.ID)
 	}
 	if _, ok := d.Session(short.Token); !ok {
 		t.Fatal("fresh session rejected")
@@ -46,6 +46,25 @@ func TestSessionTTL(t *testing.T) {
 	}
 	if n := len(d.listSessions()); n != 1 {
 		t.Fatalf("expired session listed; got %d sessions", n)
+	}
+}
+
+func TestCreateSessionID(t *testing.T) {
+	d := newTestDaemon(t)
+	rec, err := d.CreateSession("deadbeef", "", "agentcon", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.ID != "deadbeef" {
+		t.Fatalf("id %q", rec.ID)
+	}
+	_, err = d.CreateSession("DEADBEEF", "", "dup", 0)
+	if err == nil {
+		t.Fatal("expected duplicate session")
+	}
+	_, err = d.CreateSession("abcd", "", "short", 0)
+	if err == nil {
+		t.Fatal("expected short id error")
 	}
 }
 
