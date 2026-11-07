@@ -2,6 +2,8 @@
 
 `agentcon` does not embed Cursor.
 A Cursor session is an agent image that starts `agent`, plus config that names the binds and the hosts the CLI must reach.
+The image still has to honor the [workspace contract](../README.md#workspace-contract).
+This example adds Cursor binds and an entrypoint on top of that minimum.
 
 The [README](../README.md) is the install-to-`run` path, including the example `agents.yaml` and `contexts.yaml`.
 This page is the Cursor-specific contract behind those files.
@@ -62,10 +64,8 @@ Progress is logged at info, the same shape as `docker build --progress plain`.
 Docker layer cache makes an unchanged Dockerfile cheap.
 Edit `~/.config/agentcon.d/cursor/Dockerfile` when the agent needs more tools, for example `shellcheck` after you add bash.
 
-`run` starts the image as the host UID, with `group-add 0`.
-It mounts the context `root` at `/workspace` and the agent binds above.
-`AGENTCON_HOST_ROOT` is the host `root`.
-The example entrypoint:
+The [workspace contract](../README.md#workspace-contract) is what `run` always does.
+This example also bind-mounts the Cursor dirs above and uses this entrypoint:
 
 1. Gives that UID a writable `$HOME` and a passwd line
 2. Links `/agent/cursor` to `$HOME/.cursor`

@@ -39,7 +39,7 @@ golangci-lint run
 
 ## Image
 
-A context may use any Linux image that honors the workspace contract in the [README](../README.md).
+A context may use any Linux image that honors the [workspace contract](../README.md#workspace-contract).
 This tree does not ship a product image.
 [docs/cursor/image](cursor/image) is a maintained Cursor example.
 

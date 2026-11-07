@@ -10,7 +10,7 @@ Command flags live in `--help`.
 ## Getting started
 
 This path uses the maintained Cursor example image.
-Any Linux image that honors the workspace contract can replace it later.
+Any Linux image that honors the [workspace contract](#workspace-contract) can replace it later.
 
 ### 1. Install the CLI
 
@@ -103,10 +103,9 @@ contexts:
 When it is set, `run` always builds and tags that image before start, then relies on the Docker layer cache.
 If `image` is omitted, the tag is `agentcon/<agent-name>`.
 
-`run` starts the image as your host UID, mounts the context `root` at `/workspace`, and sets `AGENTCON_HOST_ROOT` to that host path.
-The image entrypoint is responsible for a writable home and for starting the agent process.
-
-Why those Cursor binds and tunnel hosts exist is in [docs/cursor.md](docs/cursor.md).
+`run` always applies the [workspace contract](#workspace-contract).
+The Cursor binds and tunnel hosts in the YAML above are extra.
+Why they exist is in [docs/cursor.md](docs/cursor.md).
 
 ### 4. Confirm the merge
 
@@ -157,6 +156,60 @@ You can run more than one project under the same `root` at once.
 Start each from that project's directory.
 Host commands such as `agentcon bouncer approve` pick the session from cwd.
 `--project` and `--slug` are only needed when that is ambiguous.
+
+## Workspace contract
+
+`run` does not pick an agent binary.
+It starts the image named by the context with a fixed host layout.
+The image entrypoint or `CMD` is the agent.
+
+### What `run` always does
+
+- Starts a Linux container from `agents.<name>.image`
+- Sets the container user to the host UID and GID
+- Adds the container to group `0` (`group-add 0`)
+- Bind-mounts the context `root` at `/workspace`
+- Sets the working directory to `/workspace` plus the host cwd relative to `root`
+- Sets `AGENTCON_HOST_ROOT` to that host `root` path
+- Forwards `AGENTCON_XTRACE` when it is set on the host
+- Bind-mounts each `agents.<name>.mounts` entry (and creates missing host source dirs)
+- Passes arguments after `--` as the container command
+- Allocates a TTY when stdin is a terminal
+- Leaves the image `ENTRYPOINT` in place unless the run request overrides it
+
+`run` does not run as root.
+The numeric UID usually has no `/etc/passwd` line and no home.
+
+### What the image must provide
+
+- A Linux rootfs
+- An `ENTRYPOINT` or `CMD` that starts the agent process and forwards container args
+- A way for that unprivileged UID to exist as a user, usually by appending a passwd line
+- A writable home for that user
+- Tools that can work with the project at `/workspace`
+
+Because the user is in group `0`, the usual setup is `chmod g=u` on `/etc/passwd` and on a home parent such as `/home`.
+The entrypoint then appends a passwd line, creates `$HOME`, and `exec`s the agent.
+
+Treat `/workspace` as the mounted host tree.
+When the agent must name a host path, join `AGENTCON_HOST_ROOT` with the path under `/workspace`.
+
+The image does not need Cursor, `/agent/*` binds, or a particular distro.
+Those are agent-specific.
+Declare extra binds on `agents.<name>.mounts` and document them with that agent.
+
+### When a bouncer is attached
+
+The sidecar is a separate image.
+`run` still starts your agent image under this contract, then adds:
+
+- Proxy and CA environment (`HTTPS_PROXY`, `SSL_CERT_FILE`, `GIT_SSH_COMMAND`, `BOUNCER_*`, and related vars)
+- Files under `/opt/agentcon` (binary, CA, SSH config)
+- An isolated Docker network
+
+Honor those proxy and CA variables.
+If the agent uses git over SSH, the image needs `/usr/bin/ssh`.
+`GIT_SSH_COMMAND` is `ssh -F /opt/agentcon/ssh/config`.
 
 ## Bouncer
 
@@ -225,6 +278,7 @@ Policy shape, credentials, sessions, filters, and the sidecar layout are in [doc
 
 ## See also
 
+- [Workspace contract](#workspace-contract) for the minimum agent image
 - [docs/cursor.md](docs/cursor.md) for the Cursor image, binds, and vendor hosts
 - [docs/bouncer.md](docs/bouncer.md) for bouncer design and policy details
 - [docs/development.md](docs/development.md) for building, testing, and snapshots
