@@ -41,16 +41,123 @@ There is no builtin host list in the binary.
 
 Each credential is a composite of slots (`username`, `password`, `token`, `private_key`, `certificate`).
 Each slot is a source plus an optional JSONPath on the source payload.
+`export_env` lists agent environment variables set to that credential's placeholder.
+`cache` is how long a fetched slot is kept.
+Default is 5m.
+`0s` disables it.
 
-`source: env` is a map of environment variable names.
-`file`, `keyring`, `command`, and `provided` are a map of `credential.slot` keys (for example `github-pat.token`).
+`source` is one of `bitwarden`, `env`, `file`, `keyring`, `command`, `ssh-agent`, or `provided`.
 
-Bitwarden stays an unlock, not a key/value dump.
-Identity lives in the policy YAML.
+```yaml
+credentials:
+  github-pat:
+    token:
+      source: bitwarden
+      email: you@example.com
+      item: pat-github-agent
+      path: $.notes
+      # server: https://vault.example.com
+      # folder: Agent
+      # password_env: BITWARDEN_MASTER_PASSWORD
+    export_env: [GH_TOKEN, GITHUB_TOKEN]
+
+  gitlab-login:
+    username:
+      source: bitwarden
+      email: you@example.com
+      item: GitLab
+      path: $.login.username
+    password:
+      source: bitwarden
+      email: you@example.com
+      item: GitLab
+      path: $.login.password
+
+  slack:
+    token:
+      source: env
+      env: SLACK_BOT_TOKEN
+    export_env: [SLACK_TOKEN]
+
+  sandbox-key:
+    private_key:
+      source: file
+      file: ~/.ssh/id_ed25519_sandbox
+
+  gitlab:
+    token:
+      source: keyring
+      # account: gitlab
+    export_env: [GITLAB_TOKEN]
+
+  github-cli:
+    token:
+      source: command
+      command: [gh, auth, token]
+    cache: 15m
+    export_env: [GH_TOKEN]
+
+  github-ssh:
+    private_key:
+      source: ssh-agent
+      # fingerprint: SHA256:...
+
+  deploy:
+    private_key:
+      source: provided
+```
+
+Bitwarden `email`, `item`, and `path` are required.
+`path` is a JSONPath on the decrypted cipher JSON, such as `$.notes`, `$.login.password`, `$.sshKey.privateKey`, or `$.fields[?(@.name=='API Key')].value`.
 The host prompts for the master password and POSTs `/_bouncer/credentials/sources/bitwarden/unlock`.
+It does not dump item secrets into the policy.
 
-`source: ssh-agent` is a socket, not a PUT.
+`source: env` names one host environment variable per slot.
+`agentcon run` PUTs those names after status is up.
+
+`file`, `keyring`, `command`, and `provided` are resolved on the host and PUT as `credential.slot` keys, for example `github-pat.token` and `deploy.private_key`.
+Keyring `account` defaults to the credential name.
+`source: command` is an argv.
+Stdout, minus trailing newlines, is the payload.
+
+`source: ssh-agent` is valid only on `private_key`.
+It is a socket, not a PUT.
 Bind-mount `$SSH_AUTH_SOCK` at `/opt/agentcon/ssh-agent.sock` and set that path on the sidecar.
+
+A service names a credential, then `inject` says how it is attached:
+
+```yaml
+profiles:
+  default:
+    unmatched: tunnel
+    http:
+      - name: github
+        hosts: [github.com, api.github.com]
+        credential: github-pat
+        inject:
+          bearer: true
+          git: {basic: {username: x-access-token}}
+          # header: PRIVATE-TOKEN
+          # value: "{{secret}}"
+          # basic: {username: oauth2}
+          # query: token
+        rules:
+          - action: allow
+            git: {}
+            github_repo: [your-org/your-repo]
+    ssh:
+      - name: github-ssh
+        hosts: [github.com, ssh.github.com]
+        user: git
+        credential: github-ssh
+        allow: [git]
+        rules:
+          - action: allow
+            git: {}
+            github_repo: [your-org/your-repo]
+```
+
+A full GitHub overlay is in the [README](../README.md#bouncer).
 
 ## Sessions
 
