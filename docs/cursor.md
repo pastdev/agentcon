@@ -62,7 +62,7 @@ The list in the README getting-started `agents.yaml` is the current set:
 If `build` is set, `run` always builds and tags the image, then starts it.
 Progress is logged at info, the same shape as `docker build --progress plain`.
 Docker layer cache makes an unchanged Dockerfile cheap.
-Edit `~/.config/agentcon.d/cursor/Dockerfile` when the agent needs more tools, for example `shellcheck` after you add bash.
+Edit `~/.config/agentcon.d/cursor/Dockerfile` when the agent needs more tools.
 
 The [workspace contract](../README.md#workspace-contract) is what `run` always does.
 This example also bind-mounts the Cursor dirs above and uses this entrypoint:
@@ -70,7 +70,9 @@ This example also bind-mounts the Cursor dirs above and uses this entrypoint:
 1. Gives that UID a writable `$HOME` and a passwd line
 2. Links `/agent/cursor` to `$HOME/.cursor`
 3. Links `/agent/cursor-config` to `$HOME/.config/cursor`
-4. Persists `$HOME/.local` on the state bind so `agent` is not reinstalled every start
+4. Links `$HOME/.local/share/cursor-agent` to `/agent/cursor/local/share/cursor-agent` on that same bind.
+   `cursor.com/install` unpacks the CLI there and puts `agent` and `cursor-agent` in `~/.local/bin`.
+   On later starts, the entrypoint recreates those two wrappers from the persisted version dir.
 5. `exec agent` with the container args
 
 `AGENT_CLI_CREDENTIAL_STORE=file` keeps Linux login on disk instead of a keyring.
@@ -84,5 +86,5 @@ Build by hand if you want a tag without `agentcon run`:
 docker build --progress plain --tag pastdev.com/agentcon-cursor:latest ~/.config/agentcon.d/cursor
 ```
 
-The example Dockerfile also installs Go, Node, and golangci-lint.
+The example Dockerfile also installs Go, Node, golangci-lint, and CLI tools agents use (`rg`, `fd`, `jq`, `yq`, `gh`, `shellcheck`).
 Add more toolchains in later layers, or edit the copy in the config directory and let `run` rebuild.

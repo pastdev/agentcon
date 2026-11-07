@@ -38,15 +38,55 @@ function source_profiles {
   fi
 }
 
+function latest_cursor_agent {
+  local candidate dir versions_dir
+  versions_dir="${HOME}/.local/share/cursor-agent/versions"
+  if [[ ! -d "${versions_dir}" ]]; then
+    return 1
+  fi
+  candidate=""
+  for dir in "${versions_dir}"/*; do
+    if [[ ! -x "${dir}/cursor-agent" ]]; then
+      continue
+    fi
+    if [[ -z "${candidate}" || "${dir}" > "${candidate}" ]]; then
+      candidate="${dir}"
+    fi
+  done
+  if [[ -z "${candidate}" ]]; then
+    return 1
+  fi
+  printf '%s\n' "${candidate}"
+}
+
+function link_cursor_agent_bin {
+  local version_dir
+  version_dir="$(latest_cursor_agent)" || return 0
+  ln --symbolic --force \
+    "${version_dir}/cursor-agent" \
+    "${HOME}/.local/bin/agent"
+  ln --symbolic --force \
+    "${version_dir}/cursor-agent" \
+    "${HOME}/.local/bin/cursor-agent"
+}
+
 function link_cursor_state {
   mkdir --parents \
     "${HOME}" \
     "${HOME}/.config" \
-    "${CURSOR_STATE}/local" \
+    "${HOME}/.local/bin" \
+    "${HOME}/.local/share" \
+    "${CURSOR_STATE}/local/share/cursor-agent" \
     "${CURSOR_CONFIG}"
   ln --symbolic --force "${CURSOR_STATE}" "${HOME}/.cursor"
   ln --symbolic --force "${CURSOR_CONFIG}" "${HOME}/.config/cursor"
-  ln --symbolic --force "${CURSOR_STATE}/local" "${HOME}/.local"
+  # cursor.com/install unpacks into ~/.local/share/cursor-agent
+  # and symlinks agent into ~/.local/bin.
+  # Persist only that share tree so the rest of ~/.local stays in the container.
+  ln --symbolic --force \
+    "${CURSOR_STATE}/local/share/cursor-agent" \
+    "${HOME}/.local/share/cursor-agent"
+  link_cursor_agent_bin
 }
 
 function install_cursor {
