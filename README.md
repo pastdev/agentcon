@@ -233,52 +233,36 @@ Credentials stay in the sidecar.
 The agent reaches the network through that proxy.
 
 `default_profile` is required.
-This overlay is additive on the getting-started files.
-It lets git and GitHub API traffic through for one repo, injects a Bitwarden PAT, and runs a branch-protection filter.
-Put filter files next to the YAML, under `ts/filters/`.
+[docs/bouncer/github](docs/bouncer/github) is a starting point for a GitHub allowlist, including filters.
+Copy it into `~/.config/agentcon.d`, then edit `github.yaml` for your repo and Bitwarden items.
 
-`~/.config/agentcon.d/bouncers.yaml`:
+From a clone of this repository:
 
-```yaml
-bouncers:
-  github:
-    default_profile: default
-    credentials:
-      github-pat:
-        token:
-          source: bitwarden
-          email: you@example.com
-          item: pat-github-agent
-          path: $.notes
-        export_env: [GH_TOKEN, GITHUB_TOKEN]
-    profiles:
-      default:
-        unmatched: tunnel
-        http:
-          - name: github
-            hosts: [github.com, api.github.com]
-            credential: github-pat
-            inject:
-              bearer: true
-              git: {basic: {username: x-access-token}}
-            rules:
-              - action: allow
-                git: {}
-                github_repo: [your-org/your-repo]
-                filters:
-                  - path: ts/filters/git-protect-branches.ts
-                    config: {branches: [main, master]}
+```bash
+mkdir -p ~/.config/agentcon.d
+cp -a docs/bouncer/github/. ~/.config/agentcon.d/
 ```
 
-Point the context at it in `contexts.yaml`:
+From a release-only install:
 
-```yaml
-contexts:
-  git:
-    agent: cursor
-    root: "{{home}}/git"
-    bouncer: github
+```bash
+mkdir -p ~/.config/agentcon.d
+curl --fail --location \
+  https://github.com/pastdev/agentcon/archive/refs/heads/master.tar.gz \
+  | tar \
+      --directory ~/.config/agentcon.d \
+      --extract \
+      --gzip \
+      --strip-components 4 \
+      --wildcards \
+      '*/docs/bouncer/github'
 ```
+
+That overlay is additive.
+It does not set `agent` or `root`.
+If your context is not named `git`, rename that key in `github.yaml`.
+
+How to write TypeScript filters is in [docs/bouncer-filters.md](docs/bouncer-filters.md).
 
 Agent `tunnel` hosts are unioned onto root bouncer profiles.
 Unknown hosts follow `unmatched`.
@@ -287,7 +271,7 @@ Leftover paths on an intercepted host do not get the credential.
 The host prompts for Bitwarden unlock when that source is used.
 Answer an `ask` rule with `agentcon bouncer approve` from the project directory.
 
-Policy shape, credentials, sessions, filters, and the sidecar layout are in [docs/bouncer.md](docs/bouncer.md).
+Policy shape, credentials, sessions, and the sidecar layout are in [docs/bouncer.md](docs/bouncer.md).
 
 ## See also
 
@@ -295,5 +279,7 @@ Policy shape, credentials, sessions, filters, and the sidecar layout are in [doc
 - [docs/workspace/Dockerfile](docs/workspace/Dockerfile) for a mock image that only honors that contract
 - [docs/cursor.md](docs/cursor.md) for the Cursor image, binds, and vendor hosts
 - [docs/bouncer.md](docs/bouncer.md) for bouncer design and policy details
+- [docs/bouncer-filters.md](docs/bouncer-filters.md) for TypeScript filters
+- [docs/bouncer/github](docs/bouncer/github) for a GitHub allowlist starting point
 - [docs/development.md](docs/development.md) for building, testing, and snapshots
 - `agentcon --help` and `agentcon bouncer --help` for flags

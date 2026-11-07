@@ -27,11 +27,11 @@ They miss receive-pack and nested `.git` paths.
 `github_subpaths` limits REST paths under that repo.
 Git traffic never matches a subpath rule.
 
-TypeScript filters attach to a rule.
-They run only after that rule matches.
-A filter may `allow`, `deny`, or `ask`.
-Put files under `ts/` next to the config.
-`agentcon bouncer check` compiles them.
+TypeScript filters hang on a profile, a service, or a rule.
+Rule filters run only after that rule matches.
+A filter may call `next()`, `deny()`, `respond()`, or `ask()`.
+Put files under `ts/` next to the overlay YAML.
+How to write them is in [bouncer-filters.md](bouncer-filters.md).
 
 Agent `tunnel` hosts are unioned onto root profiles.
 `agentcon config` prints that list under `agents`.
@@ -223,7 +223,48 @@ profiles:
             github_repo: [your-org/your-repo]
 ```
 
-A full GitHub overlay is in the [README](../README.md#bouncer).
+A full GitHub overlay is the [GitHub starting point](#github-starting-point).
+
+## GitHub starting point
+
+[docs/bouncer/github](github) is a starting point, not a product policy.
+Copy it into `~/.config/agentcon.d`, then edit `github.yaml` for your repo and Bitwarden items.
+It adds a named `github` bouncer, binds it on the `git` context, and ships the three filters that overlay uses.
+
+From a clone of this repository:
+
+```bash
+mkdir -p ~/.config/agentcon.d
+cp -a docs/bouncer/github/. ~/.config/agentcon.d/
+```
+
+From a release-only install:
+
+```bash
+mkdir -p ~/.config/agentcon.d
+curl --fail --location \
+  https://github.com/pastdev/agentcon/archive/refs/heads/master.tar.gz \
+  | tar \
+      --directory ~/.config/agentcon.d \
+      --extract \
+      --gzip \
+      --strip-components 4 \
+      --wildcards \
+      '*/docs/bouncer/github'
+```
+
+That writes `github.yaml` and `ts/` next to your existing agent and context files.
+It does not set `agent` or `root`.
+If your context is not named `git`, rename that key in `github.yaml`.
+Add another repo by appending to each `github_repo` list, not by copying the rules.
+
+`unmatched: tunnel` splices unknown hosts.
+github.com and api.github.com are intercepted.
+Leftover paths on those hosts go through without the PAT.
+`mergePullRequest` is omitted from the GraphQL deny list so `require-approval-merge.ts` can ask.
+REST merge uses the YAML `action: ask` rule.
+
+Writing filters is in [bouncer-filters.md](bouncer-filters.md).
 
 ## Sessions
 
