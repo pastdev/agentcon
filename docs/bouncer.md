@@ -1,9 +1,43 @@
-# Bouncer run layout
+# Bouncer
 
-`agentcon run` with a `bouncer` section starts two containers and two networks.
-The sidecar is PID 1 running `bouncer serve`.
-Secrets are not passed as container environment variables.
-After the management API is up, the host PUTs secrets into memory.
+The [README](../README.md) covers enabling bouncer and a minimal GitHub overlay.
+This page is policy shape, credentials, sessions, and the sidecar layout `agentcon run` implements.
+
+`agentcon bouncer --help` lists flags.
+Host commands pick a live session by `--slug`, then `--project`, then cwd.
+
+## Policy
+
+`default_profile` is required.
+A session with no profile uses that name.
+
+Each HTTP or SSH service is a host list, an optional credential, inject rules, and an ordered `rules` list.
+The first matching rule wins.
+`unmatched` applies to hosts that no service claims.
+`tunnel` splices those hosts.
+`deny` blocks them.
+Leftover paths on an intercepted host skip the credential and strip placeholder auth.
+
+`git: {}` is a git-smart-HTTP matcher, not an HTTP method.
+It matches info/refs, git-upload-pack, and git-receive-pack.
+Path globs are not a substitute.
+They miss receive-pack and nested `.git` paths.
+
+`github_repo` is a YAML list of `owner/repo`.
+`github_subpaths` limits REST paths under that repo.
+Git traffic never matches a subpath rule.
+
+TypeScript filters attach to a rule.
+They run only after that rule matches.
+A filter may `allow`, `deny`, or `ask`.
+Put files under `ts/` next to the config.
+`agentcon bouncer check` compiles them.
+
+Cursor product hosts are unioned onto root profiles from `pkg/harness/<name>/default.yml`.
+`agentcon config` prints that list under `harnesses`.
+Setting `harnesses.cursor.tunnel` in your own config replaces the builtin list.
+
+## Credentials
 
 Each credential is a composite of slots (`username`, `password`, `token`, `private_key`, `certificate`).
 Each slot is a source plus an optional JSONPath on the source payload.
@@ -18,17 +52,28 @@ The host prompts for the master password and POSTs `/_bouncer/credentials/source
 `source: ssh-agent` is a socket, not a PUT.
 Bind-mount `$SSH_AUTH_SOCK` at `/opt/agentcon/ssh-agent.sock` and set that path on the sidecar.
 
-## Session names
+## Sessions
 
 `agentcon run` mints an 8-character hex session slug before it creates Docker objects.
 Container and network names are `agentcon-<bounded>-<slug>-<role>`.
 `<bounded>` is the project path relative to the context root, made docker-safe, and left-truncated so the full name stays at 63 characters.
 `<role>` is `agent`, `bouncer`, or `ext`.
 
-Host commands such as `agentcon bouncer approve` match a session by `--slug`, then `--project`, then the longest cwd prefix, then the only remaining record after `--context`.
-`run` prints `agentcon session <slug> project <project>` so you can pass `--slug` when more than one session matches.
+Host discovery files are `~/.local/state/agentcon/running/<slug>.yml`.
+`run` prints `agentcon session <slug> project <project>`.
 
-## Networks
+Decisions are appended to the sidecar audit log even when `--quiet` hides them on the TTY.
+
+## Sidecar layout
+
+`agentcon run` with a `bouncer` section starts two containers and two networks.
+The sidecar is PID 1 running `bouncer serve`.
+Secrets are not passed as container environment variables.
+After the management API is up, the host PUTs secrets into memory.
+
+The rest of this section is the equivalent Docker commands, for debugging or a custom runner.
+
+### Networks
 
 Create an internal agent network and an external management network.
 
@@ -40,7 +85,7 @@ docker network create agentcon-github-com-example-agentcon-deadbeef-ext
 Inspect each network for its subnet.
 Those CIDRs become `AGENT_NETWORK` and `MANAGEMENT_NETWORK` on the sidecar.
 
-## Sidecar payload
+### Sidecar payload
 
 Pack files at `/opt/agentcon` and copy them into a created, not yet started, container.
 
@@ -88,7 +133,7 @@ The container exits if serve exits.
 Do not pass credential values with `-e`.
 When the policy uses `source: ssh-agent`, add `--volume "${SSH_AUTH_SOCK}:/opt/agentcon/ssh-agent.sock"` and `-e SSH_AUTH_SOCK=/opt/agentcon/ssh-agent.sock`.
 
-## Management API
+### Management API
 
 Wait until status answers.
 
@@ -164,7 +209,7 @@ curl -fsS \
   http://127.0.0.1:8228/_bouncer/ca
 ```
 
-## Agent container
+### Agent container
 
 Connect the agent only to the internal network.
 Point proxy and CA paths at the sidecar IP on that network.
@@ -199,7 +244,6 @@ The agent reaches the outside through the proxy.
 ## Harness tunnels
 
 Builtin harness host lists live in `pkg/harness/<name>/default.yml` and load as the first config source.
-`agentcon config` always prints every embedded harness under `harnesses`.
 `run` unions only the active harness list onto each bouncer profile that does not `extends` another profile.
 Child profiles inherit that list.
 
@@ -218,9 +262,4 @@ contexts:
             - extra.vendor.example
 ```
 
-`agentcon config` will still show the builtin list under `harnesses.cursor.tunnel`.
-The sidecar policy has both.
 When the gap belongs in the product, add it to `pkg/harness/<name>/default.yml`.
-
-Setting `harnesses.cursor.tunnel` in your own agentcon config replaces the builtin list.
-That is a replace, not an append.

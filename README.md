@@ -1,15 +1,48 @@
 # agentcon
 
 Containerized agent workspace.
+The host CLI is `agentcon`.
+It starts a container against a configured context, bind-mounts a host tree at `/workspace`, and runs a harness.
 
-The host CLI is `agentcon run`.
-Build the image, then configure a context with an `image` and a host `root`.
+Command flags live in `--help`.
+This page is the short path from install to a running session.
+
+## Getting started
+
+### Install
+
+`agentcon` is a self-contained binary.
+[Pre-built releases](https://github.com/pastdev/agentcon/releases) cover linux, darwin, and windows.
+
+```bash
+binary="${HOME}/.local/bin/agentcon"
+platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
+mkdir -p "$(dirname "${binary}")"
+curl \
+  --fail \
+  --location \
+  --output "${binary}" \
+  "https://github.com/pastdev/agentcon/releases/latest/download/agentcon-${platform}"
+chmod 0755 "${binary}"
+```
+
+Add `~/.local/bin` to `PATH` if it is not already there.
+
+You also need the workspace image locally.
+There is no published registry tag yet.
 
 ```bash
 docker build --progress plain --tag pastdev.com/agentcon:latest image/base/
 ```
 
+Run that from a clone of this repository.
+See [docs/development.md](docs/development.md) for building the CLI from source.
+
+### Configure
+
 Config is loaded from `/etc/agentcon.d`, `~/.config/agentcon.d`, and `./agentcon.d`.
+Maps merge.
+Slices replace.
 
 ```yaml
 default_context: git
@@ -22,56 +55,88 @@ contexts:
 `agentcon run` uses `default_context`.
 `agentcon run NAME` uses that context.
 Cwd must be at or under the selected `root`.
-It bind-mounts `root` at `/workspace` and starts the harness.
-Harness state is bind-mounted from the host to `/agent`.
-The container sets `AGENTCON_HOST_ROOT` to that host `root`.
+The context `root` is mounted at `/workspace`.
+Harness state for Cursor is your host `~/.cursor`.
 
-Entrypoint xtrace is off by default.
-`AGENTCON_XTRACE=1 agentcon run` writes it to `/agent/<harness>/entrypoint.xtrace` (host `~/.cursor/entrypoint.xtrace` for Cursor).
-Override the path with `AGENTCON_XTRACE_LOG`.
+### Run
 
-When a context has a `bouncer` section, `run` starts a sidecar next to the agent.
-The sidecar holds credentials and filters outbound HTTP.
-See [docs/bouncer-run.md](docs/bouncer-run.md) for the container layout and the equivalent Docker commands.
-
-Each harness has a builtin `tunnel` list (Cursor is embedded today).
-`agentcon config` prints it under `harnesses`.
-`run` copies that list onto root bouncer profiles for the selected harness.
-Add extra hosts on `profiles.<name>.tunnel` in the context bouncer config.
-Replacing `harnesses.<name>.tunnel` in agentcon config replaces the builtin list for that harness.
-
-## Handoff scratch space
-
-Agents write host-side handoff scripts under `.agentcon/` at the project root.
-That directory is gitignored.
-It is scratch space for the agent.
-
-The agent process cannot use host credentials or Docker.
-When a step needs those, the agent writes `.agentcon/<use_case>.handoff.sh`.
-You review and run that script.
-Results go to `.agentcon/<use_case>.handoff.result`.
-
-## Optional CLI allowlist
-
-`~/.cursor` inside the container is your host `~/.cursor`.
-Linux CLI login is `~/.config/cursor/auth.json`, also linked to that bind.
-The image does not edit those files.
-
-If you want the agent to read and write `.agentcon/` without approval
-prompts, add allow rules in `~/.cursor/cli-config.json`.
-
-```json
-{
-  "permissions": {
-    "allow": [
-      "Read(.agentcon/**)",
-      "Write(.agentcon/**)",
-      "Delete(.agentcon/**)"
-    ]
-  }
-}
+```bash
+cd ~/git/github.com/you/your-repo
+agentcon run
 ```
 
-Restart the agent session after you change that file.
-Exact pattern syntax can vary by CLI version.
-Keep `approvalMode` as `allowlist` unless you intend a broader grant.
+Arguments after `--` go to the harness.
+
+```bash
+agentcon run -- --resume
+```
+
+Each `run` is a new container.
+`--resume` asks Cursor to continue the previous chat.
+Linux CLI login is stored on the same `~/.cursor` bind, so a later container can reuse it.
+
+You can run more than one project under the same `root` at once.
+Start each from that project's directory.
+Host commands such as `agentcon bouncer approve` pick the session from cwd.
+`--project` and `--slug` are only needed when that is ambiguous.
+
+## Bouncer
+
+A `bouncer` section on a context starts a sidecar next to the agent.
+Credentials stay in the sidecar.
+The agent reaches the network through that proxy.
+HTTP and SSH can be allowed, asked, or denied.
+TypeScript filters can inspect a matched request, including git-smart-HTTP and GraphQL.
+
+Enable it by adding `bouncer` to the context.
+`default_profile` is required.
+This overlay is additive on the `git` context from getting started.
+It lets git and GitHub API traffic through for one repo, injects a Bitwarden PAT, and runs a branch-protection filter.
+Put filter files next to the YAML, under `ts/filters/`.
+
+```yaml
+contexts:
+  git:
+    bouncer:
+      default_profile: default
+      credentials:
+        github-pat:
+          token:
+            source: bitwarden
+            email: you@example.com
+            item: pat-github-agent
+            path: $.notes
+          export_env: [GH_TOKEN, GITHUB_TOKEN]
+      profiles:
+        default:
+          unmatched: tunnel
+          http:
+            - name: github
+              hosts: [github.com, api.github.com]
+              credential: github-pat
+              inject:
+                bearer: true
+                git: {basic: {username: x-access-token}}
+              rules:
+                - action: allow
+                  git: {}
+                  github_repo: [your-org/your-repo]
+                  filters:
+                    - path: ts/filters/git-protect-branches.ts
+                      config: {branches: [main, master]}
+```
+
+Cursor product hosts are tunneled by default.
+Unknown hosts follow `unmatched`.
+Leftover paths on an intercepted host do not get the credential.
+
+The host prompts for Bitwarden unlock when that source is used.
+Answer an `ask` rule with `agentcon bouncer approve` from the project directory.
+
+Policy shape, credentials, sessions, filters, and the sidecar layout are in [docs/bouncer.md](docs/bouncer.md).
+
+## See also
+
+- [docs/bouncer.md](docs/bouncer.md) for bouncer design and policy details
+- [docs/development.md](docs/development.md) for building, testing, and image work
+- `agentcon --help` and `agentcon bouncer --help` for flags
