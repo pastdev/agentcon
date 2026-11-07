@@ -13,117 +13,132 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-func TestHostProvidedCredsFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "secret")
-	err := os.WriteFile(path, []byte(testFromFile+"\n"), 0o600)
-	if err != nil {
-		t.Fatal(err)
+func TestHostProvidedCreds(t *testing.T) {
+	type testCase struct {
+		policy      string
+		extra       map[string]string
+		skipWindows string
+		want        map[string]string
+		wantErr     string
 	}
-	got, err := hostProvidedCreds(context.Background(), []byte(`
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		if tc.skipWindows != "" && runtime.GOOS == "windows" {
+			t.Skip(tc.skipWindows)
+		}
+		got, err := hostProvidedCreds(context.Background(), []byte(tc.policy), tc.extra)
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("got %v", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(tc.want) {
+			t.Fatalf("got %v", got)
+		}
+		for k, v := range tc.want {
+			if got[k] != v {
+				t.Fatalf("got %v", got)
+			}
+		}
+	}
+
+	t.Run("reads a file slot", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "secret")
+		err := os.WriteFile(path, []byte("from-file\n"), 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tester(t, testCase{
+			policy: `
 credentials:
   tok:
     token:
       source: file
-      file: `+path+`
-`), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got[testCredTok+".token"] != testFromFile {
-		t.Fatalf("got %v", got)
-	}
-}
-
-func TestHostProvidedCredsCommand(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
-	got, err := hostProvidedCreds(context.Background(), []byte(`
+      file: ` + path + `
+`,
+			want: map[string]string{"tok.token": "from-file"},
+		})
+	})
+	t.Run("reads a command slot", func(t *testing.T) {
+		tester(t, testCase{
+			skipWindows: "uses sh",
+			policy: `
 credentials:
   tok:
     token:
       source: command
       command: ["sh", "-c", "printf from-cmd"]
-`), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got[testCredTok+".token"] != "from-cmd" {
-		t.Fatalf("got %v", got)
-	}
-}
-
-func TestHostProvidedCredsProvided(t *testing.T) {
-	got, err := hostProvidedCreds(context.Background(), []byte(`
+`,
+			want: map[string]string{"tok.token": "from-cmd"},
+		})
+	})
+	t.Run("reads a provided slot", func(t *testing.T) {
+		tester(t, testCase{
+			policy: `
 credentials:
   tok:
     token:
       source: provided
-`), map[string]string{testCredTok + ".token": testFromExtra})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got[testCredTok+".token"] != testFromExtra {
-		t.Fatalf("got %v", got)
-	}
-}
-
-func TestHostProvidedCredsExtraWinsOverFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "secret")
-	err := os.WriteFile(path, []byte(testFromFile), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := hostProvidedCreds(context.Background(), []byte(`
+`,
+			extra: map[string]string{"tok.token": "from-extra"},
+			want:  map[string]string{"tok.token": "from-extra"},
+		})
+	})
+	t.Run("lets extra pairs win over a file slot", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "secret")
+		err := os.WriteFile(path, []byte("from-file"), 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tester(t, testCase{
+			policy: `
 credentials:
   tok:
     token:
       source: file
-      file: `+path+`
-`), map[string]string{testCredTok + ".token": testFromExtra})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got[testCredTok+".token"] != testFromExtra {
-		t.Fatalf("got %v", got)
-	}
-}
-
-func TestHostProvidedCredsMissingProvided(t *testing.T) {
-	_, err := hostProvidedCreds(context.Background(), []byte(`
+      file: ` + path + `
+`,
+			extra: map[string]string{"tok.token": "from-extra"},
+			want:  map[string]string{"tok.token": "from-extra"},
+		})
+	})
+	t.Run("reports a missing provided slot", func(t *testing.T) {
+		tester(t, testCase{
+			policy: `
 credentials:
   tok:
     token:
       source: provided
-`), nil)
-	if err == nil || !strings.Contains(err.Error(), testCredTok) {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestHostProvidedCredsMissingFile(t *testing.T) {
-	_, err := hostProvidedCreds(context.Background(), []byte(`
+`,
+			wantErr: "tok",
+		})
+	})
+	t.Run("reports a missing file", func(t *testing.T) {
+		tester(t, testCase{
+			policy: `
 credentials:
   tok:
     token:
       source: file
       file: /no/such/agentcon-secret
-`), nil)
-	if err == nil || !strings.Contains(err.Error(), testCredTok) {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestHostProvidedCredsMixedSlots(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "secret")
-	err := os.WriteFile(path, []byte(testFromFile+"\n"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	policy := []byte(`
+`,
+			wantErr: "tok",
+		})
+	})
+	t.Run("reads a file password and leaves env username to hostEnvCreds", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "secret")
+		err := os.WriteFile(path, []byte("from-file\n"), 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policy := `
 credentials:
   login:
     username:
@@ -132,26 +147,23 @@ credentials:
     password:
       source: file
       file: ` + path + `
-`)
-	t.Setenv("SMOKE_USER", "alice")
-	got, err := hostProvidedCreds(context.Background(), policy, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got["login.password"] != testFromFile {
-		t.Fatalf("provided %v", got)
-	}
-	env, err := hostEnvCreds(policy, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(env) != 1 || env["SMOKE_USER"] != "alice" {
-		t.Fatalf("env %v", env)
-	}
-}
-
-func TestHostProvidedCredsSkipsEnvBitwardenAndSSH(t *testing.T) {
-	got, err := hostProvidedCreds(context.Background(), []byte(`
+`
+		t.Setenv("SMOKE_USER", "alice")
+		tester(t, testCase{
+			policy: policy,
+			want:   map[string]string{"login.password": "from-file"},
+		})
+		env, err := hostEnvCreds([]byte(policy), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(env) != 1 || env["SMOKE_USER"] != "alice" {
+			t.Fatalf("env %v", env)
+		}
+	})
+	t.Run("skips env bitwarden and ssh-agent sources", func(t *testing.T) {
+		tester(t, testCase{
+			policy: `
 credentials:
   envtok:
     token:
@@ -166,102 +178,126 @@ credentials:
   key:
     private_key:
       source: ssh-agent
-`), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("got %v", got)
-	}
-}
-
-func TestHostProvidedCredsKeyring(t *testing.T) {
-	keyring.MockInit()
-	err := keyring.Set(creds.KeyringService, testCredTok, "from-keyring")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := hostProvidedCreds(context.Background(), []byte(`
+`,
+			want: map[string]string{},
+		})
+	})
+	t.Run("reads a keyring slot", func(t *testing.T) {
+		keyring.MockInit()
+		err := keyring.Set(creds.KeyringService, "tok", "from-keyring")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tester(t, testCase{
+			policy: `
 credentials:
   tok:
     token:
       source: keyring
-`), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got[testCredTok+".token"] != "from-keyring" {
-		t.Fatalf("got %v", got)
-	}
+`,
+			want: map[string]string{"tok.token": "from-keyring"},
+		})
+	})
 }
 
-func TestHostSSHAuthSockUnused(t *testing.T) {
-	got, err := hostSSHAuthSock([]byte(`
+func TestHostSSHAuthSock(t *testing.T) {
+	type testCase struct {
+		policy  string
+		want    string
+		wantErr []string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		got, err := hostSSHAuthSock([]byte(tc.policy))
+		if len(tc.wantErr) > 0 {
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			found := false
+			for _, s := range tc.wantErr {
+				if strings.Contains(err.Error(), s) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("got %v", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Fatalf("got %q", got)
+		}
+	}
+
+	t.Run("ignores policy without ssh-agent", func(t *testing.T) {
+		tester(t, testCase{
+			policy: `
 credentials:
   tok:
     token:
       source: env
       env: UNUSED
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "" {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func TestHostSSHAuthSockMissingEnv(t *testing.T) {
-	t.Setenv("SSH_AUTH_SOCK", "")
-	_, err := hostSSHAuthSock([]byte(`
+`,
+		})
+	})
+	t.Run("requires SSH_AUTH_SOCK", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", "")
+		tester(t, testCase{
+			policy: `
 credentials:
   key:
     private_key:
       source: ssh-agent
-`))
-	if err == nil || (!strings.Contains(err.Error(), "SSH_AUTH_SOCK") && !strings.Contains(err.Error(), "ssh-agent")) {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestHostSSHAuthSock(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("sidecar ssh-agent bind is unix-only")
-	}
-	sock := filepath.Join(t.TempDir(), "agent.sock")
-	err := os.WriteFile(sock, []byte{}, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SSH_AUTH_SOCK", sock)
-	got, err := hostSSHAuthSock([]byte(`
+`,
+			wantErr: []string{"SSH_AUTH_SOCK", "ssh-agent"},
+		})
+	})
+	t.Run("returns the socket path", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("sidecar ssh-agent bind is unix-only")
+		}
+		sock := filepath.Join(t.TempDir(), "agent.sock")
+		err := os.WriteFile(sock, []byte{}, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SSH_AUTH_SOCK", sock)
+		tester(t, testCase{
+			policy: `
 credentials:
   key:
     private_key:
       source: ssh-agent
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != sock {
-		t.Fatalf("got %q", got)
-	}
+`,
+			want: sock,
+		})
+	})
 }
 
 func TestWithSSHAuthSock(t *testing.T) {
-	spec := withSSHAuthSock(containerSpecEnvOnly(), "/tmp/agent.sock")
-	if len(spec.Mounts) != 1 || spec.Mounts[0].Source != "/tmp/agent.sock" || spec.Mounts[0].Target != sidecarSSHAuthSock {
-		t.Fatalf("mounts %+v", spec.Mounts)
-	}
-	found := false
-	for _, e := range spec.Env {
-		if e == "SSH_AUTH_SOCK="+sidecarSSHAuthSock {
-			found = true
+	tester := func(t *testing.T) {
+		t.Helper()
+		spec := withSSHAuthSock(containerSpecEnvOnly(), "/tmp/agent.sock")
+		if len(spec.Mounts) != 1 || spec.Mounts[0].Source != "/tmp/agent.sock" || spec.Mounts[0].Target != sidecarSSHAuthSock {
+			t.Fatalf("mounts %+v", spec.Mounts)
+		}
+		found := false
+		for _, e := range spec.Env {
+			if e == "SSH_AUTH_SOCK="+sidecarSSHAuthSock {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("env %v", spec.Env)
 		}
 	}
-	if !found {
-		t.Fatalf("env %v", spec.Env)
-	}
+
+	t.Run("binds the socket and sets SSH_AUTH_SOCK", func(t *testing.T) {
+		tester(t)
+	})
 }
 
 func containerSpecEnvOnly() container.Spec {

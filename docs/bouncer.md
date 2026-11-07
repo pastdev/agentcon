@@ -62,7 +62,9 @@ The host prompts for the master password and POSTs `/_bouncer/credentials/source
 Required: `email`, `item`, `path`.
 Optional: `server` (default bitwarden.com), `folder` (unset), `password_env` (unset, so `run` prompts).
 
-`path` examples: `$.notes`, `$.login.password`, `$.login.username`, `$.sshKey.privateKey`, `$.fields[?(@.name=='API Key')].value`.
+The named item must already exist in that account's vault.
+`path` must select exactly one string from the decrypted cipher JSON.
+Examples: `$.notes`, `$.login.password`, `$.login.username`, `$.sshKey.privateKey`, `$.fields[?(@.name=='API Key')].value`.
 
 ```yaml
 credentials:

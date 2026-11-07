@@ -25,6 +25,9 @@ linters:
     - wastedassign
     - whitespace
     - wrapcheck
+  settings:
+    goconst:
+      ignore-tests: true
   exclusions:
     generated: lax
     presets:

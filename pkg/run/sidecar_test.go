@@ -83,86 +83,92 @@ func TestWriteSidecarPayload(t *testing.T) {
 			wantTS:  "filters/deny.ts",
 		})
 	})
+	t.Run("sets uid and gid", func(t *testing.T) {
+		bin := filepath.Join(t.TempDir(), "agentcon")
+		err := os.WriteFile(bin, []byte("#!/bin/true"), 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		err = writeSidecarPayload(&buf, []byte("listen: 127.0.0.1:8228\n"), nil, bin, "tok", 1000, 1001)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr := tar.NewReader(&buf)
+		for {
+			hdr, err := tr.Next()
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hdr.Uid != 1000 || hdr.Gid != 1001 {
+				t.Fatalf("%s uid/gid %d:%d", hdr.Name, hdr.Uid, hdr.Gid)
+			}
+		}
+	})
 }
 
 func TestWriteAgentPayload(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "agentcon")
-	err := os.WriteFile(bin, []byte("#!/bin/true"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var buf bytes.Buffer
-	err = writeAgentPayload(&buf, bin, "CERT", "BUNDLE", "known-hosts\n", 1000, 1001)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := map[string][]byte{}
-	tr := tar.NewReader(&buf)
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
+	tester := func(t *testing.T) {
+		t.Helper()
+		bin := filepath.Join(t.TempDir(), "agentcon")
+		err := os.WriteFile(bin, []byte("#!/bin/true"), 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if hdr.Uid != 1000 || hdr.Gid != 1001 {
-			t.Fatalf("%s uid/gid %d:%d", hdr.Name, hdr.Uid, hdr.Gid)
-		}
-		if hdr.Typeflag == tar.TypeDir {
-			continue
-		}
-		data, err := io.ReadAll(tr)
+		var buf bytes.Buffer
+		err = writeAgentPayload(&buf, bin, "CERT", "BUNDLE", "known-hosts\n", 1000, 1001)
 		if err != nil {
 			t.Fatal(err)
 		}
-		found[hdr.Name] = data
+		found := map[string][]byte{}
+		tr := tar.NewReader(&buf)
+		for {
+			hdr, err := tr.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hdr.Uid != 1000 || hdr.Gid != 1001 {
+				t.Fatalf("%s uid/gid %d:%d", hdr.Name, hdr.Uid, hdr.Gid)
+			}
+			if hdr.Typeflag == tar.TypeDir {
+				continue
+			}
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found[hdr.Name] = data
+		}
+		if string(found[tarName(agentBinPath)]) != "#!/bin/true" {
+			t.Fatalf("binary %q", found[tarName(agentBinPath)])
+		}
+		if string(found[tarName(agentCACertPath)]) != "CERT" {
+			t.Fatalf("ca %q", found[tarName(agentCACertPath)])
+		}
+		if string(found[tarName(agentCABundlePath)]) != "BUNDLE" {
+			t.Fatalf("bundle %q", found[tarName(agentCABundlePath)])
+		}
+		if string(found[tarName(agentKnownHosts)]) != "known-hosts\n" {
+			t.Fatalf("known_hosts %q", found[tarName(agentKnownHosts)])
+		}
+		cfg := string(found[tarName(agentSSHConfig)])
+		if !bytes.Contains([]byte(cfg), []byte(agentBinPath)) {
+			t.Fatalf("ssh config missing binary path: %s", cfg)
+		}
+		if !bytes.Contains([]byte(cfg), []byte(agentKnownHosts)) {
+			t.Fatalf("ssh config missing known_hosts path: %s", cfg)
+		}
 	}
-	if string(found[tarName(agentBinPath)]) != "#!/bin/true" {
-		t.Fatalf("binary %q", found[tarName(agentBinPath)])
-	}
-	if string(found[tarName(agentCACertPath)]) != "CERT" {
-		t.Fatalf("ca %q", found[tarName(agentCACertPath)])
-	}
-	if string(found[tarName(agentCABundlePath)]) != "BUNDLE" {
-		t.Fatalf("bundle %q", found[tarName(agentCABundlePath)])
-	}
-	if string(found[tarName(agentKnownHosts)]) != "known-hosts\n" {
-		t.Fatalf("known_hosts %q", found[tarName(agentKnownHosts)])
-	}
-	cfg := string(found[tarName(agentSSHConfig)])
-	if !bytes.Contains([]byte(cfg), []byte(agentBinPath)) {
-		t.Fatalf("ssh config missing binary path: %s", cfg)
-	}
-	if !bytes.Contains([]byte(cfg), []byte(agentKnownHosts)) {
-		t.Fatalf("ssh config missing known_hosts path: %s", cfg)
-	}
-}
 
-func TestWriteSidecarPayloadSetsOwner(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "agentcon")
-	err := os.WriteFile(bin, []byte("#!/bin/true"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var buf bytes.Buffer
-	err = writeSidecarPayload(&buf, []byte("listen: 127.0.0.1:8228\n"), nil, bin, "tok", 1000, 1001)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tr := tar.NewReader(&buf)
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			return
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if hdr.Uid != 1000 || hdr.Gid != 1001 {
-			t.Fatalf("%s uid/gid %d:%d", hdr.Name, hdr.Uid, hdr.Gid)
-		}
-	}
+	t.Run("packs ssh files with owner", func(t *testing.T) {
+		tester(t)
+	})
 }
 
 func keys(m map[string][]byte) []string {

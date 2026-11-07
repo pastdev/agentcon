@@ -10,12 +10,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const (
-	testSSHPass     = "correct horse"
-	testSSHPassBad  = "nope"
-	testSSHCredName = "deploy"
-)
-
 func testSSHPEM(t *testing.T, passphrase string) (plain, encrypted string, pub ssh.PublicKey) {
 	t.Helper()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -38,7 +32,7 @@ func testSSHPEM(t *testing.T, passphrase string) (plain, encrypted string, pub s
 }
 
 func TestUnlockSSHKey(t *testing.T) {
-	plain, encrypted, pub := testSSHPEM(t, testSSHPass)
+	plain, encrypted, pub := testSSHPEM(t, "correct horse")
 
 	type testCase struct {
 		pem     string
@@ -50,7 +44,7 @@ func TestUnlockSSHKey(t *testing.T) {
 		t.Helper()
 		n := 0
 		got, err := unlockSSHKey(tc.pem, func(name string) (string, error) {
-			if name != testSSHCredName {
+			if name != "deploy" {
 				t.Fatalf("prompt name %q", name)
 			}
 			if n >= len(tc.prompts) {
@@ -59,7 +53,7 @@ func TestUnlockSSHKey(t *testing.T) {
 			pass := tc.prompts[n]
 			n++
 			return pass, nil
-		}, testSSHCredName)
+		}, "deploy")
 		if tc.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("got %v, want %q", err, tc.wantErr)
@@ -91,59 +85,68 @@ func TestUnlockSSHKey(t *testing.T) {
 		tester(t, testCase{pem: plain, wantPub: pub})
 	})
 	t.Run("not a key", func(t *testing.T) {
-		tester(t, testCase{pem: testFromFile})
+		tester(t, testCase{pem: "not a key"})
 	})
 	t.Run("encrypted key", func(t *testing.T) {
 		tester(t, testCase{
 			pem:     encrypted,
-			prompts: []string{testSSHPass},
+			prompts: []string{"correct horse"},
 			wantPub: pub,
 		})
 	})
 	t.Run("retries bad passphrase", func(t *testing.T) {
 		tester(t, testCase{
 			pem:     encrypted,
-			prompts: []string{testSSHPassBad, testSSHPass},
+			prompts: []string{"nope", "correct horse"},
 			wantPub: pub,
 		})
 	})
 	t.Run("rejects after attempts", func(t *testing.T) {
 		tester(t, testCase{
 			pem:     encrypted,
-			prompts: []string{testSSHPassBad, testSSHPassBad, testSSHPassBad},
+			prompts: []string{"nope", "nope", "nope"},
 			wantErr: "passphrase rejected",
 		})
 	})
 }
 
 func TestUnlockHostSSHKeys(t *testing.T) {
-	plain, encrypted, _ := testSSHPEM(t, testSSHPass)
-	sshKey := testSSHCredName + ".private_key"
-	values := map[string]string{
-		testCredTok: encrypted,
-		sshKey:      encrypted,
-		"other":     plain,
-	}
-	err := unlockHostSSHKeys(values, map[string]struct{}{sshKey: {}}, func(name string) (string, error) {
-		if name != sshKey {
-			t.Fatalf("prompted for %q", name)
+	tester := func(t *testing.T) {
+		t.Helper()
+		plain, encrypted, _ := testSSHPEM(t, "correct horse")
+		sshKey := "deploy.private_key"
+		values := map[string]string{
+			"tok":   encrypted,
+			sshKey:  encrypted,
+			"other": plain,
 		}
-		return testSSHPass, nil
+		err := unlockHostSSHKeys(values, map[string]struct{}{sshKey: {}}, func(name string) (string, error) {
+			if name != sshKey {
+				t.Fatalf("prompted for %q", name)
+			}
+			return "correct horse", nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if values["tok"] != encrypted {
+			t.Fatal("unlocked a file that is not an ssh credential")
+		}
+		_, err = ssh.ParsePrivateKey([]byte(values[sshKey] + "\n"))
+		if err != nil {
+			t.Fatalf("unlocked: %v", err)
+		}
+	}
+
+	t.Run("unlocks only ssh credential keys", func(t *testing.T) {
+		tester(t)
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if values[testCredTok] != encrypted {
-		t.Fatal("unlocked a file that is not an ssh credential")
-	}
-	_, err = ssh.ParsePrivateKey([]byte(values[sshKey] + "\n"))
-	if err != nil {
-		t.Fatalf("unlocked: %v", err)
-	}
 }
 
 func TestSSHKeyCredentialNames(t *testing.T) {
-	got, err := sshKeyCredentialNames([]byte(`
+	tester := func(t *testing.T) {
+		t.Helper()
+		got, err := sshKeyCredentialNames([]byte(`
 credentials:
   deploy:
     private_key:
@@ -154,10 +157,15 @@ credentials:
       source: file
       file: /tmp/token
 `))
-	if err != nil {
-		t.Fatal(err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := got["deploy.private_key"]; !ok || len(got) != 1 {
+			t.Fatalf("got %v", got)
+		}
 	}
-	if _, ok := got[testSSHCredName+".private_key"]; !ok || len(got) != 1 {
-		t.Fatalf("got %v", got)
-	}
+
+	t.Run("returns private_key slot names", func(t *testing.T) {
+		tester(t)
+	})
 }

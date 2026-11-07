@@ -145,30 +145,42 @@ func TestCollectTSFiles(t *testing.T) {
 	})
 }
 
-func TestDirFSCleansParentRefs(t *testing.T) {
-	dir := t.TempDir()
-	err := DirFS(dir).WriteFile("../escape.yaml", []byte("x"), 0o644)
-	if err != nil {
-		t.Fatal(err)
+func TestDirFS(t *testing.T) {
+	tester := func(t *testing.T, dir string) {
+		t.Helper()
+		err := DirFS(dir).WriteFile("../escape.yaml", []byte("x"), 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = os.Stat(filepath.Join(filepath.Dir(dir), "escape.yaml"))
+		if err == nil {
+			t.Fatal("wrote outside layout root")
+		}
+		_, err = os.Stat(filepath.Join(dir, "escape.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	_, err = os.Stat(filepath.Join(filepath.Dir(dir), "escape.yaml"))
-	if err == nil {
-		t.Fatal("wrote outside layout root")
-	}
-	_, err = os.Stat(filepath.Join(dir, "escape.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+
+	t.Run("cleans parent refs", func(t *testing.T) {
+		tester(t, t.TempDir())
+	})
 }
 
 func TestPrefix(t *testing.T) {
-	dir := t.TempDir()
-	err := WriteLayout(Prefix(DirFS(dir), "bouncer"), []byte("listen: 127.0.0.1:8228\n"), nil)
-	if err != nil {
-		t.Fatal(err)
+	tester := func(t *testing.T, dir string) {
+		t.Helper()
+		err := WriteLayout(Prefix(DirFS(dir), "bouncer"), []byte("listen: 127.0.0.1:8228\n"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = os.Stat(filepath.Join(dir, "bouncer", FileName))
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	_, err = os.Stat(filepath.Join(dir, "bouncer", FileName))
-	if err != nil {
-		t.Fatal(err)
-	}
+
+	t.Run("writes under the prefix", func(t *testing.T) {
+		tester(t, t.TempDir())
+	})
 }

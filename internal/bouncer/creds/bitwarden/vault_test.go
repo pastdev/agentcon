@@ -315,229 +315,253 @@ func startVault(t *testing.T, second bool) (*httptest.Server, *fakeServer) {
 	return srv, fake
 }
 
-func TestUnlockLookupAndReuse(t *testing.T) {
-	srv, fake := startVault(t, false)
-	dir := t.TempDir()
-	t.Setenv("BW_MASTER", testPassword)
-	v := New(Options{StateDir: dir, Prompt: &memPrompt{}})
-	q := Query{Account: Account{Email: "User@Example.com", Server: srv.URL, PasswordEnv: "BW_MASTER"}, Item: "GitLab", Folder: "Work"}
-	got, err := v.Get(context.Background(), q)
-	if err != nil || got != "gl-token" {
-		t.Fatalf("got %q, %v", got, err)
+func TestGet(t *testing.T) {
+	type testCase struct {
+		v            *Vaults
+		q            Query
+		want         string
+		wantContains string
+		wantErr      string
+		needCode     bool
+		needMethod   string
 	}
-	// A second read must not hit the network or the prompter again.
-	if _, err := v.Get(context.Background(), q); err != nil {
-		t.Fatal(err)
-	}
-	fake.mu.Lock()
-	if fake.logins != 1 || fake.syncs != 1 || fake.refreshes != 0 {
-		t.Fatalf("logins=%d syncs=%d refreshes=%d", fake.logins, fake.syncs, fake.refreshes)
-	}
-	if len(fake.authEmails) != 1 || fake.authEmails[0] != "dXNlckBleGFtcGxlLmNvbQ" {
-		t.Fatalf("auth-email %v", fake.authEmails)
-	}
-	fake.mu.Unlock()
-
-	if got, err := v.Get(context.Background(), Query{Account: q.Account, Item: "GitLab", Folder: "Work", Field: "username"}); err != nil || got != "oauth2" {
-		t.Fatalf("username %q %v", got, err)
-	}
-	if got, err := v.Get(context.Background(), Query{Account: q.Account, Item: "GitLab", Folder: "Work", Field: "token"}); err != nil || got != "custom-token" {
-		t.Fatalf("custom %q %v", got, err)
-	}
-	if got, err := v.Get(context.Background(), Query{Account: q.Account, Item: "GitLab", Folder: "Work", Field: "notes"}); err != nil || got != "a note" {
-		t.Fatalf("notes %q %v", got, err)
-	}
-	if got, err := v.Get(context.Background(), Query{Account: q.Account, Item: "GitLab", Folder: "Work", Field: "totp"}); err != nil || got != "otp-secret" {
-		t.Fatalf("totp %q %v", got, err)
-	}
-	if got, err := v.Get(context.Background(), Query{Account: q.Account, Item: "id-personal", Field: "password"}); err != nil || got != "other-token" {
-		t.Fatalf("by id %q %v", got, err)
-	}
-	if _, err := v.Get(context.Background(), Query{Account: q.Account, Item: "GitLab"}); err == nil || !strings.Contains(err.Error(), "set folder") {
-		t.Fatalf("duplicate: %v", err)
-	}
-	if got, err := v.Get(context.Background(), Query{Account: q.Account, Item: "sandbox", Field: "private_key"}); err != nil || !strings.Contains(got, "BEGIN OPENSSH PRIVATE KEY") {
-		t.Fatalf("ssh %q %v", got, err)
-	}
-	if got, err := v.Get(context.Background(), Query{Account: q.Account, Item: "Org Secret"}); err != nil || got != "org-password" {
-		t.Fatalf("org %q %v", got, err)
-	}
-	if got, err := v.Get(context.Background(), Query{Account: q.Account, Item: "Wrapped"}); err != nil || got != "from-item-key" {
-		t.Fatalf("item key %q %v", got, err)
-	}
-	if _, err := v.Get(context.Background(), Query{Account: q.Account, Item: "Gone"}); err == nil {
-		t.Fatal("deleted item was returned")
-	}
-	if got, err := v.Get(context.Background(), Query{Account: q.Account, Item: "Runbook", Field: "notes"}); err != nil || got != "do the thing" {
-		t.Fatalf("note %q %v", got, err)
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		got, err := tc.v.Get(context.Background(), tc.q)
+		if tc.needCode {
+			var need *NeedCodeError
+			if !errors.As(err, &need) || need.Method != tc.needMethod {
+				t.Fatalf("got %v", err)
+			}
+			return
+		}
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.wantContains != "" {
+			if !strings.Contains(got, tc.wantContains) {
+				t.Fatalf("got %q %v", got, err)
+			}
+			return
+		}
+		if got != tc.want {
+			t.Fatalf("got %q, %v", got, err)
+		}
 	}
 
-	raw, err := v.ItemJSON(context.Background(), q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc map[string]any
-	err = json.Unmarshal(raw, &doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if doc["notes"] != "a note" {
-		t.Fatalf("item json notes %v", doc["notes"])
-	}
-	login, _ := doc["login"].(map[string]any)
-	if login["username"] != "oauth2" || login["password"] != "gl-token" {
-		t.Fatalf("item json login %v", login)
-	}
-	sshRaw, err := v.ItemJSON(context.Background(), Query{Account: q.Account, Item: "sandbox"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sshDoc map[string]any
-	err = json.Unmarshal(sshRaw, &sshDoc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sshKey, _ := sshDoc["sshKey"].(map[string]any)
-	priv, _ := sshKey["privateKey"].(string)
-	if !strings.Contains(priv, "BEGIN OPENSSH PRIVATE KEY") {
-		t.Fatalf("item json ssh %v", sshKey)
-	}
+	t.Run("looks up items and reuses an unlocked vault", func(t *testing.T) {
+		srv, fake := startVault(t, false)
+		dir := t.TempDir()
+		t.Setenv("BW_MASTER", testPassword)
+		v := New(Options{StateDir: dir, Prompt: &memPrompt{}})
+		q := Query{Account: Account{Email: "User@Example.com", Server: srv.URL, PasswordEnv: "BW_MASTER"}, Item: "GitLab", Folder: "Work"}
+		tester(t, testCase{v: v, q: q, want: "gl-token"})
+		tester(t, testCase{v: v, q: q, want: "gl-token"})
+		fake.mu.Lock()
+		if fake.logins != 1 || fake.syncs != 1 || fake.refreshes != 0 {
+			t.Fatalf("logins=%d syncs=%d refreshes=%d", fake.logins, fake.syncs, fake.refreshes)
+		}
+		if len(fake.authEmails) != 1 || fake.authEmails[0] != "dXNlckBleGFtcGxlLmNvbQ" {
+			t.Fatalf("auth-email %v", fake.authEmails)
+		}
+		fake.mu.Unlock()
 
-	matches, _ := filepath.Glob(filepath.Join(dir, "bitwarden", "*.json"))
-	if len(matches) != 1 {
-		t.Fatalf("state files: %v", matches)
-	}
-	info, err := os.Stat(matches[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("state mode %o", info.Mode().Perm())
-	}
+		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "GitLab", Folder: "Work", Field: "username"}, want: "oauth2"})
+		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "GitLab", Folder: "Work", Field: "token"}, want: "custom-token"})
+		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "GitLab", Folder: "Work", Field: "notes"}, want: "a note"})
+		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "GitLab", Folder: "Work", Field: "totp"}, want: "otp-secret"})
+		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "id-personal", Field: "password"}, want: "other-token"})
+		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "GitLab"}, wantErr: "set folder"})
+		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "sandbox", Field: "private_key"}, wantContains: "BEGIN OPENSSH PRIVATE KEY"})
+		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "Org Secret"}, want: "org-password"})
+		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "Wrapped"}, want: "from-item-key"})
+		_, err := v.Get(context.Background(), Query{Account: q.Account, Item: "Gone"})
+		if err == nil {
+			t.Fatal("deleted item was returned")
+		}
+		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "Runbook", Field: "notes"}, want: "do the thing"})
 
-	// A new process-shaped vault set reuses the refresh token and still
-	// needs the master password to decrypt.
-	v2 := New(Options{StateDir: dir})
-	if _, err := v2.Get(context.Background(), q); err != nil {
-		t.Fatal(err)
-	}
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if fake.logins != 1 || fake.refreshes != 1 || fake.syncs != 2 {
-		t.Fatalf("after restart logins=%d refreshes=%d syncs=%d", fake.logins, fake.refreshes, fake.syncs)
-	}
-}
+		raw, err := v.ItemJSON(context.Background(), q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		err = json.Unmarshal(raw, &doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc["notes"] != "a note" {
+			t.Fatalf("item json notes %v", doc["notes"])
+		}
+		login, _ := doc["login"].(map[string]any)
+		if login["username"] != "oauth2" || login["password"] != "gl-token" {
+			t.Fatalf("item json login %v", login)
+		}
+		sshRaw, err := v.ItemJSON(context.Background(), Query{Account: q.Account, Item: "sandbox"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sshDoc map[string]any
+		err = json.Unmarshal(sshRaw, &sshDoc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sshKey, _ := sshDoc["sshKey"].(map[string]any)
+		priv, _ := sshKey["privateKey"].(string)
+		if !strings.Contains(priv, "BEGIN OPENSSH PRIVATE KEY") {
+			t.Fatalf("item json ssh %v", sshKey)
+		}
 
-func TestWrongPasswordIsRetried(t *testing.T) {
-	srv, fake := startVault(t, false)
-	p := &memPrompt{passwords: []string{"nope", testPassword}}
-	v := New(Options{StateDir: t.TempDir(), Prompt: p})
-	got, err := v.Get(context.Background(), Query{
-		Account: Account{Email: testEmail, Server: srv.URL},
-		Item:    "GitLab", Folder: "Work",
+		matches, err := filepath.Glob(filepath.Join(dir, "bitwarden", "*.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) != 1 {
+			t.Fatalf("state files: %v", matches)
+		}
+		info, err := os.Stat(matches[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("state mode %o", info.Mode().Perm())
+		}
+
+		v2 := New(Options{StateDir: dir})
+		tester(t, testCase{v: v2, q: q, want: "gl-token"})
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		if fake.logins != 1 || fake.refreshes != 1 || fake.syncs != 2 {
+			t.Fatalf("after restart logins=%d refreshes=%d syncs=%d", fake.logins, fake.refreshes, fake.syncs)
+		}
 	})
-	if err != nil || got != "gl-token" {
-		t.Fatalf("got %q %v", got, err)
-	}
-	if p.nPass != 2 {
-		t.Fatalf("prompts %d", p.nPass)
-	}
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if fake.logins != 2 {
-		t.Fatalf("logins %d", fake.logins)
-	}
-}
-
-func TestPasswordEnvFailureDoesNotStick(t *testing.T) {
-	srv, _ := startVault(t, false)
-	v := New(Options{StateDir: t.TempDir(), Prompt: &memPrompt{}})
-	t.Setenv("BW_MASTER", "nope")
-	q := Query{Account: Account{Email: testEmail, Server: srv.URL, PasswordEnv: "BW_MASTER"}, Item: "sandbox", Field: "private_key"}
-	if _, err := v.Get(context.Background(), q); err == nil || !strings.Contains(err.Error(), "incorrect") {
-		t.Fatalf("err = %v", err)
-	}
-	t.Setenv("BW_MASTER", testPassword)
-	if _, err := v.Get(context.Background(), q); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestNewDeviceVerification(t *testing.T) {
-	srv, fake := startVault(t, false)
-	fake.mu.Lock()
-	fake.requireDevice = true
-	fake.mu.Unlock()
-	p := &memPrompt{passwords: []string{testPassword}, codes: []string{"654321"}}
-	v := New(Options{StateDir: t.TempDir(), Prompt: p})
-	got, err := v.Get(context.Background(), Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"})
-	if err != nil || got != "org-password" {
-		t.Fatalf("got %q %v", got, err)
-	}
-	if p.nCode != 1 {
-		t.Fatalf("codes %d", p.nCode)
-	}
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if fake.logins != 2 {
-		t.Fatalf("logins %d", fake.logins)
-	}
-}
-
-func TestStaticPrompterRejectedCodeNeedsNewPrompt(t *testing.T) {
-	srv, _ := startVault(t, true)
-	p := &StaticPrompter{Password: testPassword, Code: "000000"}
-	v := New(Options{StateDir: t.TempDir(), Prompt: p})
-	_, err := v.Get(context.Background(), Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"})
-	var need *NeedCodeError
-	if !errors.As(err, &need) || need.Method != "authenticator app" {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestTwoFactorRetriesWrongCode(t *testing.T) {
-	srv, fake := startVault(t, true)
-	p := &memPrompt{passwords: []string{testPassword}, codes: []string{"000000", "123456"}}
-	v := New(Options{StateDir: t.TempDir(), Prompt: p})
-	got, err := v.Get(context.Background(), Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"})
-	if err != nil || got != "org-password" {
-		t.Fatalf("got %q %v", got, err)
-	}
-	if p.nCode != 2 {
-		t.Fatalf("codes %d", p.nCode)
-	}
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if fake.logins != 3 {
-		t.Fatalf("logins %d", fake.logins)
-	}
-}
-
-func TestTwoFactor(t *testing.T) {
-	srv, fake := startVault(t, true)
-	p := &memPrompt{passwords: []string{testPassword}, codes: []string{"123456"}}
-	v := New(Options{StateDir: t.TempDir(), Prompt: p})
-	got, err := v.Get(context.Background(), Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"})
-	if err != nil || got != "org-password" {
-		t.Fatalf("got %q %v", got, err)
-	}
-	if p.nCode != 1 {
-		t.Fatalf("codes %d", p.nCode)
-	}
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if fake.logins != 2 {
-		t.Fatalf("logins %d", fake.logins)
-	}
-}
-
-func TestConflictingPasswordEnv(t *testing.T) {
-	v := New(Options{StateDir: t.TempDir()})
-	err := v.Unlock(context.Background(), []Account{
-		{Email: "User@Example.com", PasswordEnv: "ONE"},
-		{Email: "user@example.com", PasswordEnv: "TWO"},
+	t.Run("retries a wrong password", func(t *testing.T) {
+		srv, fake := startVault(t, false)
+		p := &memPrompt{passwords: []string{"nope", testPassword}}
+		v := New(Options{StateDir: t.TempDir(), Prompt: p})
+		tester(t, testCase{
+			v: v,
+			q: Query{
+				Account: Account{Email: testEmail, Server: srv.URL},
+				Item:    "GitLab", Folder: "Work",
+			},
+			want: "gl-token",
+		})
+		if p.nPass != 2 {
+			t.Fatalf("prompts %d", p.nPass)
+		}
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		if fake.logins != 2 {
+			t.Fatalf("logins %d", fake.logins)
+		}
 	})
-	if err == nil || !strings.Contains(err.Error(), "conflicting password_env") {
-		t.Fatalf("err = %v", err)
+	t.Run("does not stick a failed password env", func(t *testing.T) {
+		srv, _ := startVault(t, false)
+		v := New(Options{StateDir: t.TempDir(), Prompt: &memPrompt{}})
+		t.Setenv("BW_MASTER", "nope")
+		q := Query{Account: Account{Email: testEmail, Server: srv.URL, PasswordEnv: "BW_MASTER"}, Item: "sandbox", Field: "private_key"}
+		tester(t, testCase{v: v, q: q, wantErr: "incorrect"})
+		t.Setenv("BW_MASTER", testPassword)
+		tester(t, testCase{v: v, q: q, wantContains: "BEGIN OPENSSH PRIVATE KEY"})
+	})
+	t.Run("prompts for new device verification", func(t *testing.T) {
+		srv, fake := startVault(t, false)
+		fake.mu.Lock()
+		fake.requireDevice = true
+		fake.mu.Unlock()
+		p := &memPrompt{passwords: []string{testPassword}, codes: []string{"654321"}}
+		v := New(Options{StateDir: t.TempDir(), Prompt: p})
+		tester(t, testCase{
+			v:    v,
+			q:    Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"},
+			want: "org-password",
+		})
+		if p.nCode != 1 {
+			t.Fatalf("codes %d", p.nCode)
+		}
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		if fake.logins != 2 {
+			t.Fatalf("logins %d", fake.logins)
+		}
+	})
+	t.Run("returns need code when a static prompter code is rejected", func(t *testing.T) {
+		srv, _ := startVault(t, true)
+		p := &StaticPrompter{Password: testPassword, Code: "000000"}
+		v := New(Options{StateDir: t.TempDir(), Prompt: p})
+		tester(t, testCase{
+			v:          v,
+			q:          Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"},
+			needCode:   true,
+			needMethod: "authenticator app",
+		})
+	})
+	t.Run("retries a wrong two-factor code", func(t *testing.T) {
+		srv, fake := startVault(t, true)
+		p := &memPrompt{passwords: []string{testPassword}, codes: []string{"000000", "123456"}}
+		v := New(Options{StateDir: t.TempDir(), Prompt: p})
+		tester(t, testCase{
+			v:    v,
+			q:    Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"},
+			want: "org-password",
+		})
+		if p.nCode != 2 {
+			t.Fatalf("codes %d", p.nCode)
+		}
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		if fake.logins != 3 {
+			t.Fatalf("logins %d", fake.logins)
+		}
+	})
+	t.Run("prompts for two-factor", func(t *testing.T) {
+		srv, fake := startVault(t, true)
+		p := &memPrompt{passwords: []string{testPassword}, codes: []string{"123456"}}
+		v := New(Options{StateDir: t.TempDir(), Prompt: p})
+		tester(t, testCase{
+			v:    v,
+			q:    Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"},
+			want: "org-password",
+		})
+		if p.nCode != 1 {
+			t.Fatalf("codes %d", p.nCode)
+		}
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		if fake.logins != 2 {
+			t.Fatalf("logins %d", fake.logins)
+		}
+	})
+}
+
+func TestUnlock(t *testing.T) {
+	type testCase struct {
+		accounts []Account
+		wantErr  string
 	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		v := New(Options{StateDir: t.TempDir()})
+		err := v.Unlock(context.Background(), tc.accounts)
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Fatalf("err = %v", err)
+		}
+	}
+
+	t.Run("rejects conflicting password env values", func(t *testing.T) {
+		tester(t, testCase{
+			accounts: []Account{
+				{Email: "User@Example.com", PasswordEnv: "ONE"},
+				{Email: "user@example.com", PasswordEnv: "TWO"},
+			},
+			wantErr: "conflicting password_env",
+		})
+	})
 }

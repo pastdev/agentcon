@@ -10,82 +10,174 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func TestLeafVerifiesAgainstCA(t *testing.T) {
-	dir := t.TempDir()
-	a, err := LoadOrCreate(dir)
-	if err != nil {
-		t.Fatal(err)
+func TestLoadOrCreate(t *testing.T) {
+	type testCase struct {
+		dir string
 	}
-	leaf, err := a.Leaf("gitlab.com")
-	if err != nil {
-		t.Fatal(err)
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		a, err := LoadOrCreate(tc.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := LoadOrCreate(tc.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !b.Cert().Equal(a.Cert()) {
+			t.Fatal("CA changed on reload")
+		}
 	}
-	c, _ := x509.ParseCertificate(leaf.Certificate[0])
-	pool := x509.NewCertPool()
-	pool.AddCert(a.Cert())
-	if _, err := c.Verify(x509.VerifyOptions{DNSName: "gitlab.com", Roots: pool}); err != nil {
-		t.Fatal(err)
-	}
-	// Reload from disk yields the same CA.
-	b, err := LoadOrCreate(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !b.Cert().Equal(a.Cert()) {
-		t.Fatal("CA changed on reload")
-	}
-	if err := b.WriteBundle(); err != nil {
-		t.Fatal(err)
-	}
-	data, _ := os.ReadFile(b.BundlePath())
-	if len(data) < 10000 {
-		t.Fatalf("bundle suspiciously small: %d bytes", len(data))
-	}
+
+	t.Run("reloads the same CA from disk", func(t *testing.T) {
+		tester(t, testCase{dir: t.TempDir()})
+	})
 }
 
-func TestSSHHostCert(t *testing.T) {
-	a, err := LoadOrCreate(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+func TestLeaf(t *testing.T) {
+	type testCase struct {
+		host      string
+		fillCache bool
 	}
-	s, err := a.SSHHostSigner("gitlab.com")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert := s.PublicKey().(*ssh.Certificate)
-	checker := &ssh.CertChecker{IsHostAuthority: func(k ssh.PublicKey, _ string) bool {
-		return string(k.Marshal()) == string(a.sshCA.PublicKey().Marshal())
-	}}
-	if err := checker.CheckHostKey("gitlab.com:22", nil, cert); err != nil {
-		t.Fatal(err)
-	}
-	if err := checker.CheckHostKey("github.com:22", nil, cert); err == nil {
-		t.Fatal("cert should not be valid for another host")
-	}
-}
-
-func TestLeafCacheBounded(t *testing.T) {
-	a, err := LoadOrCreate(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < maxLeaves+50; i++ {
-		if _, err := a.Leaf(fmt.Sprintf("h%d.example.com", i)); err != nil {
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		a, err := LoadOrCreate(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.fillCache {
+			for i := 0; i < maxLeaves+50; i++ {
+				_, err := a.Leaf(fmt.Sprintf("h%d.example.com", i))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if n := len(a.leaves); n > maxLeaves {
+				t.Fatalf("leaf cache grew to %d", n)
+			}
+			return
+		}
+		leaf, err := a.Leaf(tc.host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := x509.ParseCertificate(leaf.Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		pool := x509.NewCertPool()
+		pool.AddCert(a.Cert())
+		_, err = c.Verify(x509.VerifyOptions{DNSName: tc.host, Roots: pool})
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n := len(a.leaves); n > maxLeaves {
-		t.Fatalf("leaf cache grew to %d", n)
-	}
+
+	t.Run("verifies a leaf against the CA", func(t *testing.T) {
+		tester(t, testCase{host: "gitlab.com"})
+	})
+	t.Run("bounds the leaf cache", func(t *testing.T) {
+		tester(t, testCase{fillCache: true})
+	})
 }
 
-func TestSSHKnownHostsScoped(t *testing.T) {
-	a, _ := LoadOrCreate(t.TempDir())
-	line := a.SSHKnownHostsLine([]string{"gitlab.com", "*.dev.internal"})
-	if !strings.HasPrefix(line, "@cert-authority gitlab.com,[gitlab.com]:*,*.dev.internal,[*.dev.internal]:* ssh-ed25519 ") {
-		t.Fatalf("%q", line)
+func TestWriteBundle(t *testing.T) {
+	type testCase struct{}
+	tester := func(t *testing.T, _ testCase) {
+		t.Helper()
+		a, err := LoadOrCreate(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = a.WriteBundle()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(a.BundlePath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(data) < 10000 {
+			t.Fatalf("bundle suspiciously small: %d bytes", len(data))
+		}
 	}
-	if a.SSHKnownHostsLine(nil) != "" {
-		t.Fatal("no hosts should trust nothing")
+
+	t.Run("writes a bundle large enough to include system roots", func(t *testing.T) {
+		tester(t, testCase{})
+	})
+}
+
+func TestSSHHostSigner(t *testing.T) {
+	type testCase struct {
+		host    string
+		check   string
+		wantErr bool
 	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		a, err := LoadOrCreate(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := a.SSHHostSigner(tc.host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cert := s.PublicKey().(*ssh.Certificate)
+		checker := &ssh.CertChecker{IsHostAuthority: func(k ssh.PublicKey, _ string) bool {
+			return string(k.Marshal()) == string(a.sshCA.PublicKey().Marshal())
+		}}
+		err = checker.CheckHostKey(tc.check+":22", nil, cert)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatal("cert should not be valid for another host")
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("signs a host cert valid for that host", func(t *testing.T) {
+		tester(t, testCase{host: "gitlab.com", check: "gitlab.com"})
+	})
+	t.Run("rejects the cert for another host", func(t *testing.T) {
+		tester(t, testCase{host: "gitlab.com", check: "github.com", wantErr: true})
+	})
+}
+
+func TestSSHKnownHostsLine(t *testing.T) {
+	type testCase struct {
+		hosts      []string
+		wantPrefix string
+		wantEmpty  bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		a, err := LoadOrCreate(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := a.SSHKnownHostsLine(tc.hosts)
+		if tc.wantEmpty {
+			if line != "" {
+				t.Fatal("no hosts should trust nothing")
+			}
+			return
+		}
+		if !strings.HasPrefix(line, tc.wantPrefix) {
+			t.Fatalf("%q", line)
+		}
+	}
+
+	t.Run("scopes cert-authority to the given hosts", func(t *testing.T) {
+		tester(t, testCase{
+			hosts:      []string{"gitlab.com", "*.dev.internal"},
+			wantPrefix: "@cert-authority gitlab.com,[gitlab.com]:*,*.dev.internal,[*.dev.internal]:* ssh-ed25519 ",
+		})
+	})
+	t.Run("trusts nothing when no hosts are given", func(t *testing.T) {
+		tester(t, testCase{wantEmpty: true})
+	})
 }

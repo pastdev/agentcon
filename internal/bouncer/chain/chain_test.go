@@ -43,35 +43,92 @@ profiles:
 	return cfg.Profiles["p"].HTTP[0]
 }
 
-func TestUnmatchedTunnelSkipsCredential(t *testing.T) {
-	svc := loadRules(t, `
+type approverFunc func(AskRequest) bool
+
+func (f approverFunc) Ask(_ context.Context, a AskRequest) (bool, error) { return f(a), nil }
+
+type filterFunc func(*Request, Handler) (*Response, error)
+
+func (f filterFunc) Name() string                                    { return "func" }
+func (f filterFunc) Handle(r *Request, n Handler) (*Response, error) { return f(r, n) }
+
+func TestBuild(t *testing.T) {
+	type testCase struct {
+		h          Handler
+		req        *Request
+		allow      bool
+		wantStatus int
+		wantDenial bool
+		intact     []byte
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		resp, err := tc.h(tc.req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.wantStatus != 0 {
+			if resp.Status != tc.wantStatus || resp.Denial != nil {
+				t.Fatalf("%+v", resp)
+			}
+		} else if got := resp.Denial == nil; got != tc.allow {
+			t.Errorf("allowed=%v want %v (%+v)", got, tc.allow, resp.Denial)
+		}
+		if tc.wantDenial && resp.Denial == nil {
+			t.Fatal("expected denial")
+		}
+		if tc.intact != nil {
+			fwd, err := io.ReadAll(tc.req.Body.Reader())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(fwd, tc.intact) {
+				t.Errorf("body altered by inspection")
+			}
+		}
+	}
+
+	t.Run("allows a matching path", func(t *testing.T) {
+		svc := loadRules(t, `
         rules:
           - action: allow
             path: /allowed
 `)
-	h := Build([]Filter{NewRules(svc, nil).WithUnmatched(config.UnmatchedTunnel)}, func(req *Request) (*Response, error) {
-		if req.SkipCredential {
-			return &Response{Status: 204}, nil
-		}
-		return &Response{Status: 200}, nil
+		h := Build([]Filter{NewRules(svc, nil).WithUnmatched(config.UnmatchedTunnel)}, func(req *Request) (*Response, error) {
+			if req.SkipCredential {
+				return &Response{Status: 204}, nil
+			}
+			return &Response{Status: 200}, nil
+		})
+		tester(t, testCase{h: h, req: httpReq(t, "GET", "https://gitlab.com/allowed", nil), wantStatus: 200})
 	})
-	resp, _ := h(httpReq(t, "GET", "https://gitlab.com/allowed", nil))
-	if resp.Status != 200 || resp.Denial != nil {
-		t.Fatalf("allowed: %+v", resp)
-	}
-	resp, _ = h(httpReq(t, "GET", "https://gitlab.com/other", nil))
-	if resp.Status != 204 || resp.Denial != nil {
-		t.Fatalf("unmatched tunnel: %+v", resp)
-	}
-	h = Build([]Filter{NewRules(svc, nil).WithUnmatched(config.UnmatchedDeny)}, upstreamOK)
-	resp, _ = h(httpReq(t, "GET", "https://gitlab.com/other", nil))
-	if resp.Denial == nil {
-		t.Fatal("unmatched deny allowed")
-	}
-}
+	t.Run("skips credentials for an unmatched tunnel", func(t *testing.T) {
+		svc := loadRules(t, `
+        rules:
+          - action: allow
+            path: /allowed
+`)
+		h := Build([]Filter{NewRules(svc, nil).WithUnmatched(config.UnmatchedTunnel)}, func(req *Request) (*Response, error) {
+			if req.SkipCredential {
+				return &Response{Status: 204}, nil
+			}
+			return &Response{Status: 200}, nil
+		})
+		tester(t, testCase{h: h, req: httpReq(t, "GET", "https://gitlab.com/other", nil), wantStatus: 204})
+	})
+	t.Run("denies an unmatched path when unmatched is deny", func(t *testing.T) {
+		svc := loadRules(t, `
+        rules:
+          - action: allow
+            path: /allowed
+`)
+		h := Build([]Filter{NewRules(svc, nil).WithUnmatched(config.UnmatchedDeny)}, upstreamOK)
+		tester(t, testCase{h: h, req: httpReq(t, "GET", "https://gitlab.com/other", nil), allow: false})
+	})
 
-func TestGitLabProjectScope(t *testing.T) {
-	svc := loadRules(t, `
+	gitlabScope := func(t *testing.T) Handler {
+		t.Helper()
+		svc := loadRules(t, `
         rules:
           - action: allow
             gitlab_project: mygroup/myproj
@@ -79,44 +136,57 @@ func TestGitLabProjectScope(t *testing.T) {
             methods: [GET]
             path: /api/v4/user
 `)
-	env := &Env{Resolver: func(_ context.Context, _, _, p string) (int64, error) {
-		if p == "mygroup/myproj" {
-			return 4242, nil
-		}
-		return 0, nil
-	}}
-	h := Build([]Filter{NewRules(svc, env)}, upstreamOK)
-	cases := []struct {
-		method, url string
-		allow       bool
-	}{
-		{"GET", "https://gitlab.com/api/v4/projects/mygroup%2Fmyproj", true},
-		{"GET", "https://gitlab.com/api/v4/projects/MyGroup%2FMyProj/merge_requests", true},
-		{"GET", "https://gitlab.com/api/v4/projects/4242/issues", true},
-		{"GET", "https://gitlab.com/api/v4/projects/4243/issues", false},
-		{"GET", "https://gitlab.com/api/v4/projects/mygroup%2Fother/issues", false},
-		{"GET", "https://gitlab.com/api/v4/projects/mygroup%2Fmyproj-evil", false},
-		{"GET", "https://gitlab.com/api/v4/projects", false},
-		{"GET", "https://gitlab.com/api/v4/user", true},
-		{"POST", "https://gitlab.com/api/v4/user", false},
-		{"GET", "https://gitlab.com/api/v4/groups/mygroup", false},
-		{"POST", "https://gitlab.com/api/graphql", false},
-		{"GET", "https://gitlab.com/mygroup/myproj.git/info/refs?service=git-upload-pack", true},
-		{"POST", "https://gitlab.com/mygroup/other.git/git-upload-pack", false},
+		env := &Env{Resolver: func(_ context.Context, _, _, p string) (int64, error) {
+			if p == "mygroup/myproj" {
+				return 4242, nil
+			}
+			return 0, nil
+		}}
+		return Build([]Filter{NewRules(svc, env)}, upstreamOK)
 	}
-	for _, c := range cases {
-		resp, err := h(httpReq(t, c.method, c.url, nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := resp.Denial == nil; got != c.allow {
-			t.Errorf("%s %s: allowed=%v want %v (%+v)", c.method, c.url, got, c.allow, resp.Denial)
-		}
-	}
-}
+	t.Run("allows GET of the encoded gitlab project", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/mygroup%2Fmyproj", nil), allow: true})
+	})
+	t.Run("allows GET of a case-insensitive project subpath", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/MyGroup%2FMyProj/merge_requests", nil), allow: true})
+	})
+	t.Run("allows GET by numeric project id", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/4242/issues", nil), allow: true})
+	})
+	t.Run("denies GET of a different numeric id", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/4243/issues", nil), allow: false})
+	})
+	t.Run("denies GET of a different project path", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/mygroup%2Fother/issues", nil), allow: false})
+	})
+	t.Run("denies GET of a path-prefix sibling", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/mygroup%2Fmyproj-evil", nil), allow: false})
+	})
+	t.Run("denies GET of the projects collection", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects", nil), allow: false})
+	})
+	t.Run("allows GET /api/v4/user", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/user", nil), allow: true})
+	})
+	t.Run("denies POST /api/v4/user", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "POST", "https://gitlab.com/api/v4/user", nil), allow: false})
+	})
+	t.Run("denies GET of a group", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/groups/mygroup", nil), allow: false})
+	})
+	t.Run("denies POST graphql", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "POST", "https://gitlab.com/api/graphql", nil), allow: false})
+	})
+	t.Run("allows git upload-pack for the project", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "GET", "https://gitlab.com/mygroup/myproj.git/info/refs?service=git-upload-pack", nil), allow: true})
+	})
+	t.Run("denies git upload-pack for another project", func(t *testing.T) {
+		tester(t, testCase{h: gitlabScope(t), req: httpReq(t, "POST", "https://gitlab.com/mygroup/other.git/git-upload-pack", nil), allow: false})
+	})
 
-func TestGitLabProjectSubpaths(t *testing.T) {
-	svc := loadRules(t, `
+	gitlabSub := func(t *testing.T) Handler {
+		t.Helper()
+		svc := loadRules(t, `
         rules:
           - action: deny
             reason: secrets and membership are off-limits
@@ -127,29 +197,36 @@ func TestGitLabProjectSubpaths(t *testing.T) {
           - action: allow
             gitlab_project: mygroup/myproj
 `)
-	h := Build([]Filter{NewRules(svc, &Env{Resolver: func(context.Context, string, string, string) (int64, error) { return 7, nil }})}, upstreamOK)
-	for _, c := range []struct {
-		method, url string
-		allow       bool
-	}{
-		{"GET", "https://gitlab.com/api/v4/projects/mygroup%2Fmyproj", true},
-		{"DELETE", "https://gitlab.com/api/v4/projects/mygroup%2Fmyproj", false},
-		{"DELETE", "https://gitlab.com/api/v4/projects/7", false},
-		{"DELETE", "https://gitlab.com/api/v4/projects/7/issues/3", true},
-		{"GET", "https://gitlab.com/api/v4/projects/7/variables", false},
-		{"GET", "https://gitlab.com/api/v4/projects/mygroup%2Fmyproj/variables/KEY", false},
-		{"POST", "https://gitlab.com/api/v4/projects/7/members", false},
-		{"GET", "https://gitlab.com/mygroup/myproj.git/info/refs?service=git-upload-pack", true},
-	} {
-		resp, _ := h(httpReq(t, c.method, c.url, nil))
-		if got := resp.Denial == nil; got != c.allow {
-			t.Errorf("%s %s: allowed=%v want %v", c.method, c.url, got, c.allow)
-		}
+		return Build([]Filter{NewRules(svc, &Env{Resolver: func(context.Context, string, string, string) (int64, error) { return 7, nil }})}, upstreamOK)
 	}
-}
+	t.Run("allows GET of the gitlab project root", func(t *testing.T) {
+		tester(t, testCase{h: gitlabSub(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/mygroup%2Fmyproj", nil), allow: true})
+	})
+	t.Run("denies DELETE of the gitlab project root", func(t *testing.T) {
+		tester(t, testCase{h: gitlabSub(t), req: httpReq(t, "DELETE", "https://gitlab.com/api/v4/projects/mygroup%2Fmyproj", nil), allow: false})
+	})
+	t.Run("denies DELETE of the numeric project root", func(t *testing.T) {
+		tester(t, testCase{h: gitlabSub(t), req: httpReq(t, "DELETE", "https://gitlab.com/api/v4/projects/7", nil), allow: false})
+	})
+	t.Run("allows DELETE of a project issue", func(t *testing.T) {
+		tester(t, testCase{h: gitlabSub(t), req: httpReq(t, "DELETE", "https://gitlab.com/api/v4/projects/7/issues/3", nil), allow: true})
+	})
+	t.Run("denies GET of project variables", func(t *testing.T) {
+		tester(t, testCase{h: gitlabSub(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/7/variables", nil), allow: false})
+	})
+	t.Run("denies GET of a project variable key", func(t *testing.T) {
+		tester(t, testCase{h: gitlabSub(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/mygroup%2Fmyproj/variables/KEY", nil), allow: false})
+	})
+	t.Run("denies POST of project members", func(t *testing.T) {
+		tester(t, testCase{h: gitlabSub(t), req: httpReq(t, "POST", "https://gitlab.com/api/v4/projects/7/members", nil), allow: false})
+	})
+	t.Run("allows git upload-pack under project subpath rules", func(t *testing.T) {
+		tester(t, testCase{h: gitlabSub(t), req: httpReq(t, "GET", "https://gitlab.com/mygroup/myproj.git/info/refs?service=git-upload-pack", nil), allow: true})
+	})
 
-func TestGitPushRefRule(t *testing.T) {
-	svc := loadRules(t, `
+	gitPush := func(t *testing.T) Handler {
+		t.Helper()
+		svc := loadRules(t, `
         default: allow
         rules:
           - action: deny
@@ -158,108 +235,132 @@ func TestGitPushRefRule(t *testing.T) {
           - action: deny
             git: {service: receive-pack, updates: [delete]}
 `)
-	h := Build([]Filter{NewRules(svc, nil)}, upstreamOK)
-	a := strings.Repeat("a", 40)
-	b := strings.Repeat("b", 40)
-	push := func(ups ...gitproto.RefUpdate) []byte { return gitproto.BuildPush(ups, []string{"report-status"}, nil) }
-	cases := []struct {
-		name  string
-		body  []byte
-		allow bool
-	}{
-		{"feature", push(gitproto.RefUpdate{OldOID: a, NewOID: b, Ref: "refs/heads/feature"}), true},
-		{"main among many", push(gitproto.RefUpdate{OldOID: a, NewOID: b, Ref: "refs/heads/feature"}, gitproto.RefUpdate{OldOID: a, NewOID: b, Ref: "refs/heads/main"}), false},
-		{"release glob", push(gitproto.RefUpdate{OldOID: a, NewOID: b, Ref: "refs/heads/release/1.0"}), false},
-		{"delete", push(gitproto.RefUpdate{OldOID: a, NewOID: gitproto.ZeroOID, Ref: "refs/heads/feature"}), false},
+		return Build([]Filter{NewRules(svc, nil)}, upstreamOK)
 	}
-	for _, c := range cases {
-		req := httpReq(t, "POST", "https://gitlab.com/g/p.git/git-receive-pack", c.body)
-		resp, _ := h(req)
-		if got := resp.Denial == nil; got != c.allow {
-			t.Errorf("%s: allowed=%v want %v", c.name, got, c.allow)
-		}
-		// The body must still be forwarded intact after inspection.
-		fwd, _ := io.ReadAll(req.Body.Reader())
-		if !bytes.Equal(fwd, c.body) {
-			t.Errorf("%s: body altered by inspection", c.name)
-		}
+	push := func(ups ...gitproto.RefUpdate) []byte {
+		return gitproto.BuildPush(ups, []string{"report-status"}, nil)
 	}
-	// Unusual URL shapes carrying a push body are still parsed as pushes.
-	main := push(gitproto.RefUpdate{OldOID: a, NewOID: b, Ref: "refs/heads/main"})
-	for _, u := range []string{"https://gitlab.com/g/p.git/git-receive-pack/", "https://gitlab.com/g/p/some-other-route"} {
-		req := httpReq(t, "POST", u, main)
+	oidA := strings.Repeat("a", 40)
+	oidB := strings.Repeat("b", 40)
+	t.Run("allows a feature branch push", func(t *testing.T) {
+		body := push(gitproto.RefUpdate{OldOID: oidA, NewOID: oidB, Ref: "refs/heads/feature"})
+		req := httpReq(t, "POST", "https://gitlab.com/g/p.git/git-receive-pack", body)
+		tester(t, testCase{h: gitPush(t), req: req, allow: true, intact: body})
+	})
+	t.Run("denies a push that includes main", func(t *testing.T) {
+		body := push(gitproto.RefUpdate{OldOID: oidA, NewOID: oidB, Ref: "refs/heads/feature"}, gitproto.RefUpdate{OldOID: oidA, NewOID: oidB, Ref: "refs/heads/main"})
+		req := httpReq(t, "POST", "https://gitlab.com/g/p.git/git-receive-pack", body)
+		tester(t, testCase{h: gitPush(t), req: req, allow: false, intact: body})
+	})
+	t.Run("denies a release glob push", func(t *testing.T) {
+		body := push(gitproto.RefUpdate{OldOID: oidA, NewOID: oidB, Ref: "refs/heads/release/1.0"})
+		req := httpReq(t, "POST", "https://gitlab.com/g/p.git/git-receive-pack", body)
+		tester(t, testCase{h: gitPush(t), req: req, allow: false, intact: body})
+	})
+	t.Run("denies a delete update", func(t *testing.T) {
+		body := push(gitproto.RefUpdate{OldOID: oidA, NewOID: gitproto.ZeroOID, Ref: "refs/heads/feature"})
+		req := httpReq(t, "POST", "https://gitlab.com/g/p.git/git-receive-pack", body)
+		tester(t, testCase{h: gitPush(t), req: req, allow: false, intact: body})
+	})
+	t.Run("denies a main push on a trailing-slash receive-pack url", func(t *testing.T) {
+		body := push(gitproto.RefUpdate{OldOID: oidA, NewOID: oidB, Ref: "refs/heads/main"})
+		req := httpReq(t, "POST", "https://gitlab.com/g/p.git/git-receive-pack/", body)
 		req.Header.Set("Content-Type", "application/x-git-receive-pack-request")
-		if resp, _ := h(req); resp.Denial == nil {
-			t.Errorf("%s: push to main allowed", u)
-		}
-	}
-	// Ref advertisement for a push carries no commands and is allowed.
-	resp, _ := h(httpReq(t, "GET", "https://gitlab.com/g/p.git/info/refs?service=git-receive-pack", nil))
-	if resp.Denial != nil {
-		t.Errorf("info/refs denied: %+v", resp.Denial)
-	}
-}
+		tester(t, testCase{h: gitPush(t), req: req, allow: false})
+	})
+	t.Run("denies a main push on an unusual route with a receive-pack content type", func(t *testing.T) {
+		body := push(gitproto.RefUpdate{OldOID: oidA, NewOID: oidB, Ref: "refs/heads/main"})
+		req := httpReq(t, "POST", "https://gitlab.com/g/p/some-other-route", body)
+		req.Header.Set("Content-Type", "application/x-git-receive-pack-request")
+		tester(t, testCase{h: gitPush(t), req: req, allow: false})
+	})
+	t.Run("allows a receive-pack ref advertisement", func(t *testing.T) {
+		tester(t, testCase{h: gitPush(t), req: httpReq(t, "GET", "https://gitlab.com/g/p.git/info/refs?service=git-receive-pack", nil), allow: true})
+	})
 
-func TestGraphQLRule(t *testing.T) {
-	svc := loadRules(t, `
+	graphqlH := func(t *testing.T) Handler {
+		t.Helper()
+		svc := loadRules(t, `
         default: allow
         rules:
           - action: deny
             path: /graphql
             graphql: {operations: [mutation], fields: [deleteRepository]}
 `)
-	h := Build([]Filter{NewRules(svc, nil)}, upstreamOK)
-	req := httpReq(t, "POST", "https://api.github.com/graphql",
-		[]byte(`{"query":"mutation { ...F } fragment F on Mutation { deleteRepository(input:{}) { clientMutationId } }"}`))
-	if resp, _ := h(req); resp.Denial == nil {
-		t.Error("fragment-hidden deleteRepository allowed")
+		return Build([]Filter{NewRules(svc, nil)}, upstreamOK)
 	}
-	req = httpReq(t, "POST", "https://api.github.com/graphql", []byte(`{"query":"not graphql {"}`))
-	if resp, _ := h(req); resp.Denial == nil {
-		t.Error("unparseable graphql should fail closed")
-	}
-	req = httpReq(t, "POST", "https://api.github.com/graphql", []byte(`{"query":"{ viewer { login } }"}`))
-	if resp, _ := h(req); resp.Denial != nil {
-		t.Errorf("query denied: %+v", resp.Denial)
-	}
-	// Gzip-encoded bodies are inspected after decoding.
-	var zb bytes.Buffer
-	zw := gzip.NewWriter(&zb)
-	zw.Write([]byte(`{"query":"mutation { deleteRepository(input:{}) { clientMutationId } }"}`))
-	zw.Close()
-	req = httpReq(t, "POST", "https://api.github.com/graphql", zb.Bytes())
-	req.Header.Set("Content-Encoding", "gzip")
-	if resp, _ := h(req); resp.Denial == nil || !strings.Contains(resp.Denial.Reason, "denied by") {
-		t.Errorf("gzip mutation not caught by the rule: %+v", resp.Denial)
-	}
-}
+	t.Run("denies a fragment-hidden deleteRepository", func(t *testing.T) {
+		req := httpReq(t, "POST", "https://api.github.com/graphql",
+			[]byte(`{"query":"mutation { ...F } fragment F on Mutation { deleteRepository(input:{}) { clientMutationId } }"}`))
+		tester(t, testCase{h: graphqlH(t), req: req, allow: false})
+	})
+	t.Run("fails closed on unparseable graphql", func(t *testing.T) {
+		req := httpReq(t, "POST", "https://api.github.com/graphql", []byte(`{"query":"not graphql {"}`))
+		tester(t, testCase{h: graphqlH(t), req: req, allow: false})
+	})
+	t.Run("allows a graphql query", func(t *testing.T) {
+		req := httpReq(t, "POST", "https://api.github.com/graphql", []byte(`{"query":"{ viewer { login } }"}`))
+		tester(t, testCase{h: graphqlH(t), req: req, allow: true})
+	})
+	t.Run("inspects a gzip-encoded graphql mutation", func(t *testing.T) {
+		var zb bytes.Buffer
+		zw := gzip.NewWriter(&zb)
+		_, err := zw.Write([]byte(`{"query":"mutation { deleteRepository(input:{}) { clientMutationId } }"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = zw.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httpReq(t, "POST", "https://api.github.com/graphql", zb.Bytes())
+		req.Header.Set("Content-Encoding", "gzip")
+		resp, err := graphqlH(t)(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Denial == nil || !strings.Contains(resp.Denial.Reason, "denied by") {
+			t.Errorf("gzip mutation not caught by the rule: %+v", resp.Denial)
+		}
+	})
 
-func TestGitHubRepo(t *testing.T) {
-	svc := loadRules(t, `
+	githubRepo := func(t *testing.T) Handler {
+		t.Helper()
+		svc := loadRules(t, `
         rules:
           - action: allow
             github_repo: [octo/hello, octo/world]
 `)
-	h := Build([]Filter{NewRules(svc, nil)}, upstreamOK)
-	for url, want := range map[string]bool{
-		"https://api.github.com/repos/octo/hello/pulls":      true,
-		"https://api.github.com/repos/octo/world/issues":     true,
-		"https://ghe.corp/api/v3/repos/Octo/Hello":           true,
-		"https://api.github.com/repos/octo/hello2":           false,
-		"https://github.com/octo/hello.git/git-upload-pack":  true,
-		"https://github.com/octo/other.git/git-receive-pack": false,
-		"https://api.github.com/repositories/123/pulls":      false,
-		"https://api.github.com/user/repos":                  false,
-	} {
-		resp, _ := h(httpReq(t, "GET", url, nil))
-		if got := resp.Denial == nil; got != want {
-			t.Errorf("%s: allowed=%v want %v", url, got, want)
-		}
+		return Build([]Filter{NewRules(svc, nil)}, upstreamOK)
 	}
-}
+	t.Run("allows GET of octo/hello pulls", func(t *testing.T) {
+		tester(t, testCase{h: githubRepo(t), req: httpReq(t, "GET", "https://api.github.com/repos/octo/hello/pulls", nil), allow: true})
+	})
+	t.Run("allows GET of octo/world issues", func(t *testing.T) {
+		tester(t, testCase{h: githubRepo(t), req: httpReq(t, "GET", "https://api.github.com/repos/octo/world/issues", nil), allow: true})
+	})
+	t.Run("allows GET of a case-insensitive github repo", func(t *testing.T) {
+		tester(t, testCase{h: githubRepo(t), req: httpReq(t, "GET", "https://ghe.corp/api/v3/repos/Octo/Hello", nil), allow: true})
+	})
+	t.Run("denies GET of a sibling repo name", func(t *testing.T) {
+		tester(t, testCase{h: githubRepo(t), req: httpReq(t, "GET", "https://api.github.com/repos/octo/hello2", nil), allow: false})
+	})
+	t.Run("allows git upload-pack for octo/hello", func(t *testing.T) {
+		tester(t, testCase{h: githubRepo(t), req: httpReq(t, "GET", "https://github.com/octo/hello.git/git-upload-pack", nil), allow: true})
+	})
+	t.Run("denies git receive-pack for another repo", func(t *testing.T) {
+		tester(t, testCase{h: githubRepo(t), req: httpReq(t, "GET", "https://github.com/octo/other.git/git-receive-pack", nil), allow: false})
+	})
+	t.Run("denies GET by numeric repository id", func(t *testing.T) {
+		tester(t, testCase{h: githubRepo(t), req: httpReq(t, "GET", "https://api.github.com/repositories/123/pulls", nil), allow: false})
+	})
+	t.Run("denies GET of user repos", func(t *testing.T) {
+		tester(t, testCase{h: githubRepo(t), req: httpReq(t, "GET", "https://api.github.com/user/repos", nil), allow: false})
+	})
 
-func TestGitHubSubpaths(t *testing.T) {
-	svc := loadRules(t, `
+	githubSub := func(t *testing.T) Handler {
+		t.Helper()
+		svc := loadRules(t, `
         rules:
           - action: allow
             methods: [GET]
@@ -270,28 +371,32 @@ func TestGitHubSubpaths(t *testing.T) {
             github_repo: [octo/hello]
             github_subpaths: ["pulls/*/merge"]
 `)
-	h := Build([]Filter{NewRules(svc, nil)}, upstreamOK)
-	for _, c := range []struct {
-		method, url string
-		allow       bool
-	}{
-		{"GET", "https://api.github.com/repos/octo/hello", true},
-		{"GET", "https://api.github.com/repos/octo/hello/pulls", true},
-		{"GET", "https://api.github.com/repos/octo/hello/pulls/1/comments", true},
-		{"GET", "https://api.github.com/repos/octo/hello/issues", false},
-		{"PUT", "https://api.github.com/repos/octo/hello/pulls/3/merge", true},
-		{"GET", "https://github.com/octo/hello.git/git-upload-pack", false},
-		{"PUT", "https://api.github.com/repos/octo/other/pulls/3/merge", false},
-	} {
-		resp, _ := h(httpReq(t, c.method, c.url, nil))
-		if got := resp.Denial == nil; got != c.allow {
-			t.Errorf("%s %s: allowed=%v want %v", c.method, c.url, got, c.allow)
-		}
+		return Build([]Filter{NewRules(svc, nil)}, upstreamOK)
 	}
-}
+	t.Run("allows GET of the github repo root", func(t *testing.T) {
+		tester(t, testCase{h: githubSub(t), req: httpReq(t, "GET", "https://api.github.com/repos/octo/hello", nil), allow: true})
+	})
+	t.Run("allows GET of repo pulls", func(t *testing.T) {
+		tester(t, testCase{h: githubSub(t), req: httpReq(t, "GET", "https://api.github.com/repos/octo/hello/pulls", nil), allow: true})
+	})
+	t.Run("allows GET of pull comments", func(t *testing.T) {
+		tester(t, testCase{h: githubSub(t), req: httpReq(t, "GET", "https://api.github.com/repos/octo/hello/pulls/1/comments", nil), allow: true})
+	})
+	t.Run("denies GET of repo issues", func(t *testing.T) {
+		tester(t, testCase{h: githubSub(t), req: httpReq(t, "GET", "https://api.github.com/repos/octo/hello/issues", nil), allow: false})
+	})
+	t.Run("allows PUT merge of a pull", func(t *testing.T) {
+		tester(t, testCase{h: githubSub(t), req: httpReq(t, "PUT", "https://api.github.com/repos/octo/hello/pulls/3/merge", nil), allow: true})
+	})
+	t.Run("denies git upload-pack when subpaths omit it", func(t *testing.T) {
+		tester(t, testCase{h: githubSub(t), req: httpReq(t, "GET", "https://github.com/octo/hello.git/git-upload-pack", nil), allow: false})
+	})
+	t.Run("denies PUT merge on another repo", func(t *testing.T) {
+		tester(t, testCase{h: githubSub(t), req: httpReq(t, "PUT", "https://api.github.com/repos/octo/other/pulls/3/merge", nil), allow: false})
+	})
 
-func TestRuleFiltersRunOnlyOnMatch(t *testing.T) {
-	svc := loadRules(t, `
+	t.Run("runs rule filters only on a matching allow", func(t *testing.T) {
+		svc := loadRules(t, `
         rules:
           - action: allow
             path: /allowed
@@ -300,195 +405,296 @@ func TestRuleFiltersRunOnlyOnMatch(t *testing.T) {
           - action: allow
             path: /other
 `)
-	var ran []string
-	tag := func(name string) Filter {
-		return filterFunc(func(req *Request, next Handler) (*Response, error) {
-			ran = append(ran, name)
-			return next(req)
-		})
-	}
-	h := Build([]Filter{NewRules(svc, nil).WithRuleFilters([][]Filter{
-		{tag("allowed")},
-		{tag("denied")},
-		{tag("other")},
-	})}, upstreamOK)
-
-	ran = nil
-	resp, _ := h(httpReq(t, "GET", "https://gitlab.com/allowed", nil))
-	if resp.Denial != nil || strings.Join(ran, ",") != "allowed" {
-		t.Fatalf("allowed: denial=%+v ran=%v", resp.Denial, ran)
-	}
-	ran = nil
-	resp, _ = h(httpReq(t, "GET", "https://gitlab.com/denied", nil))
-	if resp.Denial == nil || len(ran) != 0 {
-		t.Fatalf("denied: denial=%+v ran=%v", resp.Denial, ran)
-	}
-	ran = nil
-	resp, _ = h(httpReq(t, "GET", "https://gitlab.com/other", nil))
-	if resp.Denial != nil || strings.Join(ran, ",") != "other" {
-		t.Fatalf("other: denial=%+v ran=%v", resp.Denial, ran)
-	}
-	ran = nil
-	resp, _ = h(httpReq(t, "GET", "https://gitlab.com/nope", nil))
-	if resp.Denial == nil || len(ran) != 0 {
-		t.Fatalf("default: denial=%+v ran=%v", resp.Denial, ran)
-	}
-}
-
-func TestRuleFiltersRunAfterAskYes(t *testing.T) {
-	svc := loadRules(t, `
+		var ran []string
+		tag := func(name string) Filter {
+			return filterFunc(func(req *Request, next Handler) (*Response, error) {
+				ran = append(ran, name)
+				return next(req)
+			})
+		}
+		h := Build([]Filter{NewRules(svc, nil).WithRuleFilters([][]Filter{
+			{tag("allowed")},
+			{tag("denied")},
+			{tag("other")},
+		})}, upstreamOK)
+		ran = nil
+		resp, err := h(httpReq(t, "GET", "https://gitlab.com/allowed", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Denial != nil || strings.Join(ran, ",") != "allowed" {
+			t.Fatalf("allowed: denial=%+v ran=%v", resp.Denial, ran)
+		}
+		ran = nil
+		resp, err = h(httpReq(t, "GET", "https://gitlab.com/denied", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Denial == nil || len(ran) != 0 {
+			t.Fatalf("denied: denial=%+v ran=%v", resp.Denial, ran)
+		}
+		ran = nil
+		resp, err = h(httpReq(t, "GET", "https://gitlab.com/other", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Denial != nil || strings.Join(ran, ",") != "other" {
+			t.Fatalf("other: denial=%+v ran=%v", resp.Denial, ran)
+		}
+		ran = nil
+		resp, err = h(httpReq(t, "GET", "https://gitlab.com/nope", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Denial == nil || len(ran) != 0 {
+			t.Fatalf("default: denial=%+v ran=%v", resp.Denial, ran)
+		}
+	})
+	t.Run("runs rule filters after ask yes and not after ask no", func(t *testing.T) {
+		svc := loadRules(t, `
         rules:
           - action: ask
             methods: [PUT]
 `)
-	var ran int
-	tag := filterFunc(func(req *Request, next Handler) (*Response, error) {
-		ran++
-		return next(req)
+		var ran int
+		tag := filterFunc(func(req *Request, next Handler) (*Response, error) {
+			ran++
+			return next(req)
+		})
+		answer := false
+		env := &Env{Approver: approverFunc(func(AskRequest) bool { return answer })}
+		h := Build([]Filter{NewRules(svc, env).WithRuleFilters([][]Filter{{tag}})}, upstreamOK)
+		resp, err := h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Denial == nil || ran != 0 {
+			t.Fatalf("ask no: denial=%+v ran=%d", resp.Denial, ran)
+		}
+		answer = true
+		resp, err = h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Denial != nil || ran != 1 {
+			t.Fatalf("ask yes: denial=%+v ran=%d", resp.Denial, ran)
+		}
 	})
-	answer := false
-	env := &Env{Approver: approverFunc(func(AskRequest) bool { return answer })}
-	h := Build([]Filter{NewRules(svc, env).WithRuleFilters([][]Filter{{tag}})}, upstreamOK)
-	resp, _ := h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
-	if resp.Denial == nil || ran != 0 {
-		t.Fatalf("ask no: denial=%+v ran=%d", resp.Denial, ran)
-	}
-	answer = true
-	resp, _ = h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
-	if resp.Denial != nil || ran != 1 {
-		t.Fatalf("ask yes: denial=%+v ran=%d", resp.Denial, ran)
-	}
-}
-
-func TestAskRule(t *testing.T) {
-	svc := loadRules(t, `
+	t.Run("denies an ask rule after no and allows after yes", func(t *testing.T) {
+		svc := loadRules(t, `
         rules:
           - action: ask
             prompt: merge?
             methods: [PUT]
 `)
-	answer := false
-	var asked string
-	env := &Env{Approver: approverFunc(func(a AskRequest) bool { asked = a.Prompt; return answer })}
-	h := Build([]Filter{NewRules(svc, env)}, upstreamOK)
-	if resp, _ := h(httpReq(t, "PUT", "https://gitlab.com/x", nil)); resp.Denial == nil || asked != "merge?" {
-		t.Errorf("expected denial after no; asked=%q", asked)
-	}
-	answer = true
-	if resp, _ := h(httpReq(t, "PUT", "https://gitlab.com/x", nil)); resp.Denial != nil {
-		t.Error("expected allow after yes")
-	}
+		answer := false
+		var asked string
+		env := &Env{Approver: approverFunc(func(a AskRequest) bool { asked = a.Prompt; return answer })}
+		h := Build([]Filter{NewRules(svc, env)}, upstreamOK)
+		resp, err := h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Denial == nil || asked != "merge?" {
+			t.Errorf("expected denial after no; asked=%q", asked)
+		}
+		answer = true
+		resp, err = h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Denial != nil {
+			t.Error("expected allow after yes")
+		}
+	})
+	t.Run("denies when a filter panics", func(t *testing.T) {
+		boom := filterFunc(func(*Request, Handler) (*Response, error) { panic("boom") })
+		resp, err := Build([]Filter{boom}, upstreamOK)(httpReq(t, "GET", "https://x/", nil))
+		if err != nil || resp.Denial == nil {
+			t.Fatalf("panic should deny: %+v %v", resp, err)
+		}
+	})
 }
 
-type approverFunc func(AskRequest) bool
-
-func (f approverFunc) Ask(_ context.Context, a AskRequest) (bool, error) { return f(a), nil }
-
 func TestCheckPath(t *testing.T) {
-	for p, ok := range map[string]bool{
-		"/api/v4/projects/x":        true,
-		"/a/../b":                   false,
-		"/a/./b":                    false,
-		"/a//b":                     false,
-		"/a\\b":                     false,
-		"/api/v4/projects/a/../../": false,
-	} {
-		if got := CheckPath(p) == nil; got != ok {
-			t.Errorf("CheckPath(%q) ok=%v want %v", p, got, ok)
+	type testCase struct {
+		path string
+		ok   bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		if got := CheckPath(tc.path) == nil; got != tc.ok {
+			t.Errorf("CheckPath(%q) ok=%v want %v", tc.path, got, tc.ok)
 		}
 	}
+
+	t.Run("accepts a decoded api path", func(t *testing.T) {
+		tester(t, testCase{path: "/api/v4/projects/x", ok: true})
+	})
+	t.Run("rejects parent directory segments", func(t *testing.T) {
+		tester(t, testCase{path: "/a/../b", ok: false})
+	})
+	t.Run("rejects current directory segments", func(t *testing.T) {
+		tester(t, testCase{path: "/a/./b", ok: false})
+	})
+	t.Run("rejects empty path segments", func(t *testing.T) {
+		tester(t, testCase{path: "/a//b", ok: false})
+	})
+	t.Run("rejects a backslash", func(t *testing.T) {
+		tester(t, testCase{path: "/a\\b", ok: false})
+	})
+	t.Run("rejects parent segments after a project", func(t *testing.T) {
+		tester(t, testCase{path: "/api/v4/projects/a/../../", ok: false})
+	})
 }
 
 func TestCheckMethod(t *testing.T) {
-	for m, ok := range map[string]bool{"GET": true, "DELETE": true, "PROPFIND": true, "delete": false, "Delete": false, "GET ": false, "": false, "M-SEARCH": false} {
-		if got := CheckMethod(m) == nil; got != ok {
-			t.Errorf("CheckMethod(%q) ok=%v want %v", m, got, ok)
+	type testCase struct {
+		method string
+		ok     bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		if got := CheckMethod(tc.method) == nil; got != tc.ok {
+			t.Errorf("CheckMethod(%q) ok=%v want %v", tc.method, got, tc.ok)
 		}
 	}
+
+	t.Run("accepts GET", func(t *testing.T) {
+		tester(t, testCase{method: "GET", ok: true})
+	})
+	t.Run("accepts DELETE", func(t *testing.T) {
+		tester(t, testCase{method: "DELETE", ok: true})
+	})
+	t.Run("accepts PROPFIND", func(t *testing.T) {
+		tester(t, testCase{method: "PROPFIND", ok: true})
+	})
+	t.Run("rejects lowercase delete", func(t *testing.T) {
+		tester(t, testCase{method: "delete", ok: false})
+	})
+	t.Run("rejects mixed-case Delete", func(t *testing.T) {
+		tester(t, testCase{method: "Delete", ok: false})
+	})
+	t.Run("rejects a trailing space", func(t *testing.T) {
+		tester(t, testCase{method: "GET ", ok: false})
+	})
+	t.Run("rejects an empty method", func(t *testing.T) {
+		tester(t, testCase{method: "", ok: false})
+	})
+	t.Run("rejects M-SEARCH", func(t *testing.T) {
+		tester(t, testCase{method: "M-SEARCH", ok: false})
+	})
 }
 
 func TestCheckMethodOverride(t *testing.T) {
+	type testCase struct {
+		req *Request
+		ok  bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		if got := CheckMethodOverride(tc.req) == nil; got != tc.ok {
+			t.Errorf("ok=%v want %v", got, tc.ok)
+		}
+	}
+
 	form := func(body string) *Request {
 		r := httpReq(t, "POST", "https://gitlab.com/api/v4/projects/1", []byte(body))
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		return r
 	}
-	hdr := httpReq(t, "POST", "https://gitlab.com/x", nil)
-	hdr.Header.Set("X-HTTP-Method-Override", "DELETE")
-	multi := httpReq(t, "POST", "https://gitlab.com/x", []byte("--b\r\nContent-Disposition: form-data; name=\"_method\"\r\n\r\nDELETE\r\n--b--"))
-	multi.Header.Set("Content-Type", "multipart/mixed; boundary=b")
-	for name, c := range map[string]struct {
-		req *Request
-		ok  bool
-	}{
-		"header":    {hdr, false},
-		"query":     {httpReq(t, "POST", "https://gitlab.com/x?_method=DELETE", nil), false},
-		"form":      {form("a=1&_method=DELETE"), false},
-		"multipart": {multi, false},
-		"no content type": {func() *Request {
-			r := httpReq(t, "POST", "https://gitlab.com/x", []byte("_method=DELETE"))
-			return r
-		}(), false},
-		"odd content type": {func() *Request {
-			r := form("_method=DELETE")
-			r.Header.Set("Content-Type", "application/x-www-form-urlencoded, text/plain")
-			return r
-		}(), false},
-		"bracketed key": {form("%5B_method%5D=DELETE"), false},
-		"encoded key":   {form("%5Fmethod=DELETE"), false},
-		"underscore header": {func() *Request {
-			r := httpReq(t, "POST", "https://gitlab.com/x", nil)
-			r.Header["X_http_method_override"] = []string{"DELETE"}
-			return r
-		}(), false},
-		"plain form": {form("title=hello&description=world"), true},
-		"json": {func() *Request {
-			r := httpReq(t, "POST", "https://gitlab.com/x", []byte(`{"_method":"DELETE"}`))
-			r.Header.Set("Content-Type", "application/json")
-			return r
-		}(), true},
-	} {
-		if got := CheckMethodOverride(c.req) == nil; got != c.ok {
-			t.Errorf("%s: ok=%v want %v", name, got, c.ok)
+	t.Run("rejects an override header", func(t *testing.T) {
+		hdr := httpReq(t, "POST", "https://gitlab.com/x", nil)
+		hdr.Header.Set("X-HTTP-Method-Override", "DELETE")
+		tester(t, testCase{req: hdr, ok: false})
+	})
+	t.Run("rejects an override query", func(t *testing.T) {
+		tester(t, testCase{req: httpReq(t, "POST", "https://gitlab.com/x?_method=DELETE", nil), ok: false})
+	})
+	t.Run("rejects a form _method", func(t *testing.T) {
+		tester(t, testCase{req: form("a=1&_method=DELETE"), ok: false})
+	})
+	t.Run("rejects a multipart _method", func(t *testing.T) {
+		multi := httpReq(t, "POST", "https://gitlab.com/x", []byte("--b\r\nContent-Disposition: form-data; name=\"_method\"\r\n\r\nDELETE\r\n--b--"))
+		multi.Header.Set("Content-Type", "multipart/mixed; boundary=b")
+		tester(t, testCase{req: multi, ok: false})
+	})
+	t.Run("rejects a body _method without content type", func(t *testing.T) {
+		r := httpReq(t, "POST", "https://gitlab.com/x", []byte("_method=DELETE"))
+		tester(t, testCase{req: r, ok: false})
+	})
+	t.Run("rejects an odd content type", func(t *testing.T) {
+		r := form("_method=DELETE")
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded, text/plain")
+		tester(t, testCase{req: r, ok: false})
+	})
+	t.Run("rejects a bracketed _method key", func(t *testing.T) {
+		tester(t, testCase{req: form("%5B_method%5D=DELETE"), ok: false})
+	})
+	t.Run("rejects an encoded _method key", func(t *testing.T) {
+		tester(t, testCase{req: form("%5Fmethod=DELETE"), ok: false})
+	})
+	t.Run("rejects an underscore override header", func(t *testing.T) {
+		r := httpReq(t, "POST", "https://gitlab.com/x", nil)
+		r.Header["X_http_method_override"] = []string{"DELETE"}
+		tester(t, testCase{req: r, ok: false})
+	})
+	t.Run("accepts a plain form body", func(t *testing.T) {
+		tester(t, testCase{req: form("title=hello&description=world"), ok: true})
+	})
+	t.Run("accepts a json body with _method", func(t *testing.T) {
+		r := httpReq(t, "POST", "https://gitlab.com/x", []byte(`{"_method":"DELETE"}`))
+		r.Header.Set("Content-Type", "application/json")
+		tester(t, testCase{req: r, ok: true})
+	})
+	t.Run("does not consume the body", func(t *testing.T) {
+		r := form("title=hello")
+		CheckMethodOverride(r)
+		b, err := io.ReadAll(r.Body.Reader())
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	// Inspection must not consume the body.
-	r := form("title=hello")
-	CheckMethodOverride(r)
-	if b, _ := io.ReadAll(r.Body.Reader()); string(b) != "title=hello" {
-		t.Fatalf("body consumed: %q", b)
-	}
+		if string(b) != "title=hello" {
+			t.Fatalf("body consumed: %q", b)
+		}
+	})
 }
 
 func TestGlob(t *testing.T) {
-	for _, c := range []struct {
-		pat, name string
-		want      bool
-	}{
-		{"/api/v4/user", "/api/v4/user", true},
-		{"/api/*/user", "/api/v4/user", true},
-		{"/api/**", "/api/v4/user", true},
-		{"/api/**", "/api", true},
-		{"/api/**/user", "/api/v4/x/user", true},
-		{"refs/heads/release/*", "refs/heads/release/1.0", true},
-		{"refs/heads/release/*", "refs/heads/release/1.0/hotfix", false},
-		{"refs/heads/*", "refs/tags/v1", false},
-	} {
-		if got := Glob(c.pat, c.name); got != c.want {
-			t.Errorf("Glob(%q, %q) = %v", c.pat, c.name, got)
+	type testCase struct {
+		pat  string
+		name string
+		want bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		if got := Glob(tc.pat, tc.name); got != tc.want {
+			t.Errorf("Glob(%q, %q) = %v", tc.pat, tc.name, got)
 		}
 	}
+
+	t.Run("matches an exact path", func(t *testing.T) {
+		tester(t, testCase{pat: "/api/v4/user", name: "/api/v4/user", want: true})
+	})
+	t.Run("matches a single star segment", func(t *testing.T) {
+		tester(t, testCase{pat: "/api/*/user", name: "/api/v4/user", want: true})
+	})
+	t.Run("matches a trailing double star", func(t *testing.T) {
+		tester(t, testCase{pat: "/api/**", name: "/api/v4/user", want: true})
+	})
+	t.Run("matches a double star against the prefix path", func(t *testing.T) {
+		tester(t, testCase{pat: "/api/**", name: "/api", want: true})
+	})
+	t.Run("matches a nested double star", func(t *testing.T) {
+		tester(t, testCase{pat: "/api/**/user", name: "/api/v4/x/user", want: true})
+	})
+	t.Run("matches a single star ref glob", func(t *testing.T) {
+		tester(t, testCase{pat: "refs/heads/release/*", name: "refs/heads/release/1.0", want: true})
+	})
+	t.Run("does not let a single star cross a slash", func(t *testing.T) {
+		tester(t, testCase{pat: "refs/heads/release/*", name: "refs/heads/release/1.0/hotfix", want: false})
+	})
+	t.Run("does not match a different ref prefix", func(t *testing.T) {
+		tester(t, testCase{pat: "refs/heads/*", name: "refs/tags/v1", want: false})
+	})
 }
-
-func TestBuildFailsClosed(t *testing.T) {
-	boom := filterFunc(func(*Request, Handler) (*Response, error) { panic("boom") })
-	resp, err := Build([]Filter{boom}, upstreamOK)(httpReq(t, "GET", "https://x/", nil))
-	if err != nil || resp.Denial == nil {
-		t.Fatalf("panic should deny: %+v %v", resp, err)
-	}
-}
-
-type filterFunc func(*Request, Handler) (*Response, error)
-
-func (f filterFunc) Name() string                                    { return "func" }
-func (f filterFunc) Handle(r *Request, n Handler) (*Response, error) { return f(r, n) }

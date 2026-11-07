@@ -7,401 +7,19 @@ import (
 	"testing"
 
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
-)
-
-const (
-	testContextOther   = "other"
-	testContextPastdev = "pastdev"
-	testImageOther     = "other:latest"
-	testImagePastdev   = "pastdev:latest"
-	testBouncerListen  = "127.0.0.1:8228"
-	testHostCursor     = "cursor.com"
-	testHostCursorStar = "*.cursor.sh"
-	testHostAnthropic  = "api.anthropic.com"
-	testHostExtra      = "extra.example.com"
-	testAgentCursor    = "cursor"
-	testAgentClaude    = "claude"
-	testBouncerGithub  = "github"
-	testProfileDefault = "default"
-	testProfileLocked  = "locked-down"
-	testMountCursor    = "/agent/cursor"
-	testMissing        = "missing"
+	"github.com/pastdev/agentcon/pkg/run"
 )
 
 func agentCfg(root string) Config {
 	return Config{
-		DefaultContext: testContextPastdev,
+		DefaultContext: "pastdev",
 		Agents: map[string]AgentSpec{
-			testAgentCursor: {Image: testImagePastdev},
-			testAgentClaude: {Image: testImageOther},
+			"cursor": {Image: "pastdev:latest"},
+			"claude": {Image: "other:latest"},
 		},
 		Contexts: map[string]ContextSpec{
-			testContextPastdev: {Agent: testAgentCursor, Root: root},
+			"pastdev": {Agent: "cursor", Root: root},
 		},
-	}
-}
-
-func TestNewRunRequestUsesDefaultContext(t *testing.T) {
-	root := t.TempDir()
-	cwd := filepath.Join(root, "github.com", "pastdev", "agentcon")
-	err := os.MkdirAll(cwd, 0o700)
-	if err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	cfg := agentCfg(root)
-	cfg.Contexts[testContextOther] = ContextSpec{Agent: testAgentClaude, Root: t.TempDir()}
-
-	req, err := NewRunRequest(&cfg, RunFlags{}, cwd, t.TempDir())
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	if req.Image != testImagePastdev {
-		t.Fatalf("got image %q", req.Image)
-	}
-	if req.Root != root {
-		t.Fatalf("got root %q, want %q", req.Root, root)
-	}
-	if req.Cwd != cwd {
-		t.Fatalf("got cwd %q, want %q", req.Cwd, cwd)
-	}
-	if req.Agent != testAgentCursor {
-		t.Fatalf("got agent %q", req.Agent)
-	}
-}
-
-func TestNewRunRequestAllowsCwdAtRoot(t *testing.T) {
-	root := t.TempDir()
-	cfg := agentCfg(root)
-
-	req, err := NewRunRequest(&cfg, RunFlags{}, root, t.TempDir())
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	if req.Root != root {
-		t.Fatalf("got root %q, want %q", req.Root, root)
-	}
-	if req.Cwd != root {
-		t.Fatalf("got cwd %q, want %q", req.Cwd, root)
-	}
-}
-
-func TestNewRunRequestRequiresDefaultContext(t *testing.T) {
-	cfg := Config{
-		Agents: map[string]AgentSpec{
-			testAgentCursor: {Image: testImagePastdev},
-		},
-		Contexts: map[string]ContextSpec{
-			testContextPastdev: {Agent: testAgentCursor, Root: t.TempDir()},
-		},
-	}
-
-	_, err := NewRunRequest(&cfg, RunFlags{}, t.TempDir(), t.TempDir())
-	if err == nil {
-		t.Fatal("expected missing default")
-	}
-	if !strings.Contains(err.Error(), "default_context is not set") {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestNewRunRequestRejectsCwdOutsideRoot(t *testing.T) {
-	root := t.TempDir()
-	other := t.TempDir()
-	cfg := agentCfg(root)
-
-	_, err := NewRunRequest(&cfg, RunFlags{}, other, t.TempDir())
-	if err == nil {
-		t.Fatal("expected cwd outside root")
-	}
-	if !strings.Contains(err.Error(), "is not under context") {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestNewRunRequestNamedRejectsCwdOutsideRoot(t *testing.T) {
-	root := t.TempDir()
-	other := t.TempDir()
-	cfg := agentCfg(root)
-	cfg.DefaultContext = testContextOther
-	cfg.Contexts[testContextOther] = ContextSpec{Agent: testAgentClaude, Root: other}
-
-	_, err := NewRunRequest(&cfg, RunFlags{Context: testContextPastdev}, other, t.TempDir())
-	if err == nil {
-		t.Fatal("expected cwd outside named root")
-	}
-	if !strings.Contains(err.Error(), "is not under context") {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestNewRunRequestByName(t *testing.T) {
-	root := t.TempDir()
-	nested := filepath.Join(root, "nested")
-	err := os.MkdirAll(nested, 0o700)
-	if err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	cfg := agentCfg(root)
-	cfg.DefaultContext = testContextOther
-	cfg.Contexts[testContextOther] = ContextSpec{Agent: testAgentClaude, Root: nested}
-
-	req, err := NewRunRequest(&cfg, RunFlags{Context: testContextPastdev}, nested, t.TempDir())
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	if req.Root != root {
-		t.Fatalf("got root %q, want %q", req.Root, root)
-	}
-	if req.Cwd != nested {
-		t.Fatalf("got cwd %q, want %q", req.Cwd, nested)
-	}
-}
-
-func TestNewRunRequestAgentOverride(t *testing.T) {
-	root := t.TempDir()
-	cfg := agentCfg(root)
-	cfg.Contexts[testContextPastdev] = ContextSpec{
-		Agent: testAgentClaude,
-		Root:  root,
-	}
-	req, err := NewRunRequest(&cfg, RunFlags{}, root, t.TempDir())
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	if req.Agent != testAgentClaude {
-		t.Fatalf("got agent %q", req.Agent)
-	}
-	if req.Image != testImageOther {
-		t.Fatalf("got image %q", req.Image)
-	}
-	req, err = NewRunRequest(&cfg, RunFlags{Agent: testAgentCursor}, root, t.TempDir())
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	if req.Agent != testAgentCursor {
-		t.Fatalf("got agent %q", req.Agent)
-	}
-	if req.Image != testImagePastdev {
-		t.Fatalf("got image %q", req.Image)
-	}
-}
-
-func TestNewRunRequestUnknownName(t *testing.T) {
-	root := t.TempDir()
-	cfg := agentCfg(root)
-
-	_, err := NewRunRequest(&cfg, RunFlags{Context: testMissing}, root, t.TempDir())
-	if err == nil {
-		t.Fatal("expected unknown context")
-	}
-	if !strings.Contains(err.Error(), `unknown context "missing"`) {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestNewRunRequestUnknownAgent(t *testing.T) {
-	root := t.TempDir()
-	cfg := agentCfg(root)
-
-	_, err := NewRunRequest(&cfg, RunFlags{Agent: testMissing}, root, t.TempDir())
-	if err == nil {
-		t.Fatal("expected unknown agent")
-	}
-	if !strings.Contains(err.Error(), `unknown agent "missing"`) {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestNewRunRequestResolvesRoot(t *testing.T) {
-	root := t.TempDir()
-	cwd := filepath.Join(root, "proj")
-	err := os.MkdirAll(cwd, 0o700)
-	if err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	cfg := agentCfg(root)
-	cfg.Agents[testAgentCursor] = AgentSpec{Image: "img:latest"}
-
-	req, err := NewRunRequest(&cfg, RunFlags{Context: testContextPastdev}, cwd, t.TempDir())
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	want, err := filepath.Abs(root)
-	if err != nil {
-		t.Fatalf("abs: %v", err)
-	}
-	if req.Root != want {
-		t.Fatalf("got %q, want %q", req.Root, want)
-	}
-}
-
-func TestNewRunRequestExpandsMounts(t *testing.T) {
-	root := t.TempDir()
-	home := t.TempDir()
-	cfg := agentCfg(root)
-	cfg.Agents[testAgentCursor] = AgentSpec{
-		Image: testImagePastdev,
-		Mounts: []MountSpec{
-			{Source: "~/.cursor", Target: testMountCursor},
-			{Source: ".config/cursor", Target: "/agent/cursor-config"},
-		},
-	}
-
-	req, err := NewRunRequest(&cfg, RunFlags{}, root, home)
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	if len(req.Mounts) != 2 {
-		t.Fatalf("mounts %v", req.Mounts)
-	}
-	if req.Mounts[0].Source != filepath.Join(home, ".cursor") {
-		t.Fatalf("home mount %q", req.Mounts[0].Source)
-	}
-	if req.Mounts[1].Source != filepath.Join(home, ".config", "cursor") {
-		t.Fatalf("relative mount %q", req.Mounts[1].Source)
-	}
-}
-
-func TestNewRunRequestBuildOnlyTagsAgent(t *testing.T) {
-	root := t.TempDir()
-	overlay := t.TempDir()
-	contextDir := filepath.Join(overlay, "image")
-	err := os.MkdirAll(contextDir, 0o700)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = os.WriteFile(filepath.Join(contextDir, defaultDockerfile), []byte("FROM scratch\n"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := agentCfg(root)
-	cfg.OverlayDirs = []string{overlay}
-	cfg.Agents[testAgentCursor] = AgentSpec{
-		Build: &BuildSpec{Context: "image"},
-	}
-
-	req, err := NewRunRequest(&cfg, RunFlags{}, root, t.TempDir())
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	wantImage := agentImagePrefix + testAgentCursor
-	if req.Image != wantImage {
-		t.Fatalf("image %q", req.Image)
-	}
-	if req.Build == nil {
-		t.Fatal("expected build")
-	}
-	if req.Build.Context != contextDir {
-		t.Fatalf("context %q", req.Build.Context)
-	}
-	if req.Build.Dockerfile != defaultDockerfile {
-		t.Fatalf("dockerfile %q", req.Build.Dockerfile)
-	}
-	if len(req.Build.Tags) != 1 || req.Build.Tags[0] != wantImage {
-		t.Fatalf("tags %v", req.Build.Tags)
-	}
-}
-
-func TestNewRunRequestBuildAndImage(t *testing.T) {
-	root := t.TempDir()
-	overlay := t.TempDir()
-	contextDir := filepath.Join(overlay, "image")
-	err := os.MkdirAll(contextDir, 0o700)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = os.WriteFile(filepath.Join(contextDir, "Containerfile"), []byte("FROM scratch\n"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := agentCfg(root)
-	cfg.OverlayDirs = []string{overlay}
-	cfg.Agents[testAgentCursor] = AgentSpec{
-		Image: testImagePastdev,
-		Build: &BuildSpec{Context: "image", Dockerfile: "Containerfile"},
-	}
-
-	req, err := NewRunRequest(&cfg, RunFlags{}, root, t.TempDir())
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	if req.Image != testImagePastdev {
-		t.Fatalf("image %q", req.Image)
-	}
-	if req.Build == nil || req.Build.Dockerfile != "Containerfile" {
-		t.Fatalf("build %+v", req.Build)
-	}
-}
-
-func TestNewRunRequestRequiresImageOrBuild(t *testing.T) {
-	root := t.TempDir()
-	cfg := agentCfg(root)
-	cfg.Agents[testAgentCursor] = AgentSpec{}
-
-	_, err := NewRunRequest(&cfg, RunFlags{}, root, t.TempDir())
-	if err == nil {
-		t.Fatal("expected image or build")
-	}
-	if !strings.Contains(err.Error(), "requires image or build") {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestNewRunRequestSkipsBouncer(t *testing.T) {
-	root := t.TempDir()
-	cfg := bouncerCfg(root, t)
-
-	req, err := NewRunRequest(&cfg, RunFlags{}, root, t.TempDir())
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	if req.Bouncer == nil {
-		t.Fatal("expected bouncer")
-	}
-
-	req, err = NewRunRequest(&cfg, RunFlags{NoBouncer: true}, root, t.TempDir())
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	if req.Bouncer != nil {
-		t.Fatal("expected no bouncer")
-	}
-}
-
-func TestNewRunRequestBouncerOverride(t *testing.T) {
-	root := t.TempDir()
-	cfg := bouncerCfg(root, t)
-	cfg.Bouncers["personal"] = cfg.Bouncers[testBouncerGithub]
-	cfg.Contexts[testContextPastdev] = ContextSpec{
-		Agent:   testAgentCursor,
-		Root:    root,
-		Bouncer: "personal",
-	}
-
-	req, err := NewRunRequest(&cfg, RunFlags{Bouncer: testBouncerGithub}, root, t.TempDir())
-	if err != nil {
-		t.Fatalf("new run request: %v", err)
-	}
-	if req.Bouncer == nil {
-		t.Fatal("expected bouncer")
-	}
-}
-
-func TestNewRunRequestUnknownBouncer(t *testing.T) {
-	root := t.TempDir()
-	cfg := agentCfg(root)
-
-	_, err := NewRunRequest(&cfg, RunFlags{Bouncer: testMissing}, root, t.TempDir())
-	if err == nil {
-		t.Fatal("expected unknown bouncer")
-	}
-	if !strings.Contains(err.Error(), `unknown bouncer "missing"`) {
-		t.Fatalf("got %v", err)
 	}
 }
 
@@ -409,17 +27,417 @@ func bouncerCfg(root string, t *testing.T) Config {
 	t.Helper()
 	cfg := agentCfg(root)
 	cfg.Bouncers = map[string]*bouncercfg.Config{
-		testBouncerGithub: {
-			Listen: testBouncerListen,
+		"github": {
+			Listen: "127.0.0.1:8228",
 			Profiles: map[string]*bouncercfg.Profile{
-				testProfileDefault: {Unmatched: bouncercfg.UnmatchedDeny},
+				"default": {Unmatched: bouncercfg.UnmatchedDeny},
 			},
 		},
 	}
-	cfg.Contexts[testContextPastdev] = ContextSpec{
-		Agent:   testAgentCursor,
+	cfg.Contexts["pastdev"] = ContextSpec{
+		Agent:   "cursor",
 		Root:    root,
-		Bouncer: testBouncerGithub,
+		Bouncer: "github",
 	}
 	return cfg
+}
+
+func TestNewRunRequest(t *testing.T) {
+	type testCase struct {
+		cfg     Config
+		flags   RunFlags
+		cwd     string
+		home    string
+		wantErr string
+		check   func(*testing.T, run.Request)
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		got, err := NewRunRequest(&tc.cfg, tc.flags, tc.cwd, tc.home)
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("got %v, want %q", err, tc.wantErr)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.check != nil {
+			tc.check(t, got)
+		}
+	}
+
+	t.Run("uses the default context", func(t *testing.T) {
+		root := t.TempDir()
+		cwd := filepath.Join(root, "github.com", "pastdev", "agentcon")
+		err := os.MkdirAll(cwd, 0o700)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := agentCfg(root)
+		cfg.Contexts["other"] = ContextSpec{Agent: "claude", Root: t.TempDir()}
+		tester(t, testCase{
+			cfg:  cfg,
+			cwd:  cwd,
+			home: t.TempDir(),
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				if req.Image != "pastdev:latest" {
+					t.Fatalf("got image %q", req.Image)
+				}
+				if req.Root != root {
+					t.Fatalf("got root %q, want %q", req.Root, root)
+				}
+				if req.Cwd != cwd {
+					t.Fatalf("got cwd %q, want %q", req.Cwd, cwd)
+				}
+				if req.Agent != "cursor" {
+					t.Fatalf("got agent %q", req.Agent)
+				}
+			},
+		})
+	})
+	t.Run("allows cwd at the context root", func(t *testing.T) {
+		root := t.TempDir()
+		tester(t, testCase{
+			cfg:  agentCfg(root),
+			cwd:  root,
+			home: t.TempDir(),
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				if req.Root != root {
+					t.Fatalf("got root %q, want %q", req.Root, root)
+				}
+				if req.Cwd != root {
+					t.Fatalf("got cwd %q, want %q", req.Cwd, root)
+				}
+			},
+		})
+	})
+	t.Run("requires default_context", func(t *testing.T) {
+		tester(t, testCase{
+			cfg: Config{
+				Agents: map[string]AgentSpec{
+					"cursor": {Image: "pastdev:latest"},
+				},
+				Contexts: map[string]ContextSpec{
+					"pastdev": {Agent: "cursor", Root: t.TempDir()},
+				},
+			},
+			cwd:     t.TempDir(),
+			home:    t.TempDir(),
+			wantErr: "default_context is not set",
+		})
+	})
+	t.Run("rejects cwd outside the context root", func(t *testing.T) {
+		root := t.TempDir()
+		tester(t, testCase{
+			cfg:     agentCfg(root),
+			cwd:     t.TempDir(),
+			home:    t.TempDir(),
+			wantErr: "is not under context",
+		})
+	})
+	t.Run("rejects cwd outside a named context root", func(t *testing.T) {
+		root := t.TempDir()
+		other := t.TempDir()
+		cfg := agentCfg(root)
+		cfg.DefaultContext = "other"
+		cfg.Contexts["other"] = ContextSpec{Agent: "claude", Root: other}
+		tester(t, testCase{
+			cfg:     cfg,
+			flags:   RunFlags{Context: "pastdev"},
+			cwd:     other,
+			home:    t.TempDir(),
+			wantErr: "is not under context",
+		})
+	})
+	t.Run("selects a named context", func(t *testing.T) {
+		root := t.TempDir()
+		nested := filepath.Join(root, "nested")
+		err := os.MkdirAll(nested, 0o700)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := agentCfg(root)
+		cfg.DefaultContext = "other"
+		cfg.Contexts["other"] = ContextSpec{Agent: "claude", Root: nested}
+		tester(t, testCase{
+			cfg:   cfg,
+			flags: RunFlags{Context: "pastdev"},
+			cwd:   nested,
+			home:  t.TempDir(),
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				if req.Root != root {
+					t.Fatalf("got root %q, want %q", req.Root, root)
+				}
+				if req.Cwd != nested {
+					t.Fatalf("got cwd %q, want %q", req.Cwd, nested)
+				}
+			},
+		})
+	})
+	t.Run("uses the context agent", func(t *testing.T) {
+		root := t.TempDir()
+		cfg := agentCfg(root)
+		cfg.Contexts["pastdev"] = ContextSpec{Agent: "claude", Root: root}
+		tester(t, testCase{
+			cfg:  cfg,
+			cwd:  root,
+			home: t.TempDir(),
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				if req.Agent != "claude" {
+					t.Fatalf("got agent %q", req.Agent)
+				}
+				if req.Image != "other:latest" {
+					t.Fatalf("got image %q", req.Image)
+				}
+			},
+		})
+	})
+	t.Run("lets --agent override the context agent", func(t *testing.T) {
+		root := t.TempDir()
+		cfg := agentCfg(root)
+		cfg.Contexts["pastdev"] = ContextSpec{Agent: "claude", Root: root}
+		tester(t, testCase{
+			cfg:   cfg,
+			flags: RunFlags{Agent: "cursor"},
+			cwd:   root,
+			home:  t.TempDir(),
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				if req.Agent != "cursor" {
+					t.Fatalf("got agent %q", req.Agent)
+				}
+				if req.Image != "pastdev:latest" {
+					t.Fatalf("got image %q", req.Image)
+				}
+			},
+		})
+	})
+	t.Run("rejects an unknown context", func(t *testing.T) {
+		root := t.TempDir()
+		tester(t, testCase{
+			cfg:     agentCfg(root),
+			flags:   RunFlags{Context: "missing"},
+			cwd:     root,
+			home:    t.TempDir(),
+			wantErr: `unknown context "missing"`,
+		})
+	})
+	t.Run("rejects an unknown agent", func(t *testing.T) {
+		root := t.TempDir()
+		tester(t, testCase{
+			cfg:     agentCfg(root),
+			flags:   RunFlags{Agent: "missing"},
+			cwd:     root,
+			home:    t.TempDir(),
+			wantErr: `unknown agent "missing"`,
+		})
+	})
+	t.Run("resolves root to an absolute path", func(t *testing.T) {
+		root := t.TempDir()
+		cwd := filepath.Join(root, "proj")
+		err := os.MkdirAll(cwd, 0o700)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := agentCfg(root)
+		cfg.Agents["cursor"] = AgentSpec{Image: "img:latest"}
+		tester(t, testCase{
+			cfg:   cfg,
+			flags: RunFlags{Context: "pastdev"},
+			cwd:   cwd,
+			home:  t.TempDir(),
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				want, err := filepath.Abs(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if req.Root != want {
+					t.Fatalf("got %q, want %q", req.Root, want)
+				}
+			},
+		})
+	})
+	t.Run("expands home and relative mounts", func(t *testing.T) {
+		root := t.TempDir()
+		home := t.TempDir()
+		cfg := agentCfg(root)
+		cfg.Agents["cursor"] = AgentSpec{
+			Image: "pastdev:latest",
+			Mounts: []MountSpec{
+				{Source: "~/.cursor", Target: "/agent/cursor"},
+				{Source: ".config/cursor", Target: "/agent/cursor-config"},
+			},
+		}
+		tester(t, testCase{
+			cfg:  cfg,
+			cwd:  root,
+			home: home,
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				if len(req.Mounts) != 2 {
+					t.Fatalf("mounts %v", req.Mounts)
+				}
+				if req.Mounts[0].Source != filepath.Join(home, ".cursor") {
+					t.Fatalf("home mount %q", req.Mounts[0].Source)
+				}
+				if req.Mounts[1].Source != filepath.Join(home, ".config", "cursor") {
+					t.Fatalf("relative mount %q", req.Mounts[1].Source)
+				}
+			},
+		})
+	})
+	t.Run("tags a build-only agent as agentcon/<name>", func(t *testing.T) {
+		root := t.TempDir()
+		overlay := t.TempDir()
+		contextDir := filepath.Join(overlay, "image")
+		err := os.MkdirAll(contextDir, 0o700)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = os.WriteFile(filepath.Join(contextDir, defaultDockerfile), []byte("FROM scratch\n"), 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := agentCfg(root)
+		cfg.OverlayDirs = []string{overlay}
+		cfg.Agents["cursor"] = AgentSpec{
+			Build: &BuildSpec{Context: "image"},
+		}
+		tester(t, testCase{
+			cfg:  cfg,
+			cwd:  root,
+			home: t.TempDir(),
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				wantImage := agentImagePrefix + "cursor"
+				if req.Image != wantImage {
+					t.Fatalf("image %q", req.Image)
+				}
+				if req.Build == nil {
+					t.Fatal("expected build")
+				}
+				if req.Build.Context != contextDir {
+					t.Fatalf("context %q", req.Build.Context)
+				}
+				if req.Build.Dockerfile != defaultDockerfile {
+					t.Fatalf("dockerfile %q", req.Build.Dockerfile)
+				}
+				if len(req.Build.Tags) != 1 || req.Build.Tags[0] != wantImage {
+					t.Fatalf("tags %v", req.Build.Tags)
+				}
+			},
+		})
+	})
+	t.Run("keeps image when build and image are both set", func(t *testing.T) {
+		root := t.TempDir()
+		overlay := t.TempDir()
+		contextDir := filepath.Join(overlay, "image")
+		err := os.MkdirAll(contextDir, 0o700)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = os.WriteFile(filepath.Join(contextDir, "Containerfile"), []byte("FROM scratch\n"), 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := agentCfg(root)
+		cfg.OverlayDirs = []string{overlay}
+		cfg.Agents["cursor"] = AgentSpec{
+			Image: "pastdev:latest",
+			Build: &BuildSpec{Context: "image", Dockerfile: "Containerfile"},
+		}
+		tester(t, testCase{
+			cfg:  cfg,
+			cwd:  root,
+			home: t.TempDir(),
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				if req.Image != "pastdev:latest" {
+					t.Fatalf("image %q", req.Image)
+				}
+				if req.Build == nil || req.Build.Dockerfile != "Containerfile" {
+					t.Fatalf("build %+v", req.Build)
+				}
+			},
+		})
+	})
+	t.Run("requires image or build", func(t *testing.T) {
+		root := t.TempDir()
+		cfg := agentCfg(root)
+		cfg.Agents["cursor"] = AgentSpec{}
+		tester(t, testCase{
+			cfg:     cfg,
+			cwd:     root,
+			home:    t.TempDir(),
+			wantErr: "requires image or build",
+		})
+	})
+	t.Run("materializes the context bouncer", func(t *testing.T) {
+		root := t.TempDir()
+		tester(t, testCase{
+			cfg:  bouncerCfg(root, t),
+			cwd:  root,
+			home: t.TempDir(),
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				if req.Bouncer == nil {
+					t.Fatal("expected bouncer")
+				}
+			},
+		})
+	})
+	t.Run("skips the bouncer when --no-bouncer", func(t *testing.T) {
+		root := t.TempDir()
+		tester(t, testCase{
+			cfg:   bouncerCfg(root, t),
+			flags: RunFlags{NoBouncer: true},
+			cwd:   root,
+			home:  t.TempDir(),
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				if req.Bouncer != nil {
+					t.Fatal("expected no bouncer")
+				}
+			},
+		})
+	})
+	t.Run("lets --bouncer override the context bouncer", func(t *testing.T) {
+		root := t.TempDir()
+		cfg := bouncerCfg(root, t)
+		cfg.Bouncers["personal"] = cfg.Bouncers["github"]
+		cfg.Contexts["pastdev"] = ContextSpec{
+			Agent:   "cursor",
+			Root:    root,
+			Bouncer: "personal",
+		}
+		tester(t, testCase{
+			cfg:   cfg,
+			flags: RunFlags{Bouncer: "github"},
+			cwd:   root,
+			home:  t.TempDir(),
+			check: func(t *testing.T, req run.Request) {
+				t.Helper()
+				if req.Bouncer == nil {
+					t.Fatal("expected bouncer")
+				}
+			},
+		})
+	})
+	t.Run("rejects an unknown bouncer", func(t *testing.T) {
+		root := t.TempDir()
+		tester(t, testCase{
+			cfg:     agentCfg(root),
+			flags:   RunFlags{Bouncer: "missing"},
+			cwd:     root,
+			home:    t.TempDir(),
+			wantErr: `unknown bouncer "missing"`,
+		})
+	})
 }

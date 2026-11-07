@@ -9,15 +9,8 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
 )
 
-const (
-	testAuthenticator  = "authenticator app"
-	testMasterPassword = "pw"
-	testTOTP           = "123456"
-	testTOTPWrong      = "000000"
-)
-
 func TestCompleteBitwardenUnlock(t *testing.T) {
-	errNeedCode := &mgmt.NeedCodeError{Method: testAuthenticator}
+	errNeedCode := &mgmt.NeedCodeError{Method: "authenticator app"}
 	errInvalidTOTP := fmt.Errorf("bitwarden: Invalid TOTP code")
 	errBadPassword := errors.New("bitwarden: incorrect master password")
 
@@ -45,11 +38,11 @@ func TestCompleteBitwardenUnlock(t *testing.T) {
 			return step.err
 		}
 		prompt := 0
-		err := completeBitwardenUnlock(unlock, testMasterPassword, func(method string) (string, error) {
+		err := completeBitwardenUnlock(unlock, "pw", func(method string) (string, error) {
 			if prompt >= len(tc.codes) {
 				t.Fatal("extra prompt")
 			}
-			if method != "" && method != testAuthenticator {
+			if method != "" && method != "authenticator app" {
 				t.Fatalf("method %q", method)
 			}
 			code := tc.codes[prompt]
@@ -77,9 +70,9 @@ func TestCompleteBitwardenUnlock(t *testing.T) {
 		tester(t, testCase{
 			steps: []unlockStep{
 				{code: "", err: errNeedCode},
-				{code: testTOTP},
+				{code: "123456"},
 			},
-			codes: []string{testTOTP},
+			codes: []string{"123456"},
 		})
 	})
 
@@ -87,10 +80,10 @@ func TestCompleteBitwardenUnlock(t *testing.T) {
 		tester(t, testCase{
 			steps: []unlockStep{
 				{code: "", err: errNeedCode},
-				{code: testTOTPWrong, err: errInvalidTOTP},
-				{code: testTOTP},
+				{code: "000000", err: errInvalidTOTP},
+				{code: "123456"},
 			},
-			codes: []string{testTOTPWrong, testTOTP},
+			codes: []string{"000000", "123456"},
 		})
 	})
 
@@ -98,10 +91,10 @@ func TestCompleteBitwardenUnlock(t *testing.T) {
 		tester(t, testCase{
 			steps: []unlockStep{
 				{code: "", err: errNeedCode},
-				{code: testTOTPWrong, err: errNeedCode},
-				{code: testTOTP},
+				{code: "000000", err: errNeedCode},
+				{code: "123456"},
 			},
-			codes: []string{testTOTPWrong, testTOTP},
+			codes: []string{"000000", "123456"},
 		})
 	})
 

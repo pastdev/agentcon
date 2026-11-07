@@ -4,8 +4,7 @@ A filter is a TypeScript (or JavaScript) module that default-exports `defineFilt
 It runs inside the sidecar, in an embedded JS VM.
 `await` on `next()`, `ask()`, and body reads blocks that filter, not the daemon.
 
-There was no user-facing filter guide before this page.
-The type surface is [docs/bouncer/github/ts/bouncer.d.ts](bouncer/github/ts/bouncer.d.ts).
+The type surface is [`internal/bouncer/types/bouncer.d.ts`](../internal/bouncer/types/bouncer.d.ts).
 A concrete GitHub overlay that uses filters is [docs/bouncer/github](bouncer/github).
 
 ## Where files live
@@ -16,8 +15,6 @@ Put sources under `ts/` in an `agentcon.d` overlay directory.
 ~/.config/agentcon.d/
   github.yaml
   ts/
-    bouncer.d.ts
-    tsconfig.json
     filters/
       git-protect-branches.ts
 ```
@@ -66,7 +63,8 @@ Time spent in `next()`, `ask()`, or body reads does not count.
 
 Import from the virtual module `bouncer`.
 That module is not on disk at runtime.
-`bouncer.d.ts` is only for the editor.
+`bouncer.d.ts` is editor types in this repository.
+It is not copied into the overlay.
 
 ```typescript
 import { defineFilter, deny, ask } from "bouncer";
