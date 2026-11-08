@@ -224,7 +224,20 @@ func gunzip(b []byte) ([]byte, error) {
 }
 
 // Describe is a short human description, used in prompts and logs.
+// A git push includes each ref update (create/update/delete plus the ref).
+// A GraphQL request includes operation type, name, and top-level fields.
 func (r *Request) Describe() string {
+	s := r.describeTransport()
+	if extra := r.describeGitUpdates(); extra != "" {
+		return s + " " + extra
+	}
+	if extra := r.describeGraphQL(); extra != "" {
+		return s + " " + extra
+	}
+	return s
+}
+
+func (r *Request) describeTransport() string {
 	if r.SSH != nil {
 		s := fmt.Sprintf("ssh %s@%s %s", r.SSH.User, r.SSH.Host, r.SSH.Kind)
 		switch {
@@ -241,6 +254,37 @@ func (r *Request) Describe() string {
 		return r.Method
 	}
 	return r.Method + " " + r.URL.Host + r.URL.RequestURI()
+}
+
+func (r *Request) describeGitUpdates() string {
+	push, err := r.Push()
+	if err != nil || push == nil || len(push.Updates) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(push.Updates))
+	for _, u := range push.Updates {
+		parts = append(parts, u.Type+" "+u.Ref)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (r *Request) describeGraphQL() string {
+	ops, err := r.GraphQL()
+	if err != nil || len(ops) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(ops))
+	for _, op := range ops {
+		s := op.Type
+		if op.Name != "" {
+			s += " " + op.Name
+		}
+		if len(op.Fields) > 0 {
+			s += " " + strings.Join(op.Fields, ",")
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // Response is what a chain produces: an upstream response, a synthetic

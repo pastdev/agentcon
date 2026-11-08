@@ -13,7 +13,9 @@ Put sources under `ts/` in an `agentcon.d` overlay directory.
 
 ```text
 ~/.config/agentcon.d/
-  github.yaml
+  agents.yaml
+  bouncers.yaml
+  contexts.yaml
   ts/
     filters/
       git-protect-branches.ts
@@ -45,6 +47,10 @@ http:
     filters:
       - path: ts/filters/read-only.ts
     rules:
+      - action: ask
+        git: {service: receive-pack, refs: [refs/tags/*]}
+        github_repo: [your-org/your-repo]
+        prompt: "Push a git tag?"
       - action: allow
         git: {}
         github_repo: [your-org/your-repo]

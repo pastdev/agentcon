@@ -1,8 +1,11 @@
-# Overlay for ~/.config/agentcon.d.
+# Overlay for ~/.config/agentcon.d/bouncers.yaml.
 # Adds a named github bouncer and binds it on the git context.
 # Does not set agent or root.
-# Edit github_repo, Bitwarden email, and item names before run.
-# If your context is not named git, rename that key.
+# Keep this as the only github overlay.
+# A leftover bouncer.yaml loses, because later files replace slices.
+# Repo list is github_repo. Add another identical repo to that list.
+# unmatched: tunnel splices unknown hosts, and leftover paths on github.com go unauthenticated.
+# github.com and api.github.com are a service, so they stay filtered.
 
 bouncers:
   github:
@@ -11,14 +14,14 @@ bouncers:
       github-pat:
         token:
           source: bitwarden
-          email: you@example.com
+          email: agent@pastdev.com
           item: pat-github-agent
           path: $.notes
         export_env: [GH_TOKEN, GITHUB_TOKEN]
       github-ssh:
         private_key:
           source: bitwarden
-          email: you@example.com
+          email: agent@pastdev.com
           item: ssh-github
           path: $.sshKey.privateKey
 
@@ -36,6 +39,11 @@ bouncers:
               - action: allow
                 methods: [GET]
                 path: /user
+              - action: ask
+                methods: [POST]
+                path: /graphql
+                graphql: {operations: [mutation], fields: [mergePullRequest]}
+                prompt: "Merge a pull request?"
               - action: allow
                 methods: [POST]
                 path: /graphql
@@ -56,23 +64,27 @@ bouncers:
                         - addCollaborator
                         - createCommitOnBranch
                         - createRef
+              - action: ask
+                git: {service: receive-pack, refs: [refs/tags/*]}
+                github_repo: [pastdev/agentcon]
+                prompt: "Push a git tag?"
               - action: allow
                 git: {}
-                github_repo: [your-org/your-repo]
+                github_repo: [pastdev/agentcon]
                 filters:
                   - path: ts/filters/git-protect-branches.ts
                     config: {branches: [main, master]}
               - action: allow
                 methods: [GET]
-                github_repo: [your-org/your-repo]
+                github_repo: [pastdev/agentcon]
                 github_subpaths: ["", "pulls/**", "issues/**", "commits/**", "compare/**", "branches/**"]
               - action: allow
                 methods: [POST]
-                github_repo: [your-org/your-repo]
+                github_repo: [pastdev/agentcon]
                 github_subpaths: ["pulls", "pulls/*/comments", "pulls/*/reviews", "issues", "issues/*/comments"]
               - action: ask
                 methods: [PUT]
-                github_repo: [your-org/your-repo]
+                github_repo: [pastdev/agentcon]
                 github_subpaths: ["pulls/*/merge"]
                 prompt: "Merge a pull request?"
 
@@ -84,9 +96,13 @@ bouncers:
             allow: [git]
             host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
             rules:
+              - action: ask
+                git: {service: receive-pack, refs: [refs/tags/*]}
+                github_repo: [pastdev/agentcon]
+                prompt: "Push a git tag?"
               - action: allow
                 git: {}
-                github_repo: [your-org/your-repo]
+                github_repo: [pastdev/agentcon]
                 filters:
                   - path: ts/filters/git-protect-branches.ts
                     config: {branches: [main, master]}
