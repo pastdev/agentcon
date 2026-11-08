@@ -22,6 +22,9 @@ Leftover paths on an intercepted host skip the credential and strip placeholder 
 It matches info/refs, git-upload-pack, and git-receive-pack.
 Path globs are not a substitute.
 They miss receive-pack and nested `.git` paths.
+`git-protect-branches` only looks at `refs/heads/`.
+A tag push is `refs/tags/*`.
+Put a `refs` rule before a blanket `git: {}` allow if tags should ask or deny.
 
 `github_repo` is a YAML list of `owner/repo`.
 `github_subpaths` limits REST paths under that repo.
@@ -210,6 +213,10 @@ profiles:
           # basic: {username: oauth2}
           # query: token
         rules:
+          - action: ask
+            git: {service: receive-pack, refs: [refs/tags/*]}
+            github_repo: [your-org/your-repo]
+            prompt: "Push a git tag?"
           - action: allow
             git: {}
             github_repo: [your-org/your-repo]
@@ -220,6 +227,10 @@ profiles:
         credential: github-ssh
         allow: [git]
         rules:
+          - action: ask
+            git: {service: receive-pack, refs: [refs/tags/*]}
+            github_repo: [your-org/your-repo]
+            prompt: "Push a git tag?"
           - action: allow
             git: {}
             github_repo: [your-org/your-repo]
@@ -230,8 +241,10 @@ A full GitHub overlay is the [GitHub starting point](#github-starting-point).
 ## GitHub starting point
 
 [docs/bouncer/github](github) is a starting point, not a product policy.
-Copy it into `~/.config/agentcon.d`, then edit `github.yaml` for your repo and Bitwarden items.
+Copy it into `~/.config/agentcon.d`, then edit `bouncers.yaml` for your repo and Bitwarden items.
 It adds a named `github` bouncer, binds it on the `git` context, and ships the three filters that overlay uses.
+Keep one `bouncers.yaml`.
+A leftover `bouncer.yaml` loses, because later files replace slices.
 
 From a clone of this repository:
 
@@ -255,15 +268,18 @@ curl --fail --location \
       '*/docs/bouncer/github'
 ```
 
-That writes `github.yaml` and `ts/` next to your existing agent and context files.
+That writes `bouncers.yaml` and `ts/` next to `agents.yaml` and `contexts.yaml`.
 It does not set `agent` or `root`.
-If your context is not named `git`, rename that key in `github.yaml`.
+If your context is not named `git`, rename that key in `bouncers.yaml`.
 Add another repo by appending to each `github_repo` list, not by copying the rules.
 
 `unmatched: tunnel` splices unknown hosts.
 github.com and api.github.com are intercepted.
 Leftover paths on those hosts go through without the PAT.
-`mergePullRequest` is omitted from the GraphQL deny list so `require-approval-merge.ts` can ask.
+A receive-pack of `refs/tags/*` asks, because a tag starts the release workflow.
+`git-protect-branches.ts` still only blocks `main` and `master`.
+A GraphQL `mergePullRequest` asks first, before the blanket `/graphql` allow.
+`mergePullRequest` is omitted from the GraphQL deny list so `require-approval-merge.ts` can still ask if that YAML rule is missing.
 REST merge uses the YAML `action: ask` rule.
 
 Writing filters is in [bouncer-filters.md](bouncer-filters.md).

@@ -8,8 +8,8 @@ tar --directory ad_hoc/issue-9/config --create . \
   | tar --directory ~/.config/agentcon.d --extract
 ```
 
-That writes `bouncer.yaml`, `bouncer_notes.md`, and `ts/` next to your existing context files.
-`bouncer.yaml` only sets `contexts.git.bouncer`.
+That writes `bouncers.yaml`, `bouncer_notes.md`, and `ts/` next to your existing context files.
+`bouncers.yaml` only sets `contexts.git.bouncer`.
 It does not set `image` or `root`.
 If your context is not named `git`, rename that key before extracting.
 
@@ -28,6 +28,8 @@ Leftover paths on those hosts are forwarded with placeholder auth stripped, not 
 HTTPS and SSH are separate `http` and `ssh` lists.
 They do not share REST rules.
 Each copies `git-protect-branches.ts` onto its git allow rule with the same `branches` config.
+A receive-pack of `refs/tags/*` asks first.
+That filter does not see tags.
 
 `github_repo` is always a list of `owner/repo`.
 `github_subpaths` are globs under `/repos/owner/repo/` (`""` is the repo itself).
@@ -36,10 +38,10 @@ A second identical repo is another entry in `github_repo`, not a copy of the rul
 `github_repo` without subpaths would allow DELETE, secrets, collaborators, and deploy keys.
 This sketch uses subpaths for fetch, PR conversation, and creating an issue.
 It does not match GraphQL.
-A POST to `/graphql` is allowed so `gh` works.
-That rule runs the GraphQL guard and `require-approval-merge.ts`.
-`mergePullRequest` is left out of the guard deny list so the merge filter can ask.
-REST merge uses the YAML `action: ask` rule, not that filter.
+A GraphQL `mergePullRequest` asks first, before the blanket `/graphql` allow.
+That allow still runs the GraphQL guard and `require-approval-merge.ts`.
+`mergePullRequest` is left out of the guard deny list so the merge filter can still ask if the YAML rule is missing.
+REST merge uses the YAML `action: ask` rule.
 The PAT needs Issues: Read and write for `gh issue create`.
 GraphQL `createIssue` is not on the deny list.
 

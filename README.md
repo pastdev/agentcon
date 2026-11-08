@@ -40,6 +40,7 @@ Copy it into `~/.config/agentcon.d/cursor`, then edit that copy's Dockerfile to 
 Config is loaded from `/etc/agentcon.d`, `~/.config/agentcon.d`, and `./agentcon.d`.
 Maps merge.
 Slices replace.
+Name the YAML files `agents.yaml`, `bouncers.yaml`, and `contexts.yaml`.
 Put the image next to the YAML so `build.context` does not point at a checkout you might delete.
 
 From a clone of this repository:
@@ -234,7 +235,9 @@ The agent reaches the network through that proxy.
 
 `default_profile` is required.
 [docs/bouncer/github](docs/bouncer/github) is a starting point for a GitHub allowlist, including filters.
-Copy it into `~/.config/agentcon.d`, then edit `github.yaml` for your repo and Bitwarden items.
+Copy it into `~/.config/agentcon.d`, then edit `bouncers.yaml` for your repo and Bitwarden items.
+Keep one `bouncers.yaml`.
+A leftover `bouncer.yaml` loses, because later files replace slices.
 
 From a clone of this repository:
 
@@ -260,7 +263,7 @@ curl --fail --location \
 
 That overlay is additive.
 It does not set `agent` or `root`.
-If your context is not named `git`, rename that key in `github.yaml`.
+If your context is not named `git`, rename that key in `bouncers.yaml`.
 
 How to write TypeScript filters is in [docs/bouncer-filters.md](docs/bouncer-filters.md).
 

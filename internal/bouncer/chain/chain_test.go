@@ -278,6 +278,66 @@ func TestBuild(t *testing.T) {
 		tester(t, testCase{h: gitPush(t), req: httpReq(t, "GET", "https://gitlab.com/g/p.git/info/refs?service=git-receive-pack", nil), allow: true})
 	})
 
+	gitTagAsk := func(t *testing.T, yes bool) Handler {
+		t.Helper()
+		svc := loadRules(t, `
+        default: deny
+        rules:
+          - action: ask
+            git: {service: receive-pack, refs: [refs/tags/*]}
+            prompt: Push a git tag?
+          - action: allow
+            git: {}
+`)
+		return Build([]Filter{NewRules(svc, &Env{Approver: approverFunc(func(AskRequest) bool { return yes })})}, upstreamOK)
+	}
+	t.Run("asks on a tag push", func(t *testing.T) {
+		body := push(gitproto.RefUpdate{OldOID: gitproto.ZeroOID, NewOID: oidB, Ref: "refs/tags/v0.1.0"})
+		req := httpReq(t, "POST", "https://gitlab.com/g/p.git/git-receive-pack", body)
+		tester(t, testCase{h: gitTagAsk(t, false), req: req, allow: false, intact: body})
+	})
+	t.Run("allows a tag push after ask yes", func(t *testing.T) {
+		body := push(gitproto.RefUpdate{OldOID: gitproto.ZeroOID, NewOID: oidB, Ref: "refs/tags/v0.1.0"})
+		req := httpReq(t, "POST", "https://gitlab.com/g/p.git/git-receive-pack", body)
+		tester(t, testCase{h: gitTagAsk(t, true), req: req, allow: true, intact: body})
+	})
+	t.Run("allows a feature branch push when tags ask", func(t *testing.T) {
+		body := push(gitproto.RefUpdate{OldOID: oidA, NewOID: oidB, Ref: "refs/heads/feature"})
+		req := httpReq(t, "POST", "https://gitlab.com/g/p.git/git-receive-pack", body)
+		tester(t, testCase{h: gitTagAsk(t, false), req: req, allow: true, intact: body})
+	})
+
+	graphqlMergeAsk := func(t *testing.T, yes bool) Handler {
+		t.Helper()
+		svc := loadRules(t, `
+        default: deny
+        rules:
+          - action: ask
+            methods: [POST]
+            path: /graphql
+            graphql: {operations: [mutation], fields: [mergePullRequest]}
+            prompt: Merge a pull request?
+          - action: allow
+            methods: [POST]
+            path: /graphql
+`)
+		return Build([]Filter{NewRules(svc, &Env{Approver: approverFunc(func(AskRequest) bool { return yes })})}, upstreamOK)
+	}
+	t.Run("asks on a graphql mergePullRequest", func(t *testing.T) {
+		req := httpReq(t, "POST", "https://api.github.com/graphql",
+			[]byte(`{"query":"mutation { mergePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }"}`))
+		tester(t, testCase{h: graphqlMergeAsk(t, false), req: req, allow: false})
+	})
+	t.Run("allows a graphql mergePullRequest after ask yes", func(t *testing.T) {
+		req := httpReq(t, "POST", "https://api.github.com/graphql",
+			[]byte(`{"query":"mutation { mergePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }"}`))
+		tester(t, testCase{h: graphqlMergeAsk(t, true), req: req, allow: true})
+	})
+	t.Run("allows a graphql query when merge asks", func(t *testing.T) {
+		req := httpReq(t, "POST", "https://api.github.com/graphql", []byte(`{"query":"{ viewer { login } }"}`))
+		tester(t, testCase{h: graphqlMergeAsk(t, false), req: req, allow: true})
+	})
+
 	graphqlH := func(t *testing.T) Handler {
 		t.Helper()
 		svc := loadRules(t, `

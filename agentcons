@@ -7,8 +7,19 @@ readonly AGENTCON_SNAPSHOT_BIN_DIR="${AGENTCON_SNAPSHOT_BIN_DIR:-${HOME}/.local/
 readonly AGENTCON_SNAPSHOT_BIN="${AGENTCON_SNAPSHOT_BIN_DIR}/agentcon-snapshot"
 
 function snapshot_version {
-  local base_version major minor patch
-  base_version="$(git -C "${AGENTCON_SRC_DIR}" describe --tags --abbrev=0)"
+  local base_version major minor patch tag
+  base_version=""
+  # Only vMAJOR.MINOR.PATCH. A suffix like v0.1.1-ask-test is not a release.
+  while IFS= read -r tag; do
+    if [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      base_version="${tag}"
+      break
+    fi
+  done < <(git -C "${AGENTCON_SRC_DIR}" tag --list --sort=-v:refname)
+  if [[ -z "${base_version}" ]]; then
+    printf '0.1.0-SNAPSHOT\n'
+    return
+  fi
   IFS='.' read -r major minor patch <<<"${base_version#v}"
   printf '%s.%s.%s-SNAPSHOT\n' "${major}" "${minor}" "$((patch + 1))"
 }

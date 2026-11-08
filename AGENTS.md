@@ -48,6 +48,10 @@ After implementation, ensure tests, lint, and compile succeed.
 Run smoke checks that verify end-to-end behavior when practical.
 Then use the handoff process for merge requests or other elevated actions.
 
+After opening a merge request, say the PR is ready for review and stop.
+Do not merge.
+The user merges in the browser, or asks the agent to merge through the bouncer.
+
 After merge, when asked to close out the conversation, remove leftover handoff scripts, test artifacts, and local branches.
 Keep `ad_hoc/` for the issue.
 That folder is forensic.
