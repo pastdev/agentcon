@@ -272,7 +272,7 @@ Unknown hosts follow `unmatched`.
 [Choosing `unmatched`](docs/bouncer.md#choosing-unmatched) covers when to use `tunnel` or `deny`.
 Leftover paths on an intercepted host do not get the credential.
 
-The host prompts for Bitwarden unlock when that source is used.
+`agentcon run` asks for the Bitwarden master password at its terminal when that source is used.
 Answer an `ask` rule with `agentcon bouncer approve` from the project directory.
 
 Policy shape, credentials, sessions, and the sidecar layout are in [docs/bouncer.md](docs/bouncer.md).

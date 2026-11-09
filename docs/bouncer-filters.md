@@ -121,10 +121,10 @@ HTTP clients get `status` (default 403) and the reason as text.
 
 `ask(prompt, { key?, timeout? })` prompts the human.
 It resolves `true` if approved.
-It times out to a deny after `approvals.timeout` (default 2m) unless `timeout` is set.
-`key` groups identical decisions so "allow for this session" applies to them.
-It defaults to the prompt.
-Answer from another terminal with `agentcon bouncer approve`.
+It times out to a deny after `prompts.timeout` (default 2m) unless `timeout` is set.
+`key` groups decisions so "allow for this session" applies to all of them.
+Without `key`, a decision covers only the same prompt for the same request.
+Answer from another terminal with `agentcon bouncer approve`, or see [Prompts](bouncer.md#prompts) for every way to answer.
 
 A YAML rule can also use `action: ask`.
 Use a filter `ask()` when the decision needs the body, GraphQL fields, or git refs.
