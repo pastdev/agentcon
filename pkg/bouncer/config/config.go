@@ -218,7 +218,7 @@ type Profile struct {
 	// deny (e.g. the agent's own LLM API).
 	Tunnel []string `yaml:"tunnel"`
 	// AllowPrivate lets tunneled (unmatched) traffic reach loopback, private,
-	// link-local and CGNAT addresses. Off by default: otherwise the proxy
+	// link-local, CGNAT and other reserved addresses. Off by default: otherwise the proxy
 	// would be a way out of the network sandbox it's meant to enforce.
 	// Configured http and ssh entries are not affected.
 	AllowPrivate *bool `yaml:"allow_private"`

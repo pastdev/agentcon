@@ -631,6 +631,36 @@ func TestNonPublic(t *testing.T) {
 	t.Run("flags unspecified ipv4", func(t *testing.T) {
 		tester(t, testCase{ip: "0.0.0.0", want: true})
 	})
+	t.Run("flags a this-network address", func(t *testing.T) {
+		tester(t, testCase{ip: "0.1.2.3", want: true})
+	})
+	t.Run("flags an ietf protocol assignment", func(t *testing.T) {
+		tester(t, testCase{ip: "192.0.0.170", want: true})
+	})
+	t.Run("flags a benchmarking address", func(t *testing.T) {
+		tester(t, testCase{ip: "198.19.0.1", want: true})
+	})
+	t.Run("flags a reserved class e address", func(t *testing.T) {
+		tester(t, testCase{ip: "240.0.0.1", want: true})
+	})
+	t.Run("flags limited broadcast", func(t *testing.T) {
+		tester(t, testCase{ip: "255.255.255.255", want: true})
+	})
+	t.Run("flags nat64 of a metadata endpoint", func(t *testing.T) {
+		tester(t, testCase{ip: "64:ff9b::a9fe:a9fe", want: true})
+	})
+	t.Run("flags nat64 of loopback", func(t *testing.T) {
+		tester(t, testCase{ip: "64:ff9b::7f00:1", want: true})
+	})
+	t.Run("accepts nat64 of a public address", func(t *testing.T) {
+		tester(t, testCase{ip: "64:ff9b::808:808", want: false})
+	})
+	t.Run("flags local-use nat64", func(t *testing.T) {
+		tester(t, testCase{ip: "64:ff9b:1::808:808", want: true})
+	})
+	t.Run("accepts a public ipv6 address", func(t *testing.T) {
+		tester(t, testCase{ip: "2001:4860:4860::8888", want: false})
+	})
 	t.Run("accepts a public address", func(t *testing.T) {
 		tester(t, testCase{ip: "140.82.112.3", want: false})
 	})

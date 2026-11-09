@@ -9,14 +9,47 @@ import (
 	"time"
 )
 
-var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+// reservedNets are special-purpose ranges the net.IP predicates miss.
+var reservedNets = []*net.IPNet{
+	mustCIDR("0.0.0.0/8"),      // "this network"
+	mustCIDR("100.64.0.0/10"),  // CGNAT and overlay networks
+	mustCIDR("192.0.0.0/24"),   // IETF protocol assignments
+	mustCIDR("198.18.0.0/15"),  // benchmarking
+	mustCIDR("240.0.0.0/4"),    // reserved, including broadcast
+	mustCIDR("64:ff9b:1::/48"), // local-use NAT64
+}
+
+// nat64 is the well-known NAT64 prefix, which embeds an IPv4 address in its
+// last four bytes.
+var nat64 = mustCIDR("64:ff9b::/96")
+
+func mustCIDR(s string) *net.IPNet {
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
 
 // nonPublic reports whether ip is an address an agent must not reach
 // through a tunnel by default: the host itself, its LAN, link-local
 // (including cloud metadata endpoints), CGNAT/overlay ranges, and the like.
+// A NAT64 address is judged by the IPv4 address it embeds, so
+// 64:ff9b::a9fe:a9fe cannot reach a metadata endpoint.
 func nonPublic(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() || cgnat.Contains(ip)
+	if ip.To4() == nil && nat64.Contains(ip) {
+		return nonPublic(net.IP(ip.To16()[12:16]))
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	for _, n := range reservedNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // publicDialer refuses non-public destinations. The check runs on the
@@ -42,7 +75,7 @@ func publicDialer() *net.Dialer {
 type nonPublicError struct{}
 
 func (nonPublicError) Error() string {
-	return "destination is a loopback, private or link-local address (set allow_private: true on the profile to permit)"
+	return "destination is a loopback, private, link-local or reserved address (set allow_private: true on the profile to permit)"
 }
 
 var errNonPublic error = nonPublicError{}

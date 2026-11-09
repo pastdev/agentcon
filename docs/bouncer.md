@@ -52,7 +52,7 @@ The choice is about where else the agent can send data.
 With `tunnel`, the sidecar splices the connection to the destination without terminating TLS.
 No filter sees the traffic and no credential is attached.
 The audit log records only the host and port, with decision `tunnel`.
-Loopback, private, link-local, and CGNAT destinations are still refused unless the profile sets `allow_private: true`.
+Loopback, private, link-local, CGNAT, and other reserved destinations are still refused unless the profile sets `allow_private: true`.
 
 With `deny`, the agent reaches only intercepted services and the hosts on the profile `tunnel` list.
 That list includes the agent `tunnel` hosts described in [Agent tunnels](#agent-tunnels).
