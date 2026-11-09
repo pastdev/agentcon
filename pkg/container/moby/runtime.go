@@ -93,6 +93,16 @@ type apiClient interface {
 		buildContext io.Reader,
 		options client.ImageBuildOptions,
 	) (client.ImageBuildResult, error)
+	ImageInspect(
+		ctx context.Context,
+		imageID string,
+		inspectOpts ...client.ImageInspectOption,
+	) (client.ImageInspectResult, error)
+	ImagePull(
+		ctx context.Context,
+		refStr string,
+		options client.ImagePullOptions,
+	) (client.ImagePullResponse, error)
 	Close() error
 }
 

@@ -58,6 +58,10 @@ func (c *captureRuntime) ConnectNetwork(context.Context, string, string) error {
 	return errUnused
 }
 func (c *captureRuntime) RemoveNetwork(context.Context, string) error { return errUnused }
+func (c *captureRuntime) ImageExists(context.Context, string) (bool, error) {
+	return false, errUnused
+}
+func (c *captureRuntime) Pull(context.Context, string, io.Writer) error { return errUnused }
 func (c *captureRuntime) Build(_ context.Context, spec container.Build) error {
 	c.build = spec
 	return nil

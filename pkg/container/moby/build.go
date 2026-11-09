@@ -55,6 +55,7 @@ func (r *Runtime) Build(ctx context.Context, spec container.Build) error {
 		Tags:       spec.Tags,
 		Dockerfile: filepath.ToSlash(dockerfile),
 		Remove:     true,
+		PullParent: spec.PullParent,
 		Version:    build.BuilderBuildKit,
 	})
 	if err != nil {
