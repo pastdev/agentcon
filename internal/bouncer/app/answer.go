@@ -63,12 +63,12 @@ func readAnswer(ctx context.Context, in *os.File, out io.Writer, p prompt.Pendin
 		if !tty {
 			return prompt.Answer{}, fmt.Errorf("prompt %s: a secret needs an interactive terminal", p.ID)
 		}
-		_, _ = fmt.Fprintf(out, "%s [%s] (empty to decline): ", d(p.Message, 300), d(p.Source, 60))
+		_, _ = fmt.Fprintf(out, "%s [%s] (empty or Ctrl-C declines): ", d(p.Message, 300), d(p.Source, 60))
 		// A secret is used exactly as typed, spaces included.
 		v, err := readLine(nil)
 		return prompt.Answer{Value: v}, err
 	case prompt.KindText:
-		_, _ = fmt.Fprintf(out, "%s [%s] (empty to decline): ", d(p.Message, 300), d(p.Source, 60))
+		_, _ = fmt.Fprintf(out, "%s [%s] (empty or Ctrl-C declines): ", d(p.Message, 300), d(p.Source, 60))
 		v, err := readLine(out)
 		return prompt.Answer{Value: strings.TrimSpace(v)}, err
 	case prompt.KindConfirm:

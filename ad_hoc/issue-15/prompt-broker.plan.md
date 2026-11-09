@@ -110,6 +110,9 @@ DELETE /_bouncer/prompts/{id}  decline
   A `secret` is read without echo, a `text` is read as a line, and a `confirm` takes y, s, n, or d.
   An empty secret or Ctrl-C declines the prompt.
   A secret is used exactly as typed, and text is trimmed.
+  Without a terminal, each prompt is listed once with the `agentcon bouncer answer` command to use.
+  The wait times out after two minutes with nothing pending, and pending prompts restart that clock.
+  The running record is written before the wait, so the CLI can reach the sidecar during startup.
 - Terminal input uses `pkg/term`, moved from the reader `pkg/run` already had.
   It reads a keystroke at a time in raw mode, so Enter, Backspace, and Ctrl-C behave the same on Linux, macOS, and Windows.
   Its `Editor` assembles a line from keystrokes, and `ReadLine` uses it for a one-off read.

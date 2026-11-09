@@ -11,11 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pastdev/agentcon/internal/bouncer/approval"
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
 	"github.com/pastdev/agentcon/internal/bouncer/envexport"
 	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/container"
 	"github.com/pastdev/agentcon/pkg/version"
@@ -40,6 +38,10 @@ const (
 
 func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) error {
 	setup := req.Bouncer
+	err := checkPromptable(setup.PolicyYAML)
+	if err != nil {
+		return fmt.Errorf("bouncer policy: %w", err)
+	}
 	envVars, err := hostEnvCreds(setup.PolicyYAML, req.SidecarEnv)
 	if err != nil {
 		return fmt.Errorf("host env credentials: %w", err)
@@ -135,11 +137,8 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("put host credentials: %w", err)
 	}
-	err = waitReady(ctx, client)
-	if err != nil {
-		return fmt.Errorf("wait for bouncer: %w", err)
-	}
-
+	// Record the session before waiting, so `agentcon bouncer answer` can
+	// reach the sidecar's startup prompts from another terminal.
 	err = running.Write(req.Home, running.Record{
 		Context:     setup.ContextName,
 		Project:     req.Project,
@@ -155,6 +154,11 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("write running record: %w", err)
 	}
 	defer func() { _ = running.Remove(req.Home, req.Slug) }()
+
+	err = waitReady(ctx, client, req.Stdin, req.Stderr, readyTimeout)
+	if err != nil {
+		return fmt.Errorf("wait for bouncer: %w", err)
+	}
 
 	session, err := client.CreateSession(req.Slug, "", "agentcon", "")
 	if err != nil {
@@ -394,30 +398,6 @@ func waitUntilServing(ctx context.Context, client *mgmt.Client) error {
 	return fmt.Errorf("timed out waiting for bouncer management API")
 }
 
-// waitReady waits for the sidecar to finish preparing credentials. Any
-// prompts it raises meanwhile can be answered with `agentcon bouncer answer`.
-func waitReady(ctx context.Context, client *mgmt.Client) error {
-	deadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(deadline) {
-		if ctx.Err() != nil {
-			return fmt.Errorf("wait bouncer: %w", ctx.Err())
-		}
-		status, err := client.Status()
-		if err != nil {
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-		if status.Ready {
-			return nil
-		}
-		if status.Error != "" {
-			return fmt.Errorf("bouncer startup: %s", status.Error)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("timed out waiting for the bouncer to be ready")
-}
-
 func notifyPrompts(ctx context.Context, client *mgmt.Client, stderr io.Writer) {
 	seen := map[string]bool{}
 	ticker := time.NewTicker(2 * time.Second)
@@ -436,12 +416,7 @@ func notifyPrompts(ctx context.Context, client *mgmt.Client, stderr io.Writer) {
 					continue
 				}
 				seen[p.ID] = true
-				what, command := "prompt", "answer"
-				if p.Kind == prompt.KindConfirm {
-					what, command = "approval", "approve"
-				}
-				_, _ = fmt.Fprintf(stderr, "bouncer: pending %s %s: %s (agentcon bouncer %s %s)\n",
-					what, p.ID, approval.Display(p.Message, 150), command, p.ID)
+				_, _ = fmt.Fprintln(stderr, promptHint(p))
 			}
 		}
 	}
