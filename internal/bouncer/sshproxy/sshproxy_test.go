@@ -341,6 +341,43 @@ func TestServe(t *testing.T) {
 	})
 }
 
+func TestMalformedRequest(t *testing.T) {
+	type testCase struct {
+		kind    string
+		payload []byte
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		_, addr, authority := setup(t)
+		cl, err := client(t, addr, authority, "tok")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cl.Close()
+		ch, reqs, err := cl.OpenChannel("session", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ch.Close()
+		go ssh.DiscardRequests(reqs)
+		ok, err := ch.SendRequest(tc.kind, true, tc.payload)
+		if err == nil && ok {
+			t.Fatalf("%s with payload %q was not refused as malformed", tc.kind, tc.payload)
+		}
+	}
+
+	valid := ssh.Marshal(struct{ Command string }{"echo hi"})
+	t.Run("exec with trailing data", func(t *testing.T) {
+		tester(t, testCase{kind: "exec", payload: append(append([]byte{}, valid...), 'x')})
+	})
+	t.Run("exec with truncated command", func(t *testing.T) {
+		tester(t, testCase{kind: "exec", payload: valid[:6]})
+	})
+	t.Run("subsystem with truncated name", func(t *testing.T) {
+		tester(t, testCase{kind: "subsystem", payload: []byte{0, 0, 0, 9, 's'}})
+	})
+}
+
 func TestPrepare(t *testing.T) {
 	type testCase struct {
 		port    int

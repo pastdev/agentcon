@@ -453,22 +453,35 @@ func (cn *conn) start(ch ssh.Channel, r *ssh.Request, setup []*ssh.Request, env 
 	if len(env) > 0 {
 		req.SSH.Env = env
 	}
+	// Upstream gets a payload re-marshaled from what the filters judged, and
+	// a payload that does not parse is refused rather than judged as empty.
+	payload := r.Payload
 	switch r.Type {
 	case "shell":
 		req.SSH.Kind = config.SSHKindShell
 	case "exec":
-		var p struct{ Command string }
-		ssh.Unmarshal(r.Payload, &p)
-		req.SSH.Command = p.Command
 		req.SSH.Kind = config.SSHKindExec
+		var p struct{ Command string }
+		err := ssh.Unmarshal(r.Payload, &p)
+		if err != nil {
+			cn.malformed(r, req)
+			return nil
+		}
+		payload = ssh.Marshal(p)
+		req.SSH.Command = p.Command
 		if req.Git() != nil {
 			req.SSH.Kind = config.SSHKindGit
 		}
 	case "subsystem":
-		var p struct{ Name string }
-		ssh.Unmarshal(r.Payload, &p)
-		req.SSH.Subsystem = p.Name
 		req.SSH.Kind = "subsystem"
+		var p struct{ Name string }
+		err := ssh.Unmarshal(r.Payload, &p)
+		if err != nil {
+			cn.malformed(r, req)
+			return nil
+		}
+		payload = ssh.Marshal(p)
+		req.SSH.Subsystem = p.Name
 		if p.Name == "sftp" {
 			req.SSH.Kind = config.SSHKindSFTP
 		}
@@ -495,7 +508,7 @@ func (cn *conn) start(ch ssh.Channel, r *ssh.Request, setup []*ssh.Request, env 
 	for _, s := range setup {
 		up.SendRequest(s.Type, false, s.Payload)
 	}
-	ok, err := up.SendRequest(r.Type, true, r.Payload)
+	ok, err := up.SendRequest(r.Type, true, payload)
 	if err != nil || !ok {
 		r.Reply(false, nil)
 		up.Close()
@@ -548,6 +561,14 @@ func (cn *conn) start(ch ssh.Channel, r *ssh.Request, setup []*ssh.Request, env 
 		ch.Close()
 	}()
 	return up
+}
+
+// malformed audits and refuses a channel request whose payload does not parse.
+func (cn *conn) malformed(r *ssh.Request, req *chain.Request) {
+	e := cn.entry(req)
+	e.Decision, e.By, e.Reason = "deny", "bouncer", "malformed "+r.Type+" request"
+	cn.s.Audit.Write(e)
+	r.Reply(false, nil)
 }
 
 func refuse(ch ssh.Channel, d *chain.Denial) {
