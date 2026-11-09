@@ -18,6 +18,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/pastdev/agentcon/internal/bouncer/creds/bitwarden"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
@@ -179,15 +180,17 @@ func (s *Store) MissingProvided() []string {
 }
 
 // ConfigureBitwarden sets where the process stores its Bitwarden device id
-// and refresh token, and where unlock progress is logged. The decrypted
+// and refresh token, where unlock progress is logged, and the broker that
+// asks a human for master passwords and verification codes. The decrypted
 // vault is kept in memory only. Call this before the first fetch.
-func ConfigureBitwarden(stateDir string, logf func(string, ...any)) {
-	bitwarden.Configure(bitwarden.Options{StateDir: stateDir, Logf: logf})
+func ConfigureBitwarden(stateDir string, logf func(string, ...any), prompts *prompt.Broker) {
+	bitwarden.Configure(bitwarden.Options{StateDir: stateDir, Logf: logf, Prompt: bitwarden.BrokerPrompter(prompts)})
 }
 
 // Prepare unlocks every Bitwarden vault the credential set uses, so the
-// master password is requested once at startup rather than mid-request.
-// Vaults stay unlocked until the process exits.
+// master password is asked for when the config loads rather than
+// mid-request. It blocks until each vault is unlocked or fails. Vaults stay
+// unlocked until the process exits.
 func (s *Store) Prepare(ctx context.Context, creds map[string]*config.Credential) error {
 	var accounts []bitwarden.Account
 	for _, c := range creds {
@@ -211,22 +214,9 @@ func (s *Store) Prepare(ctx context.Context, creds map[string]*config.Credential
 	}
 	err := bitwarden.Unlock(ctx, accounts)
 	if err != nil {
-		if errors.Is(err, bitwarden.ErrNeedTerminal) {
-			return &NeedPasswordError{Accounts: accounts}
-		}
 		return fmt.Errorf("bitwarden unlock: %w", err)
 	}
 	return nil
-}
-
-// NeedPasswordError means Bitwarden vaults are configured but cannot be
-// unlocked without a password supplied through the management API.
-type NeedPasswordError struct {
-	Accounts []bitwarden.Account
-}
-
-func (e *NeedPasswordError) Error() string {
-	return "bitwarden vaults need a master password"
 }
 
 // Update swaps in a new credential set (on config reload), dropping cache

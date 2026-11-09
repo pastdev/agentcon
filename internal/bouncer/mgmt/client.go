@@ -8,21 +8,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/pastdev/agentcon/internal/bouncer/approval"
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 )
 
 const (
 	sidecarTimeout = 5 * time.Second
 	cliTimeout     = 30 * time.Second
-	// Unlock talks to Bitwarden (login, optional OTP, vault sync).
-	unlockTimeout = 2 * time.Minute
 )
 
 // Client talks to /_bouncer/ on a running daemon.
@@ -120,15 +119,17 @@ func locate(stateDir string) (string, error) {
 
 // Status is the daemon's GET /_bouncer/status payload.
 type Status struct {
-	Config           string   `json:"config"`
-	Profiles         []string `json:"profiles"`
-	DefaultProfile   string   `json:"default_profile"`
-	Sessions         int      `json:"sessions"`
-	PendingApprovals int      `json:"pending_approvals"`
-	CA               string   `json:"ca"`
-	CABundle         string   `json:"ca_bundle"`
-	Ready            bool     `json:"ready"`
-	BitwardenPending []string `json:"bitwarden_pending"`
+	Config         string   `json:"config"`
+	Profiles       []string `json:"profiles"`
+	DefaultProfile string   `json:"default_profile"`
+	Sessions       int      `json:"sessions"`
+	PendingPrompts int      `json:"pending_prompts"`
+	CA             string   `json:"ca"`
+	CABundle       string   `json:"ca_bundle"`
+	// Ready means the startup credential preparation finished. Error holds
+	// its failure.
+	Ready bool   `json:"ready"`
+	Error string `json:"error,omitempty"`
 }
 
 func (c *Client) Status() (Status, error) {
@@ -137,17 +138,25 @@ func (c *Client) Status() (Status, error) {
 	return st, err
 }
 
-func (c *Client) Approvals() ([]approval.Pending, error) {
-	var list []approval.Pending
-	err := c.do(http.MethodGet, "/_bouncer/approvals", nil, &list)
+// Prompts lists the questions waiting on a human answer.
+func (c *Client) Prompts() ([]prompt.Pending, error) {
+	var list []prompt.Pending
+	err := c.do(http.MethodGet, "/_bouncer/prompts", nil, &list)
 	return list, err
 }
 
-func (c *Client) ResolveApproval(id string, allow, remember bool) error {
-	return c.do(http.MethodPost, "/_bouncer/approvals/"+id, map[string]bool{
-		"allow":    allow,
-		"remember": remember,
-	}, nil)
+// AnswerPrompt settles a pending prompt.
+func (c *Client) AnswerPrompt(id string, a prompt.Answer) error {
+	return c.do(http.MethodPost, "/_bouncer/prompts/"+url.PathEscape(id), struct {
+		Allow    bool   `json:"allow"`
+		Remember bool   `json:"remember"`
+		Value    string `json:"value,omitempty"`
+	}{a.Allow, a.Remember, a.Value}, nil)
+}
+
+// DeclinePrompt settles a pending prompt without an answer.
+func (c *Client) DeclinePrompt(id string) error {
+	return c.do(http.MethodDelete, "/_bouncer/prompts/"+url.PathEscape(id), nil, nil)
 }
 
 func (c *Client) Sessions() ([]daemon.SessionRecord, error) {
@@ -173,26 +182,6 @@ func (c *Client) CreateSession(id, profile, label, ttl string) (daemon.NewSessio
 
 func (c *Client) Reload() error {
 	return c.do(http.MethodPost, "/_bouncer/reload", nil, nil)
-}
-
-func (c *Client) UnlockBitwarden(password, code string) error {
-	return c.doTimeout(unlockTimeout, http.MethodPost, "/_bouncer/credentials/sources/bitwarden/unlock", map[string]string{
-		"password": password,
-		"code":     code,
-	}, nil)
-}
-
-// NeedCodeError means unlock needs a second factor. Retry UnlockBitwarden
-// with the same password and a verification code.
-type NeedCodeError struct {
-	Method string
-}
-
-func (e *NeedCodeError) Error() string {
-	if e.Method == "" {
-		return "bitwarden verification code required"
-	}
-	return "bitwarden verification code (" + e.Method + ") required"
 }
 
 // PutEnv replaces the daemon's source: env overlay.
@@ -226,10 +215,6 @@ func (c *Client) Trust() (Trust, error) {
 }
 
 func (c *Client) do(method, path string, in, out any) error {
-	return c.doTimeout(0, method, path, in, out)
-}
-
-func (c *Client) doTimeout(timeout time.Duration, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -246,26 +231,13 @@ func (c *Client) doTimeout(timeout time.Duration, method, path string, in, out a
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	httpClient := c.http
-	if timeout > 0 {
-		clone := *c.http
-		clone.Timeout = timeout
-		httpClient = &clone
-	}
-	resp, err := httpClient.Do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("contacting bouncer at %s (is `agentcon bouncer serve` running?): %w", c.base, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		var payload struct {
-			Error  string `json:"error"`
-			Method string `json:"method"`
-		}
-		if json.Unmarshal(msg, &payload) == nil && payload.Error == "need_code" {
-			return &NeedCodeError{Method: payload.Method}
-		}
 		return fmt.Errorf("%s", strings.TrimSpace(string(msg)))
 	}
 	if out != nil {

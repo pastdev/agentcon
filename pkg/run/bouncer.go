@@ -2,7 +2,6 @@ package run
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,7 +17,6 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/container"
 	"github.com/pastdev/agentcon/pkg/version"
-	"golang.org/x/term"
 )
 
 const (
@@ -40,6 +38,10 @@ const (
 
 func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) error {
 	setup := req.Bouncer
+	err := checkPromptable(setup.PolicyYAML)
+	if err != nil {
+		return fmt.Errorf("bouncer policy: %w", err)
+	}
 	envVars, err := hostEnvCreds(setup.PolicyYAML, req.SidecarEnv)
 	if err != nil {
 		return fmt.Errorf("host env credentials: %w", err)
@@ -135,11 +137,8 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("put host credentials: %w", err)
 	}
-	err = waitReady(ctx, client, req)
-	if err != nil {
-		return fmt.Errorf("wait for bouncer: %w", err)
-	}
-
+	// Record the session before waiting, so `agentcon bouncer answer` can
+	// reach the sidecar's startup prompts from another terminal.
 	err = running.Write(req.Home, running.Record{
 		Context:     setup.ContextName,
 		Project:     req.Project,
@@ -155,6 +154,11 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("write running record: %w", err)
 	}
 	defer func() { _ = running.Remove(req.Home, req.Slug) }()
+
+	err = waitReady(ctx, client, req.Stdin, req.Stderr, readyTimeout)
+	if err != nil {
+		return fmt.Errorf("wait for bouncer: %w", err)
+	}
 
 	session, err := client.CreateSession(req.Slug, "", "agentcon", "")
 	if err != nil {
@@ -183,7 +187,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		_, _ = fmt.Fprintf(req.Stderr, "agentcon session %s project %s\n", req.Slug, project)
 	}
 
-	go notifyApprovals(ctx, client, req.Stderr)
+	go notifyPrompts(ctx, client, req.Stderr)
 
 	id, err := req.Runtime.Create(ctx, agentSpec)
 	if err != nil {
@@ -394,114 +398,7 @@ func waitUntilServing(ctx context.Context, client *mgmt.Client) error {
 	return fmt.Errorf("timed out waiting for bouncer management API")
 }
 
-func waitReady(ctx context.Context, client *mgmt.Client, req Request) error {
-	deadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(deadline) {
-		if ctx.Err() != nil {
-			return fmt.Errorf("wait bouncer: %w", ctx.Err())
-		}
-		status, err := client.Status()
-		if err != nil {
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-		if status.Ready {
-			return nil
-		}
-		if len(status.BitwardenPending) > 0 {
-			err = unlockBitwarden(ctx, client, req, status.BitwardenPending[0])
-			if err != nil {
-				return fmt.Errorf("bitwarden unlock: %w", err)
-			}
-			continue
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("timed out waiting for bouncer management API")
-}
-
-func unlockBitwarden(ctx context.Context, client *mgmt.Client, req Request, label string) error {
-	fd := -1
-	if f, ok := req.Stdin.(*os.File); ok {
-		fd = int(f.Fd())
-	}
-	if fd < 0 || !term.IsTerminal(fd) {
-		return fmt.Errorf("bitwarden vault %s needs a master password (run from a terminal)", label)
-	}
-	_, _ = fmt.Fprintf(req.Stderr, "Bitwarden master password for %s: ", label)
-	pw, err := readSecret(ctx, fd)
-	_, _ = fmt.Fprintln(req.Stderr)
-	if err != nil {
-		return fmt.Errorf("read bitwarden password: %w", err)
-	}
-	err = completeBitwardenUnlock(client.UnlockBitwarden, string(pw), func(method string) (string, error) {
-		return readBitwardenCode(ctx, fd, req.Stderr, label, method)
-	})
-	if err != nil {
-		return fmt.Errorf("unlock bitwarden: %w", err)
-	}
-	return nil
-}
-
-const bitwardenCodeAttempts = 3
-
-func completeBitwardenUnlock(unlock func(password, code string) error, password string, promptCode func(method string) (string, error)) error {
-	code := ""
-	for attempt := 0; attempt < bitwardenCodeAttempts; attempt++ {
-		err := unlock(password, code)
-		if err == nil {
-			return nil
-		}
-		var need *mgmt.NeedCodeError
-		if errors.As(err, &need) {
-			code, err = promptCode(need.Method)
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		if code != "" && bitwardenInvalidCode(err) {
-			code, err = promptCode("")
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		return err
-	}
-	return fmt.Errorf("bitwarden verification code rejected")
-}
-
-func bitwardenInvalidCode(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "Invalid TOTP") || strings.Contains(msg, "invalid verification code")
-}
-
-func readBitwardenCode(ctx context.Context, fd int, stderr io.Writer, label, method string) (string, error) {
-	if fd < 0 || !term.IsTerminal(fd) {
-		return "", fmt.Errorf("bitwarden vault %s needs a verification code (run from a terminal)", label)
-	}
-	if method != "" {
-		_, _ = fmt.Fprintf(stderr, "Bitwarden verification code (%s) for %s: ", method, label)
-	} else {
-		_, _ = fmt.Fprintf(stderr, "Bitwarden verification code for %s: ", label)
-	}
-	b, err := readTerminalLine(ctx, fd, stderr)
-	_, _ = fmt.Fprintln(stderr)
-	if err != nil {
-		return "", fmt.Errorf("read bitwarden verification code: %w", err)
-	}
-	line := strings.TrimSpace(string(b))
-	if line == "" {
-		return "", fmt.Errorf("empty verification code")
-	}
-	return line, nil
-}
-
-func notifyApprovals(ctx context.Context, client *mgmt.Client, stderr io.Writer) {
+func notifyPrompts(ctx context.Context, client *mgmt.Client, stderr io.Writer) {
 	seen := map[string]bool{}
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -510,7 +407,7 @@ func notifyApprovals(ctx context.Context, client *mgmt.Client, stderr io.Writer)
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			list, err := client.Approvals()
+			list, err := client.Prompts()
 			if err != nil {
 				continue
 			}
@@ -519,7 +416,7 @@ func notifyApprovals(ctx context.Context, client *mgmt.Client, stderr io.Writer)
 					continue
 				}
 				seen[p.ID] = true
-				_, _ = fmt.Fprintf(stderr, "bouncer: pending approval %s: %s (agentcon bouncer approve %s)\n", p.ID, p.Prompt, p.ID)
+				_, _ = fmt.Fprintln(stderr, promptHint(p))
 			}
 		}
 	}

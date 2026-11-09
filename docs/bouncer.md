@@ -106,10 +106,12 @@ Bitwarden requires `path` because the payload is the whole decrypted cipher JSON
 
 The sidecar unlocks the vault.
 Identity stays in the YAML.
-The host prompts for the master password and POSTs `/_bouncer/credentials/sources/bitwarden/unlock`.
+The sidecar raises a [prompt](#prompts) for the master password, and another for a verification code when the account asks for one.
+`agentcon run` answers them at its terminal and starts the agent once every vault is unlocked.
+The master password is asked for up to three times.
 
 Required: `email`, `item`, `path`.
-Optional: `server` (default bitwarden.com), `folder` (unset), `password_env` (unset, so `run` prompts).
+Optional: `server` (default bitwarden.com), `folder` (unset), `password_env` (unset, so the sidecar prompts).
 
 The named item must already exist in that account's vault.
 `path` must select exactly one string from the decrypted cipher JSON.
@@ -342,6 +344,48 @@ Host discovery files are `~/.local/state/agentcon/running/<slug>.yml`.
 
 Decisions are appended to the sidecar audit log even when `--quiet` hides them on the TTY.
 
+## Prompts
+
+The sidecar asks a human through prompts.
+Filter `ask()` and rule `action: ask` raise one, and so does a Bitwarden vault that needs a master password or verification code.
+Each prompt has an id, a kind, a source, and a message.
+
+| Kind | Raised for | Answer |
+| --- | --- | --- |
+| `confirm` | an `ask` approval | allow or deny, once or for the session |
+| `text` | a verification code | a line of text |
+| `secret` | a master password | a value read without echo |
+
+Several places can answer a pending prompt.
+
+- `agentcon run` answers prompts at its terminal while the sidecar starts.
+- An interactive `agentcon bouncer serve` shows prompts one at a time.
+- `agentcon bouncer prompts` lists them from another terminal, and `agentcon bouncer answer <id>` answers one there.
+- `agentcon bouncer approve <id>` and `agentcon bouncer deny <id>` answer a `confirm`, and `--session` remembers the answer.
+- `agentcon bouncer decline <id>` refuses to answer a prompt of any kind.
+
+At a terminal, Enter answers.
+An empty `text` or `secret` declines, and so does Ctrl-C.
+A declined or expired approval is a deny.
+A declined master password fails that vault's unlock.
+
+A `secret` answer goes only to the code that asked for it.
+It is never logged, remembered, or shown in listings, events, or notifications.
+Filters and rules raise only `confirm` prompts, so a request can never ask the human for a password.
+
+The `prompts` block configures them.
+
+```yaml
+prompts:
+  timeout: 2m      # unanswered prompts expire after this
+  notify: true     # desktop notification for each pending prompt
+  terminal: true   # prompt in an interactive `bouncer serve` terminal
+  cli: true        # allow answering through the management API
+```
+
+`cli: false` stops `agentcon run` and the `agentcon bouncer` commands from answering.
+`agentcon run` refuses a policy with `cli: false` when a Bitwarden credential has no `password_env`, because nothing could unlock it.
+
 ## Sidecar layout
 
 `agentcon run` with a `bouncer` section starts two containers and two networks.
@@ -456,21 +500,30 @@ If the policy uses `source: ssh-agent`, require `SSH_AUTH_SOCK` on the host befo
 Bind-mount it and set `SSH_AUTH_SOCK=/opt/agentcon/ssh-agent.sock` on the sidecar.
 Do not copy private keys out of the agent.
 
-If status reports `bitwarden_pending`, unlock the vault.
+Poll status until `ready` is true.
+`ready` turns true once the sidecar has unlocked every Bitwarden vault the policy uses.
+If `error` is set, startup failed.
+While `pending_prompts` is above zero, list the [prompts](#prompts) and answer each one.
 Do not send item secrets.
 A new sidecar has no remembered Bitwarden device, so the first login often needs a 2FA code or the emailed new-device OTP.
 
 ```bash
+curl -fsS \
+  -H "Authorization: Bearer ${TOKEN}" \
+  http://127.0.0.1:8228/_bouncer/prompts
+
 curl -fsS -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
-  --data '{"password":"..."}' \
-  http://127.0.0.1:8228/_bouncer/credentials/sources/bitwarden/unlock
+  --data '{"value":"..."}' \
+  http://127.0.0.1:8228/_bouncer/prompts/PROMPT_ID
 ```
 
-If that responds `409` with `{"error":"need_code","method":"..."}`, prompt for the code and POST again with `password` and `code`.
-`method` is `authenticator app` for TOTP, or `new device email` for the code Bitwarden emails on an unknown device.
-Ask for the code at submit time, not before `serve` is up.
+Answer a `confirm` with `{"allow":true}` or `{"allow":false}`, and add `"remember":true` to apply it for the session.
+`DELETE /_bouncer/prompts/PROMPT_ID` declines.
+A password retry and a verification code each arrive as a new prompt.
+The message names the method, `authenticator app` for TOTP or `new device email` for the code Bitwarden emails on an unknown device.
+Read a code when its prompt appears, not before.
 TOTP values expire.
 
 Create a session, then fetch the CA.

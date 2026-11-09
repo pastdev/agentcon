@@ -2,7 +2,6 @@ package mgmt
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 )
 
@@ -29,7 +29,7 @@ func TestClient(t *testing.T) {
 		tc.check(t, c)
 	}
 
-	t.Run("returns status and resolves an approval", func(t *testing.T) {
+	t.Run("returns status and settles prompts", func(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /_bouncer/status", func(w http.ResponseWriter, r *http.Request) {
 			if got := r.Header.Get("Authorization"); got != "Bearer secret" {
@@ -37,11 +37,21 @@ func TestClient(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(Status{Ready: true, Config: "/tmp/c.yaml"})
 		})
-		mux.HandleFunc("POST /_bouncer/approvals/abc", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("POST /_bouncer/prompts/abc", func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
-			if !strings.Contains(string(body), `"allow":true`) {
+			if string(body) != `{"allow":true,"remember":false}` {
 				t.Errorf("body %s", body)
 			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		mux.HandleFunc("POST /_bouncer/prompts/def", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if string(body) != `{"allow":false,"remember":false,"value":"123456"}` {
+				t.Errorf("body %s", body)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		mux.HandleFunc("DELETE /_bouncer/prompts/ghi", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		})
 		tester(t, testCase{
@@ -56,7 +66,15 @@ func TestClient(t *testing.T) {
 				if !st.Ready || st.Config != "/tmp/c.yaml" {
 					t.Fatalf("%+v", st)
 				}
-				err = c.ResolveApproval("abc", true, false)
+				err = c.AnswerPrompt("abc", prompt.Answer{Allow: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = c.AnswerPrompt("def", prompt.Answer{Value: "123456"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = c.DeclinePrompt("ghi")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -74,35 +92,6 @@ func TestClient(t *testing.T) {
 				err := c.EndSession("missing")
 				if err == nil || !strings.Contains(err.Error(), "no such session") {
 					t.Fatalf("got %v", err)
-				}
-			},
-		})
-	})
-	t.Run("unlocks bitwarden after a need-code challenge", func(t *testing.T) {
-		mux := http.NewServeMux()
-		mux.HandleFunc("POST /_bouncer/credentials/sources/bitwarden/unlock", func(w http.ResponseWriter, r *http.Request) {
-			body, _ := io.ReadAll(r.Body)
-			w.Header().Set("Content-Type", "application/json")
-			if strings.Contains(string(body), `"code":"123456"`) {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "need_code", "method": "authenticator app"})
-		})
-		tester(t, testCase{
-			handler: mux,
-			token:   "secret",
-			check: func(t *testing.T, c *Client) {
-				t.Helper()
-				err := c.UnlockBitwarden("pw", "")
-				var need *NeedCodeError
-				if !errors.As(err, &need) || need.Method != "authenticator app" {
-					t.Fatalf("got %v", err)
-				}
-				err = c.UnlockBitwarden("pw", "123456")
-				if err != nil {
-					t.Fatal(err)
 				}
 			},
 		})

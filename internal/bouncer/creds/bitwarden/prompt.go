@@ -1,123 +1,55 @@
 package bitwarden
 
 import (
-	"bufio"
-	"errors"
+	"context"
 	"fmt"
-	"io"
-	"os"
-	"strings"
 
-	"golang.org/x/term"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 )
 
-// ErrNeedTerminal is returned when a vault unlock needs a password and
-// there is no interactive terminal and no password_env.
-var ErrNeedTerminal = errors.New("bitwarden unlock requires a terminal or password_env")
-
 // Prompter supplies the master password and, when the server asks, a
-// second factor. The password is requested again on each attempt.
+// second factor. Each attempt asks again. attempt counts from 1, and a
+// later attempt follows a rejected answer.
 type Prompter interface {
-	MasterPassword(label string) (string, error)
-	TwoFactorCode(label, method string) (string, error)
+	MasterPassword(ctx context.Context, label string, attempt, attempts int) (string, error)
+	TwoFactorCode(ctx context.Context, label, method string, attempt, attempts int) (string, error)
 }
 
-// StaticPrompter returns a password (and optional 2FA code) supplied out
-// of band, for example from the management API. The code is one-shot so
-// a rejected 2FA attempt can ask the host for another code.
-type StaticPrompter struct {
-	Password string
-	Code     string
-	codeUsed bool
+// BrokerPrompter asks for Bitwarden secrets through a prompt broker, so
+// whoever answers prompts (a terminal, the CLI, agentcon run) can unlock a
+// vault. Each question belongs to one account and one attempt, and its
+// answer goes only to that attempt.
+func BrokerPrompter(b *prompt.Broker) Prompter {
+	return brokerPrompter{b: b}
 }
 
-func (p *StaticPrompter) MasterPassword(string) (string, error) {
-	if p.Password == "" {
-		return "", errors.New("empty master password")
+type brokerPrompter struct {
+	b *prompt.Broker
+}
+
+func (p brokerPrompter) MasterPassword(ctx context.Context, label string, attempt, attempts int) (string, error) {
+	msg := "Bitwarden master password"
+	if attempt > 1 {
+		msg += fmt.Sprintf(" (incorrect, attempt %d of %d)", attempt, attempts)
 	}
-	return p.Password, nil
+	return p.ask(ctx, prompt.KindSecret, label, msg)
 }
 
-// NeedCodeError means login succeeded far enough to require a second factor.
-// The management API maps this to HTTP 409 so the host can prompt and retry.
-type NeedCodeError struct {
-	Method string
+func (p brokerPrompter) TwoFactorCode(ctx context.Context, label, method string, attempt, attempts int) (string, error) {
+	msg := "Bitwarden verification code"
+	if method != "" {
+		msg += " for " + method
+	}
+	if attempt > 1 {
+		msg += fmt.Sprintf(" (rejected, attempt %d of %d)", attempt, attempts)
+	}
+	return p.ask(ctx, prompt.KindText, label, msg)
 }
 
-func (e *NeedCodeError) Error() string {
-	if e.Method == "" {
-		return "verification code required"
-	}
-	return fmt.Sprintf("verification code (%s) required", e.Method)
-}
-
-func (p *StaticPrompter) TwoFactorCode(_ string, method string) (string, error) {
-	if p.Code == "" || p.codeUsed {
-		return "", &NeedCodeError{Method: method}
-	}
-	p.codeUsed = true
-	return p.Code, nil
-}
-
-func SetPrompt(p Prompter) {
-	globalMu.Lock()
-	defer globalMu.Unlock()
-	if global != nil {
-		global.prompt = p
-	}
-}
-
-// stdPrompter reads the master password from the controlling terminal.
-// It refuses a redirected stdin so a prompt cannot swallow other input.
-type stdPrompter struct {
-	in  *os.File
-	out io.Writer
-}
-
-func (p stdPrompter) MasterPassword(label string) (string, error) {
-	in := p.in
-	if in == nil {
-		in = os.Stdin
-	}
-	out := p.out
-	if out == nil {
-		out = os.Stderr
-	}
-	if !term.IsTerminal(int(in.Fd())) {
-		return "", fmt.Errorf("%w: master password for %s required", ErrNeedTerminal, label)
-	}
-	_, _ = fmt.Fprintf(out, "Bitwarden master password for %s: ", label)
-	b, err := term.ReadPassword(int(in.Fd()))
-	_, _ = fmt.Fprintln(out)
+func (p brokerPrompter) ask(ctx context.Context, kind prompt.Kind, label, msg string) (string, error) {
+	a, err := p.b.Ask(ctx, prompt.Question{Kind: kind, Source: "bitwarden:" + label, Message: msg})
 	if err != nil {
-		return "", fmt.Errorf("read password: %w", err)
+		return "", fmt.Errorf("ask: %w", err)
 	}
-	if len(b) == 0 {
-		return "", errors.New("empty master password")
-	}
-	return string(b), nil
-}
-
-func (p stdPrompter) TwoFactorCode(label, method string) (string, error) {
-	in := p.in
-	if in == nil {
-		in = os.Stdin
-	}
-	out := p.out
-	if out == nil {
-		out = os.Stderr
-	}
-	if !term.IsTerminal(int(in.Fd())) {
-		return "", fmt.Errorf("%w: verification code (%s) for %s required", ErrNeedTerminal, method, label)
-	}
-	_, _ = fmt.Fprintf(out, "Bitwarden verification code (%s) for %s: ", method, label)
-	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", fmt.Errorf("read verification code: %w", err)
-	}
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return "", errors.New("empty verification code")
-	}
-	return line, nil
+	return a.Value, nil
 }

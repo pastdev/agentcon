@@ -9,8 +9,8 @@ import (
 	"os"
 
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/term"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/term"
 )
 
 const sshKeyPassphraseAttempts = 3
@@ -93,7 +93,7 @@ func readSSHKeyPassphrase(ctx context.Context, req Request, name string) (string
 		return "", fmt.Errorf("encrypted ssh key %s needs a passphrase (run from a terminal)", name)
 	}
 	_, _ = fmt.Fprintf(req.Stderr, "SSH key passphrase for %s: ", name)
-	pw, err := readSecret(ctx, fd)
+	pw, err := term.New(fd).ReadLine(ctx, nil)
 	_, _ = fmt.Fprintln(req.Stderr)
 	if err != nil {
 		return "", fmt.Errorf("read ssh key passphrase: %w", err)

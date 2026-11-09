@@ -288,7 +288,7 @@ type memPrompt struct {
 	nCode     int
 }
 
-func (m *memPrompt) MasterPassword(string) (string, error) {
+func (m *memPrompt) MasterPassword(context.Context, string, int, int) (string, error) {
 	if m.nPass >= len(m.passwords) {
 		return "", errors.New("no more passwords")
 	}
@@ -297,7 +297,7 @@ func (m *memPrompt) MasterPassword(string) (string, error) {
 	return s, nil
 }
 
-func (m *memPrompt) TwoFactorCode(string, string) (string, error) {
+func (m *memPrompt) TwoFactorCode(context.Context, string, string, int, int) (string, error) {
 	if m.nCode >= len(m.codes) {
 		return "", errors.New("no more codes")
 	}
@@ -322,19 +322,10 @@ func TestGet(t *testing.T) {
 		want         string
 		wantContains string
 		wantErr      string
-		needCode     bool
-		needMethod   string
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		got, err := tc.v.Get(context.Background(), tc.q)
-		if tc.needCode {
-			var need *NeedCodeError
-			if !errors.As(err, &need) || need.Method != tc.needMethod {
-				t.Fatalf("got %v", err)
-			}
-			return
-		}
 		if tc.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("err = %v", err)
@@ -491,17 +482,6 @@ func TestGet(t *testing.T) {
 		if fake.logins != 2 {
 			t.Fatalf("logins %d", fake.logins)
 		}
-	})
-	t.Run("returns need code when a static prompter code is rejected", func(t *testing.T) {
-		srv, _ := startVault(t, true)
-		p := &StaticPrompter{Password: testPassword, Code: "000000"}
-		v := New(Options{StateDir: t.TempDir(), Prompt: p})
-		tester(t, testCase{
-			v:          v,
-			q:          Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"},
-			needCode:   true,
-			needMethod: "authenticator app",
-		})
 	})
 	t.Run("retries a wrong two-factor code", func(t *testing.T) {
 		srv, fake := startVault(t, true)

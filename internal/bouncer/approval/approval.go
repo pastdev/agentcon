@@ -1,67 +1,37 @@
-// Package approval holds requests waiting on a human decision.
+// Package approval asks a human to allow or deny requests, remembering
+// per-session decisions.
 package approval
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
 	"fmt"
-	"sort"
+	"strings"
 	"sync"
-	"time"
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 )
 
-// Pending is a request awaiting a decision.
-type Pending struct {
-	ID           string    `json:"id"`
-	Prompt       string    `json:"prompt"`
-	Request      string    `json:"request"`
-	Filter       string    `json:"filter"`
-	SessionID    string    `json:"session_id"`
-	SessionLabel string    `json:"session_label"`
-	Profile      string    `json:"profile"`
-	Created      time.Time `json:"created"`
-	Expires      time.Time `json:"expires"`
-
-	key     string // remember key: session + ask key
-	joinKey string // remember key + request text
-	shared  bool   // the session is shared by many clients; don't remember
-	done    chan struct{}
-	result  bool
-}
-
-// Event notifies subscribers of changes.
-type Event struct {
-	Type    string // "pending" or "resolved"
-	Pending Pending
-	Allowed bool
-}
-
-// Manager tracks pending approvals and remembered per-session decisions.
+// Manager raises confirm questions on a prompt broker. It coalesces
+// identical concurrent asks into one question and remembers session-wide
+// answers.
 type Manager struct {
+	b          *prompt.Broker
 	mu         sync.Mutex
-	timeout    time.Duration
-	pending    map[string]*Pending
-	byKey      map[string]*Pending
+	byJoin     map[string]*waiting
 	remembered map[string]bool
-	subs       map[chan Event]struct{}
-	// Notify, if set, is called (in a goroutine) for each new pending approval.
-	Notify func(p Pending)
 }
 
-func NewManager(timeout time.Duration) *Manager {
-	return &Manager{timeout: timeout, pending: map[string]*Pending{}, byKey: map[string]*Pending{},
-		remembered: map[string]bool{}, subs: map[chan Event]struct{}{}}
+// waiting is one question shared by identical asks.
+type waiting struct {
+	id    string
+	key   string // remember key: session + ask key
+	done  chan struct{}
+	allow bool
 }
 
-// SetTimeout changes the timeout for future asks.
-func (m *Manager) SetTimeout(d time.Duration) {
-	m.mu.Lock()
-	m.timeout = d
-	m.mu.Unlock()
+func NewManager(b *prompt.Broker) *Manager {
+	return &Manager{b: b, byJoin: map[string]*waiting{}, remembered: map[string]bool{}}
 }
 
 func rememberKey(sessionID, key string) string { return sessionID + "\x00" + key }
@@ -90,87 +60,51 @@ func (m *Manager) Ask(ctx context.Context, a chain.AskRequest) (bool, error) {
 		m.mu.Unlock()
 		return v, nil
 	}
-	p, existing := m.byKey[jk]
-	if !existing {
-		now := time.Now()
-		p = &Pending{ID: newID(), Prompt: a.Prompt, Request: a.Request, Filter: a.Filter, SessionID: sid,
-			SessionLabel: label, Profile: profile, Created: now, Expires: now.Add(m.timeout), key: rk, joinKey: jk, shared: shared, done: make(chan struct{})}
-		m.pending[p.ID] = p
-		m.byKey[jk] = p
-		m.broadcast(Event{Type: "pending", Pending: *p})
-	}
-	timeout := time.Until(p.Expires)
-	m.mu.Unlock()
-
-	if !existing && m.Notify != nil {
-		go m.Notify(*p)
-	}
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-p.done:
-		return p.result, nil
-	case <-timer.C:
-		m.resolve(p, false, false)
-		return false, errors.New("approval timed out")
-	case <-ctx.Done():
-		// Only the original asker withdraws the prompt; joiners just leave.
-		if !existing {
-			m.resolve(p, false, false)
+	if w, ok := m.byJoin[jk]; ok {
+		m.mu.Unlock()
+		// Joiners just leave when their ctx ends; the question stays for
+		// the original asker.
+		select {
+		case <-w.done:
+			return w.allow, nil
+		case <-ctx.Done():
+			return false, fmt.Errorf("approval %s: %w", w.id, ctx.Err())
 		}
-		return false, fmt.Errorf("approval %s: %w", p.ID, ctx.Err())
 	}
-}
-
-// Resolve answers a pending approval. remember applies the decision to
-// identical requests for the rest of the session.
-func (m *Manager) Resolve(id string, allow, remember bool) error {
-	m.mu.Lock()
-	p, ok := m.pending[id]
+	t := m.b.Raise(prompt.Question{
+		Kind: prompt.KindConfirm, Source: "filter:" + a.Filter, Message: a.Prompt, Detail: a.Request,
+		SessionID: sid, SessionLabel: label, Profile: profile,
+	})
+	w := &waiting{id: t.ID(), key: rk, done: make(chan struct{})}
+	m.byJoin[jk] = w
 	m.mu.Unlock()
-	if !ok {
-		return errors.New("no such pending approval: " + id)
-	}
-	m.resolve(p, allow, remember)
-	return nil
-}
 
-func (m *Manager) resolve(p *Pending, allow, remember bool) {
+	ans, err := t.Wait(ctx)
+	allow := err == nil && ans.Allow
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.pending[p.ID]; !ok {
-		return
-	}
-	settle := func(q *Pending) {
-		delete(m.pending, q.ID)
-		delete(m.byKey, q.joinKey)
-		q.result = allow
-		close(q.done)
-		m.broadcast(Event{Type: "resolved", Pending: *q, Allowed: allow})
-	}
-	settle(p)
-	if remember && !p.shared {
-		m.remembered[p.key] = allow
+	delete(m.byJoin, jk)
+	w.allow = allow
+	close(w.done)
+	var covered []string
+	if err == nil && ans.Remember && !shared {
+		m.remembered[rk] = allow
 		// A session-wide answer also settles other pending asks it covers.
-		for _, q := range m.pending {
-			if q.key == p.key {
-				settle(q)
+		for _, o := range m.byJoin {
+			if o.key == rk {
+				covered = append(covered, o.id)
 			}
 		}
 	}
-}
-
-// List returns pending approvals, oldest first.
-func (m *Manager) List() []Pending {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]Pending, 0, len(m.pending))
-	for _, p := range m.pending {
-		out = append(out, *p)
+	m.mu.Unlock()
+	for _, id := range covered {
+		// Another answer may have settled it first, which is fine.
+		_ = m.b.Answer(id, prompt.Answer{Allow: allow})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Created.Before(out[j].Created) })
-	return out
+	if err != nil {
+		return false, fmt.Errorf("approval: %w", err)
+	}
+	return allow, nil
 }
 
 // ForgetSession drops remembered decisions for a session.
@@ -179,36 +113,8 @@ func (m *Manager) ForgetSession(sessionID string) {
 	defer m.mu.Unlock()
 	prefix := sessionID + "\x00"
 	for k := range m.remembered {
-		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+		if strings.HasPrefix(k, prefix) {
 			delete(m.remembered, k)
 		}
 	}
-}
-
-// Subscribe returns a channel of events and a cancel func.
-func (m *Manager) Subscribe() (<-chan Event, func()) {
-	ch := make(chan Event, 32)
-	m.mu.Lock()
-	m.subs[ch] = struct{}{}
-	m.mu.Unlock()
-	return ch, func() {
-		m.mu.Lock()
-		delete(m.subs, ch)
-		m.mu.Unlock()
-	}
-}
-
-func (m *Manager) broadcast(e Event) {
-	for ch := range m.subs {
-		select {
-		case ch <- e:
-		default:
-		}
-	}
-}
-
-func newID() string {
-	b := make([]byte, 3)
-	rand.Read(b)
-	return hex.EncodeToString(b)
 }

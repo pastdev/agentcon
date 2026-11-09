@@ -28,6 +28,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/kv"
 	"github.com/pastdev/agentcon/internal/bouncer/notify"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/proxy"
 	"github.com/pastdev/agentcon/internal/bouncer/sshproxy"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
@@ -67,6 +68,7 @@ type Daemon struct {
 	opts      Options
 	CA        *ca.Authority
 	Approvals *approval.Manager
+	Prompts   *prompt.Broker
 	creds     *creds.Store
 	kv        *kv.Store
 	audit     *audit.Log
@@ -83,8 +85,10 @@ type Daemon struct {
 
 	proxyAddr, sshAddr, mgmtAddr string
 
-	bitwardenMu      sync.Mutex
-	bitwardenPending []string
+	// startup records the credential preparation started by New.
+	startupMu   sync.Mutex
+	startupDone bool
+	startupErr  error
 }
 
 // SessionRecord is a registered agent session.
@@ -158,7 +162,8 @@ func New(opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	d.Approvals = approval.NewManager(cfg.Approvals.TimeoutOrDefault())
+	d.Prompts = prompt.NewBroker(cfg.Prompts.TimeoutOrDefault())
+	d.Approvals = approval.NewManager(d.Prompts)
 	d.env = &chain.Env{
 		Approver: d.Approvals,
 		Resolver: d.resolveGitLabProject,
@@ -171,7 +176,7 @@ func New(opts Options) (*Daemon, error) {
 			}
 		},
 	}
-	creds.ConfigureBitwarden(opts.StateDir, opts.Logf)
+	creds.ConfigureBitwarden(opts.StateDir, opts.Logf, d.Prompts)
 	d.creds = creds.NewStore(cfg.Credentials)
 	d.creds.SetProvided(opts.Provided)
 	d.env.Credential = func(ctx context.Context, name string) (string, error) {
@@ -185,7 +190,32 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 	d.loadSessions()
+	go d.prepare(cfg.Credentials, true)
 	return d, nil
+}
+
+// prepare unlocks the credential sources a config uses, asking a human
+// through d.Prompts when needed. It runs in the background so the control
+// API is up to answer. startup records the result for status.
+func (d *Daemon) prepare(set map[string]*config.Credential, startup bool) {
+	err := d.creds.Prepare(context.Background(), set)
+	if err != nil {
+		d.opts.Logf("warning: preparing credentials: %v", err)
+	}
+	if !startup {
+		return
+	}
+	d.startupMu.Lock()
+	d.startupDone, d.startupErr = true, err
+	d.startupMu.Unlock()
+}
+
+// Startup reports whether the credential preparation started by New has
+// finished, and its error.
+func (d *Daemon) Startup() (bool, error) {
+	d.startupMu.Lock()
+	defer d.startupMu.Unlock()
+	return d.startupDone, d.startupErr
 }
 
 // Config returns the active config.
@@ -253,34 +283,18 @@ func (d *Daemon) apply(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("compile policy: %w", err)
 	}
-	// Unlock Bitwarden vaults before swapping the credential set in, so a
-	// bad master password leaves the previous config running.
-	err = d.creds.Prepare(context.Background(), cfg.Credentials)
-	if err != nil {
-		var need *creds.NeedPasswordError
-		if !errors.As(err, &need) {
-			return fmt.Errorf("prepare credentials: %w", err)
-		}
-		pending := make([]string, 0, len(need.Accounts))
-		for _, a := range need.Accounts {
-			pending = append(pending, a.Email)
-		}
-		d.bitwardenMu.Lock()
-		d.bitwardenPending = pending
-		d.bitwardenMu.Unlock()
-	} else {
-		d.bitwardenMu.Lock()
-		d.bitwardenPending = nil
-		d.bitwardenMu.Unlock()
-	}
 	d.creds.Update(cfg.Credentials)
-	d.Approvals.SetTimeout(cfg.Approvals.TimeoutOrDefault())
-	if cfg.Approvals.NotifyEnabled() {
-		d.Approvals.Notify = func(p approval.Pending) {
-			notify.Send("agent-bouncer: approval needed", approval.Display(p.Prompt, 150)+"\n"+approval.Display(p.Request, 150))
-		}
+	d.Prompts.SetTimeout(cfg.Prompts.TimeoutOrDefault())
+	if cfg.Prompts.NotifyEnabled() {
+		d.Prompts.SetNotify(func(p prompt.Pending) {
+			title := "agent-bouncer: input needed"
+			if p.Kind == prompt.KindConfirm {
+				title = "agent-bouncer: approval needed"
+			}
+			notify.Send(title, approval.Display(p.Message, 150)+"\n"+approval.Display(p.Detail, 150))
+		})
 	} else {
-		d.Approvals.Notify = nil
+		d.Prompts.SetNotify(nil)
 	}
 	d.mu.Lock()
 	d.cfg, d.set = cfg, set
@@ -299,6 +313,7 @@ func (d *Daemon) Reload() error {
 		d.opts.Logf("reload failed, keeping previous config: %v", err)
 		return err
 	}
+	go d.prepare(cfg.Credentials, false)
 	if old != nil && (old.Listen != cfg.Listen || old.SSHListen != cfg.SSHListen) {
 		d.opts.Logf("listen address changes take effect after restart")
 	}

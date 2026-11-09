@@ -11,7 +11,11 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/container"
 	"github.com/pastdev/agentcon/pkg/log"
+	"github.com/pastdev/agentcon/pkg/term"
 )
+
+// ErrInterrupted is returned when Ctrl-C is typed at a prompt.
+var ErrInterrupted = term.ErrInterrupted
 
 const (
 	groupRoot           = "0"

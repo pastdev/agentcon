@@ -25,7 +25,7 @@ type Account struct {
 	// A self-hosted URL such as https://vault.example.com is used as-is.
 	Server string
 	// PasswordEnv, when set, is an environment variable holding the master
-	// password. Otherwise the password is prompted once per process.
+	// password. Otherwise the prompter asks for it when the vault unlocks.
 	PasswordEnv string
 }
 
@@ -43,7 +43,9 @@ type Options struct {
 	// The decrypted vault is never written.
 	StateDir string
 	Logf     func(string, ...any)
-	Prompt   Prompter
+	// Prompt asks for master passwords and verification codes. It is fixed
+	// for the life of the set. Nil means only password_env can unlock.
+	Prompt Prompter
 }
 
 // Vaults pulls and unlocks Bitwarden accounts. An unlocked vault stays in
@@ -138,14 +140,10 @@ func New(opt Options) *Vaults {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	prompt := opt.Prompt
-	if prompt == nil {
-		prompt = stdPrompter{}
-	}
 	return &Vaults{
 		stateDir: opt.StateDir,
 		logf:     logf,
-		prompt:   prompt,
+		prompt:   opt.Prompt,
 		api:      newAPI(nil),
 		slots:    map[string]*slot{},
 	}
@@ -306,7 +304,7 @@ func (v *Vaults) unlock(ctx context.Context, a Account) (*unlocked, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("bitwarden: %w", err)
 		}
-		pw, err := v.masterPassword(a)
+		pw, err := v.masterPassword(ctx, a, attempt, attempts)
 		if err != nil {
 			return nil, fmt.Errorf("bitwarden: %w", err)
 		}
@@ -361,7 +359,7 @@ func (v *Vaults) unlock(ctx context.Context, a Account) (*unlocked, error) {
 	return nil, fmt.Errorf("bitwarden: %w", lastErr)
 }
 
-func (v *Vaults) masterPassword(a Account) (string, error) {
+func (v *Vaults) masterPassword(ctx context.Context, a Account, attempt, attempts int) (string, error) {
 	if a.PasswordEnv != "" {
 		pw, ok := os.LookupEnv(a.PasswordEnv)
 		if !ok || pw == "" {
@@ -370,9 +368,9 @@ func (v *Vaults) masterPassword(a Account) (string, error) {
 		return pw, nil
 	}
 	if v.prompt == nil {
-		return "", fmt.Errorf("master password for %s required; set password_env or run `bouncer serve` in a terminal", a.label())
+		return "", fmt.Errorf("master password for %s required and nothing can ask for it; set password_env", a.label())
 	}
-	pw, err := v.prompt.MasterPassword(a.label())
+	pw, err := v.prompt.MasterPassword(ctx, a.label(), attempt, attempts)
 	if err != nil {
 		return "", fmt.Errorf("master password: %w", err)
 	}
@@ -400,8 +398,8 @@ func (v *Vaults) login(ctx context.Context, identityBase, email, deviceID string
 }
 
 func (v *Vaults) submitVerification(ctx context.Context, identityBase, email, deviceID, hash string, provider int, method string, device bool) (string, string, error) {
-	for range verificationCodeAttempts {
-		code, err := v.verificationCode(email, method)
+	for attempt := 1; attempt <= verificationCodeAttempts; attempt++ {
+		code, err := v.verificationCode(ctx, email, method, attempt)
 		if err != nil {
 			return "", "", err
 		}
@@ -436,11 +434,11 @@ func retryVerification(err error) bool {
 	return errors.As(err, &dev)
 }
 
-func (v *Vaults) verificationCode(email, method string) (string, error) {
+func (v *Vaults) verificationCode(ctx context.Context, email, method string, attempt int) (string, error) {
 	if v.prompt == nil {
-		return "", &NeedCodeError{Method: method}
+		return "", fmt.Errorf("verification code (%s) for %s required and nothing can ask for it", method, email)
 	}
-	code, err := v.prompt.TwoFactorCode(email, method)
+	code, err := v.prompt.TwoFactorCode(ctx, email, method, attempt, verificationCodeAttempts)
 	if err != nil {
 		return "", fmt.Errorf("verification code: %w", err)
 	}

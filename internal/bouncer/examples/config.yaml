@@ -8,11 +8,11 @@ listen: 127.0.0.1:8228
 ssh_listen: 127.0.0.1:8229
 default_profile: default
 
-approvals:
-  timeout: 2m      # unanswered asks are denied after this
-  notify: true     # desktop notification for each pending approval
+prompts:
+  timeout: 2m      # unanswered prompts expire after this; an expired approval is a deny
+  notify: true     # desktop notification for each pending prompt
   terminal: true   # prompt in the `bouncer serve` terminal
-  cli: true        # allow `bouncer approve/deny` from another terminal
+  cli: true        # allow `bouncer answer/approve/deny/decline` and `agentcon run` to answer
 
 # Where secrets come from. The agent only ever sees placeholders.
 # Each credential is a composite of slots (token, username, password, private_key).

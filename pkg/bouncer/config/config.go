@@ -69,7 +69,7 @@ type Config struct {
 	// AnonymousProfile, if set, applies to proxy clients that don't present a
 	// session token. Empty means such clients are rejected.
 	AnonymousProfile string                 `yaml:"anonymous_profile"`
-	Approvals        Approvals              `yaml:"approvals"`
+	Prompts          Prompts                `yaml:"prompts"`
 	Credentials      map[string]*Credential `yaml:"credentials"`
 	Profiles         map[string]*Profile    `yaml:"profiles"`
 
@@ -79,21 +79,25 @@ type Config struct {
 	Path string `yaml:"-"`
 }
 
-type Approvals struct {
-	// Timeout after which an unanswered ask is denied. Default 2m.
+// Prompts configure how the bouncer asks a human: filter approvals and
+// values such as a Bitwarden master password.
+type Prompts struct {
+	// Timeout after which an unanswered prompt expires. An expired approval
+	// is a deny. Default 2m.
 	Timeout Duration `yaml:"timeout"`
-	// Notify sends a desktop notification when an approval is pending. Default true.
+	// Notify sends a desktop notification when a prompt is pending. Default true.
 	Notify *bool `yaml:"notify"`
 	// Terminal prompts on the `bouncer serve` terminal when it is interactive. Default true.
 	Terminal *bool `yaml:"terminal"`
-	// CLI allows answering via `bouncer approve`/`bouncer deny` (control API). Default true.
+	// CLI allows answering through the control API, as `agentcon run` and
+	// `bouncer answer`/`approve`/`deny`/`decline` do. Default true.
 	CLI *bool `yaml:"cli"`
 }
 
-func (a Approvals) NotifyEnabled() bool   { return a.Notify == nil || *a.Notify }
-func (a Approvals) TerminalEnabled() bool { return a.Terminal == nil || *a.Terminal }
-func (a Approvals) CLIEnabled() bool      { return a.CLI == nil || *a.CLI }
-func (a Approvals) TimeoutOrDefault() time.Duration {
+func (a Prompts) NotifyEnabled() bool   { return a.Notify == nil || *a.Notify }
+func (a Prompts) TerminalEnabled() bool { return a.Terminal == nil || *a.Terminal }
+func (a Prompts) CLIEnabled() bool      { return a.CLI == nil || *a.CLI }
+func (a Prompts) TimeoutOrDefault() time.Duration {
 	if a.Timeout.D <= 0 {
 		return 2 * time.Minute
 	}
