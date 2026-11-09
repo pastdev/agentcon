@@ -1,6 +1,6 @@
 //go:build unix
 
-package run
+package term
 
 import (
 	"errors"
@@ -9,11 +9,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type secretReader int
-
-func (r secretReader) Read(buf []byte) (int, error) {
+// Read reads keystrokes directly from the terminal.
+func (t *Terminal) Read(buf []byte) (int, error) {
 	for {
-		n, err := unix.Read(int(r), buf)
+		n, err := unix.Read(t.fd, buf)
 		if errors.Is(err, unix.EINTR) {
 			continue
 		}

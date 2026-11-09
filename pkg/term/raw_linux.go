@@ -1,16 +1,19 @@
 //go:build linux
 
-package run
+package term
 
 import (
 	"fmt"
 
 	"golang.org/x/sys/unix"
-	"golang.org/x/term"
+	xterm "golang.org/x/term"
 )
 
-func prepareSecretTerminal(fd int) (func(), error) {
-	state, err := term.GetState(fd)
+// Raw switches the terminal to keystroke-at-a-time input without echo
+// and returns a func that restores the previous mode.
+func (t *Terminal) Raw() (func(), error) {
+	fd := t.fd
+	state, err := xterm.GetState(fd)
 	if err != nil {
 		return nil, fmt.Errorf("terminal state: %w", err)
 	}
@@ -31,5 +34,5 @@ func prepareSecretTerminal(fd int) (func(), error) {
 		return nil, fmt.Errorf("set termios: %w", err)
 	}
 
-	return func() { _ = term.Restore(fd, state) }, nil
+	return func() { _ = xterm.Restore(fd, state) }, nil
 }

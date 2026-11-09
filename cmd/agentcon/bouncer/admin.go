@@ -47,7 +47,7 @@ func answerCmd() *cobra.Command {
 		Use:   "answer ID",
 		Short: "Answer a pending prompt at this terminal",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := dial()
 			if err != nil {
 				return err
@@ -58,7 +58,7 @@ func answerCmd() *cobra.Command {
 			}
 			for _, p := range list {
 				if p.ID == args[0] {
-					return app.AnswerAtTerminal(c, os.Stdin, os.Stderr, p)
+					return app.AnswerAtTerminal(cmd.Context(), c, os.Stdin, os.Stderr, p)
 				}
 			}
 			return fmt.Errorf("no pending prompt %s", args[0])

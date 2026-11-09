@@ -1,4 +1,4 @@
-package run
+package term
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestReadSecretBytes(t *testing.T) {
+func TestReadLine(t *testing.T) {
 	type testCase struct {
 		ctx         context.Context
 		input       []byte
@@ -29,7 +29,7 @@ func TestReadSecretBytes(t *testing.T) {
 		if tc.echo != nil {
 			echo = tc.echo
 		}
-		got, err := readSecretBytes(ctx, bytes.NewReader(tc.input), echo)
+		got, err := ReadLine(ctx, bytes.NewReader(tc.input), echo)
 		if tc.wantErr != nil {
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("got %v", err)

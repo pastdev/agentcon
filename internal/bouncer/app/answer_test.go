@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"io"
 	"os"
 	"testing"
@@ -44,7 +45,7 @@ func TestAnswerAtTerminal(t *testing.T) {
 		}
 		_ = w.Close()
 		f := &fakeAnswerer{}
-		err = AnswerAtTerminal(f, r, io.Discard, prompt.Pending{ID: "a1", Kind: tc.kind, Source: "test", Message: "?"})
+		err = AnswerAtTerminal(context.Background(), f, r, io.Discard, prompt.Pending{ID: "a1", Kind: tc.kind, Source: "test", Message: "?"})
 		if tc.wantErr {
 			if err == nil {
 				t.Fatal("expected an error")
@@ -79,6 +80,9 @@ func TestAnswerAtTerminal(t *testing.T) {
 	})
 	t.Run("confirm with closed input", func(t *testing.T) {
 		tester(t, testCase{kind: prompt.KindConfirm, input: "", wantErr: true})
+	})
+	t.Run("ctrl-c declines", func(t *testing.T) {
+		tester(t, testCase{kind: prompt.KindConfirm, input: "\x03", wantDeclined: true})
 	})
 	t.Run("secret needs a terminal", func(t *testing.T) {
 		tester(t, testCase{kind: prompt.KindSecret, input: "hunter2\n", wantErr: true})

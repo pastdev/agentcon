@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,7 +10,7 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/approval"
 	"github.com/pastdev/agentcon/internal/bouncer/prompt"
-	"golang.org/x/term"
+	"github.com/pastdev/agentcon/pkg/term"
 )
 
 // PromptAnswerer is the part of the control API that settles prompts.
@@ -19,93 +20,71 @@ type PromptAnswerer interface {
 }
 
 // AnswerAtTerminal shows one pending prompt, reads the human's reply, and
-// sends it. An empty value declines a text or secret prompt.
-func AnswerAtTerminal(c PromptAnswerer, in *os.File, out io.Writer, p prompt.Pending) error {
-	a, err := readAnswer(in, out, p)
-	if err != nil {
-		return err
-	}
-	if p.Kind != prompt.KindConfirm && a.Value == "" {
-		err = c.DeclinePrompt(p.ID)
+// sends it. An empty value or Ctrl-C declines.
+func AnswerAtTerminal(ctx context.Context, c PromptAnswerer, in *os.File, out io.Writer, p prompt.Pending) error {
+	a, readErr := readAnswer(ctx, in, out, p)
+	declined := errors.Is(readErr, term.ErrInterrupted) || (readErr == nil && p.Kind != prompt.KindConfirm && a.Value == "")
+	if declined {
+		err := c.DeclinePrompt(p.ID)
 		if err != nil {
 			return fmt.Errorf("decline prompt %s: %w", p.ID, err)
 		}
 		_, _ = fmt.Fprintf(out, "  [%s] declined\n", p.ID)
 		return nil
 	}
-	err = c.AnswerPrompt(p.ID, a)
+	if readErr != nil {
+		return readErr
+	}
+	err := c.AnswerPrompt(p.ID, a)
 	if err != nil {
 		return fmt.Errorf("answer prompt %s: %w", p.ID, err)
 	}
 	return nil
 }
 
-func readAnswer(in *os.File, out io.Writer, p prompt.Pending) (prompt.Answer, error) {
+func readAnswer(ctx context.Context, in *os.File, out io.Writer, p prompt.Pending) (prompt.Answer, error) {
+	fd := int(in.Fd())
+	tty := term.IsTerminal(fd)
+	// A terminal is read a keystroke at a time so Enter and Ctrl-C work the
+	// same everywhere. Other input, such as a pipe, is read as lines.
+	readLine := func(echo io.Writer) (string, error) {
+		if !tty {
+			b, err := term.ReadLine(ctx, in, nil)
+			return string(b), err
+		}
+		b, err := term.New(fd).ReadLine(ctx, echo)
+		_, _ = fmt.Fprintln(out)
+		return string(b), err
+	}
+
 	d := approval.Display
 	switch p.Kind {
 	case prompt.KindSecret:
-		if !term.IsTerminal(int(in.Fd())) {
+		if !tty {
 			return prompt.Answer{}, fmt.Errorf("prompt %s: a secret needs an interactive terminal", p.ID)
 		}
 		_, _ = fmt.Fprintf(out, "%s [%s] (empty to decline): ", d(p.Message, 300), d(p.Source, 60))
-		b, err := term.ReadPassword(int(in.Fd()))
-		_, _ = fmt.Fprintln(out)
-		if err != nil {
-			return prompt.Answer{}, fmt.Errorf("read secret: %w", err)
-		}
-		return prompt.Answer{Value: string(b)}, nil
+		// A secret is used exactly as typed, spaces included.
+		v, err := readLine(nil)
+		return prompt.Answer{Value: v}, err
 	case prompt.KindText:
 		_, _ = fmt.Fprintf(out, "%s [%s] (empty to decline): ", d(p.Message, 300), d(p.Source, 60))
-		line, err := readLine(in)
-		if err != nil {
-			return prompt.Answer{}, err
-		}
-		return prompt.Answer{Value: line}, nil
+		v, err := readLine(out)
+		return prompt.Answer{Value: strings.TrimSpace(v)}, err
 	case prompt.KindConfirm:
-		_, _ = fmt.Fprintf(out, "=== approval needed [%s] source=%s\n  %s\n  request: %s\n  [y] allow once  [s] allow for session  [n] deny  [d] deny for session > ",
-			p.ID, d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300))
+		_, _ = fmt.Fprintf(out, "=== approval needed [%s] source=%s\n  %s\n  request: %s\n  %s > ",
+			p.ID, d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), prompt.ConfirmChoices)
 		for {
-			line, err := readLine(in)
+			line, err := readLine(out)
 			if err != nil {
 				return prompt.Answer{}, err
 			}
-			switch strings.ToLower(line) {
-			case "y", "yes":
-				return prompt.Answer{Allow: true}, nil
-			case "s":
-				return prompt.Answer{Allow: true, Remember: true}, nil
-			case "n", "no":
-				return prompt.Answer{}, nil
-			case "d":
-				return prompt.Answer{Remember: true}, nil
+			a, ok := prompt.ParseConfirm(line)
+			if ok {
+				return a, nil
 			}
 			_, _ = fmt.Fprint(out, "  answer y, s, n or d > ")
 		}
 	}
 	return prompt.Answer{}, fmt.Errorf("prompt %s: unknown kind %q", p.ID, p.Kind)
-}
-
-// readLine reads one line a byte at a time, so nothing past the newline
-// is consumed and later prompts on the same input still see it.
-func readLine(in io.Reader) (string, error) {
-	var b strings.Builder
-	buf := make([]byte, 1)
-	for {
-		n, err := in.Read(buf)
-		if n == 1 {
-			if buf[0] == '\n' {
-				return strings.TrimSpace(b.String()), nil
-			}
-			b.WriteByte(buf[0])
-		}
-		if errors.Is(err, io.EOF) {
-			if b.Len() == 0 {
-				return "", errors.New("read answer: input closed")
-			}
-			return strings.TrimSpace(b.String()), nil
-		}
-		if err != nil {
-			return "", fmt.Errorf("read answer: %w", err)
-		}
-	}
 }

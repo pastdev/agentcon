@@ -19,8 +19,8 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/container"
+	"github.com/pastdev/agentcon/pkg/term"
 	"github.com/pastdev/agentcon/pkg/version"
-	"golang.org/x/term"
 )
 
 const (
@@ -431,7 +431,7 @@ func unlockBitwarden(ctx context.Context, client *mgmt.Client, req Request, labe
 		return fmt.Errorf("bitwarden vault %s needs a master password (run from a terminal)", label)
 	}
 	_, _ = fmt.Fprintf(req.Stderr, "Bitwarden master password for %s: ", label)
-	pw, err := readSecret(ctx, fd)
+	pw, err := term.New(fd).ReadLine(ctx, nil)
 	_, _ = fmt.Fprintln(req.Stderr)
 	if err != nil {
 		return fmt.Errorf("read bitwarden password: %w", err)
@@ -491,7 +491,7 @@ func readBitwardenCode(ctx context.Context, fd int, stderr io.Writer, label, met
 	} else {
 		_, _ = fmt.Fprintf(stderr, "Bitwarden verification code for %s: ", label)
 	}
-	b, err := readTerminalLine(ctx, fd, stderr)
+	b, err := term.New(fd).ReadLine(ctx, stderr)
 	_, _ = fmt.Fprintln(stderr)
 	if err != nil {
 		return "", fmt.Errorf("read bitwarden verification code: %w", err)

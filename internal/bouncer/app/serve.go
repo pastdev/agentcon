@@ -14,6 +14,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/term"
 )
 
 // ServeOptions configure a local `bouncer serve` process.
@@ -72,7 +73,18 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		if out == nil {
 			out = os.Stderr
 		}
-		go d.RunTerminalApprover(in, out)
+		pctx, stop := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			d.RunTerminalPrompter(pctx, terminalFor(in), out)
+		}()
+		// Wait for the prompter to restore the terminal, so the shell is
+		// never left in raw mode.
+		defer func() {
+			stop()
+			<-done
+		}()
 	} else if cfg.Prompts.CLIEnabled() {
 		logger.Printf("answer prompts with `agentcon bouncer prompts` / `agentcon bouncer answer <id>`")
 	}
@@ -128,3 +140,18 @@ func FormatDecision(e audit.Entry) string {
 	}
 	return s
 }
+
+// terminalFor returns the terminal behind in, or a plain reader that never
+// changes modes when in is not a terminal.
+func terminalFor(in io.Reader) daemon.Terminal {
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		return term.New(int(f.Fd()))
+	}
+	return plainTerminal{in}
+}
+
+type plainTerminal struct {
+	io.Reader
+}
+
+func (plainTerminal) Raw() (func(), error) { return func() {}, nil }

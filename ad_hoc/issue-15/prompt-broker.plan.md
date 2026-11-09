@@ -108,10 +108,16 @@ DELETE /_bouncer/prompts/{id}  decline
   When `pending_prompts` is above zero it lists prompts and answers each new one at the terminal.
   A `secret` is read without echo, a `text` is read as a line, and a `confirm` takes y, s, n, or d.
   An empty secret or Ctrl-C declines the prompt.
+  A secret is used exactly as typed, and text is trimmed.
+- Terminal input uses `pkg/term`, moved from the reader `pkg/run` already had.
+  It reads a keystroke at a time in raw mode, so Enter, Backspace, and Ctrl-C behave the same on Linux, macOS, and Windows.
+  Its `Editor` assembles a line from keystrokes, and `ReadLine` uses it for a one-off read.
 - Interactive `bouncer serve`: `RunTerminalApprover` becomes `RunTerminalPrompter` and handles all three kinds.
-  It keeps its single line reader on stdin.
-  For a `secret` it turns terminal echo off around that read and back on afterward, including when the prompt is settled elsewhere.
-  Echo control uses termios on Linux and macOS and the console mode on Windows.
+  One goroutine reads keystrokes from stdin for the life of the prompter.
+  The terminal is in raw mode only while a prompt is showing.
+  Keystrokes are echoed by the prompter, never for a secret.
+  Enter answers, an empty text or secret declines, and Ctrl-C declines.
+  The terminal returns to its normal mode between prompts, when a prompt is settled elsewhere, and before `Serve` returns.
 - CLI: `agentcon bouncer prompts` lists pending prompts.
   `agentcon bouncer answer <id>` reads a value without echo for a secret, a line for text, or y/n for a confirm.
   `agentcon bouncer approve <id>` and `agentcon bouncer deny <id>` stay as shortcuts for a confirm, with `--session` for remember.
@@ -126,7 +132,7 @@ Each step builds, passes `go test -race ./...`, and passes lint.
 3. Add the prompt endpoints, CLI commands, and `mgmt` client methods.
    Remove the approvals endpoints and the `approvals` command.
    Rename the config section to `prompts`.
-4. Generalize the terminal approver into `RunTerminalPrompter` with echo control for secrets.
+4. Move the terminal reader to `pkg/term` and generalize the terminal approver into `RunTerminalPrompter`.
 5. Give the Bitwarden prompter a context and a broker-backed implementation.
    Run startup and reload preparation in the background and report `ready` and `error` on status.
    Remove the unlock endpoint, `SetPrompt`, and the other Bitwarden-specific types listed above.

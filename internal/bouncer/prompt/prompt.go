@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -63,6 +64,24 @@ type Answer struct {
 	Allow    bool
 	Remember bool
 	Value    string
+}
+
+// ConfirmChoices is the hint shown when asking for a confirm answer.
+const ConfirmChoices = "[y] allow once  [s] allow for session  [n] deny  [d] deny for session"
+
+// ParseConfirm maps a typed y, s, n, or d to a confirm answer.
+func ParseConfirm(s string) (Answer, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "y", "yes":
+		return Answer{Allow: true}, true
+	case "s":
+		return Answer{Allow: true, Remember: true}, true
+	case "n", "no":
+		return Answer{}, true
+	case "d":
+		return Answer{Remember: true}, true
+	}
+	return Answer{}, false
 }
 
 // Pending is a question awaiting an answer. It never holds the answer.
