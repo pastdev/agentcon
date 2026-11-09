@@ -201,8 +201,9 @@ func (r *Runtime) InspectNetwork(ctx context.Context, id string) (container.Netw
 		return container.NetworkInfo{}, fmt.Errorf("inspect network: %w", err)
 	}
 	info := container.NetworkInfo{
-		ID:   inspected.Network.ID,
-		Name: inspected.Network.Name,
+		ID:       inspected.Network.ID,
+		Name:     inspected.Network.Name,
+		Internal: inspected.Network.Internal,
 	}
 	if len(inspected.Network.IPAM.Config) > 0 && inspected.Network.IPAM.Config[0].Subnet.IsValid() {
 		info.Subnet = inspected.Network.IPAM.Config[0].Subnet.String()

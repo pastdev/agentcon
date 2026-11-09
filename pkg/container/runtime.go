@@ -33,6 +33,10 @@ type ExitError struct {
 type Mount struct {
 	Source string
 	Target string
+	// Volume, when set, mounts Subpath of that Docker volume at Target
+	// instead of binding Source.
+	Volume  string
+	Subpath string
 }
 
 type Port struct {
@@ -52,6 +56,8 @@ type NetworkInfo struct {
 	ID     string
 	Name   string
 	Subnet string
+	// Internal networks have no route outside Docker.
+	Internal bool
 }
 
 type Endpoint struct {

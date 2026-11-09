@@ -11,6 +11,7 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/jsonstream"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	"github.com/pastdev/agentcon/pkg/container"
 )
@@ -24,6 +25,7 @@ type fakeAPI struct {
 	pullBody   string
 	pulled     string
 	buildOpts  client.ImageBuildOptions
+	network    network.Inspect
 }
 
 func (f *fakeAPI) ImageInspect(context.Context, string, ...client.ImageInspectOption) (client.ImageInspectResult, error) {
@@ -41,6 +43,10 @@ func (f *fakeAPI) ImagePull(_ context.Context, ref string, _ client.ImagePullOpt
 func (f *fakeAPI) ImageBuild(_ context.Context, _ io.Reader, opts client.ImageBuildOptions) (client.ImageBuildResult, error) {
 	f.buildOpts = opts
 	return client.ImageBuildResult{Body: io.NopCloser(strings.NewReader(""))}, nil
+}
+
+func (f *fakeAPI) NetworkInspect(context.Context, string, client.NetworkInspectOptions) (client.NetworkInspectResult, error) {
+	return client.NetworkInspectResult{Network: f.network}, nil
 }
 
 type fakePull struct {
