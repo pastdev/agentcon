@@ -38,6 +38,12 @@ jobs:
         go-version-file: go.mod
         cache: true
     - run: go version
+    - name: Keep ad_hoc out of the build
+      run: |
+        if go list ./... | grep /ad_hoc/; then
+          echo "Go files under ad_hoc/issue-<num>/ need //go:build issue<num>" >&2
+          exit 1
+        fi
     - run: go test ./...
 
   version:

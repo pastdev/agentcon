@@ -1,3 +1,5 @@
+//go:build issue9
+
 package main
 
 import (
