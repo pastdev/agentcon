@@ -52,8 +52,9 @@ func validHost(host string) bool {
 		return true
 	}
 	for i := 0; i < len(host); i++ {
-		c := host[i]
-		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '.' || c == '-' || c == '_') {
+		switch c := host[i]; {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9', c == '.', c == '-', c == '_':
+		default:
 			return false
 		}
 	}
