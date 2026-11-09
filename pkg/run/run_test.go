@@ -257,6 +257,35 @@ func TestRun(t *testing.T) {
 			},
 		})
 	})
+	t.Run("mounts volume subpaths under DooD", func(t *testing.T) {
+		root := t.TempDir()
+		home := t.TempDir()
+		cursor := home + "/.cursor"
+		tester(t, testCase{
+			req: Request{
+				Image:  testImage,
+				Mounts: []container.Mount{{Source: cursor, Target: "/agent/cursor"}},
+				Root:   root,
+				Cwd:    root,
+				Home:   home,
+				User:   testUser,
+				DooD: &DooD{Mounts: []VolumePath{
+					{Volume: "dev-root", Path: root},
+					{Volume: "dev-home", Path: home},
+				}},
+			},
+			check: func(t *testing.T, rt *captureRuntime) {
+				t.Helper()
+				want := []container.Mount{
+					{Source: root, Target: "/workspace", Volume: "dev-root"},
+					{Source: cursor, Target: "/agent/cursor", Volume: "dev-home", Subpath: ".cursor"},
+				}
+				if len(rt.spec.Mounts) != 2 || rt.spec.Mounts[0] != want[0] || rt.spec.Mounts[1] != want[1] {
+					t.Fatalf("mounts %+v", rt.spec.Mounts)
+				}
+			},
+		})
+	})
 	t.Run("runs without extra agent mounts", func(t *testing.T) {
 		root := t.TempDir()
 		tester(t, testCase{

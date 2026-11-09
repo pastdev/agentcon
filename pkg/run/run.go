@@ -77,6 +77,9 @@ type Request struct {
 	Entrypoint        []string
 	ExtraHosts        []string
 	SidecarExtraHosts []string
+	// DooD describes a Docker-outside-of-Docker environment. Nil means
+	// agentcon shares a host with the Docker daemon.
+	DooD *DooD
 	// PullPolicy governs the agent image. Empty is PullMissing.
 	PullPolicy PullPolicy
 	// SidecarPullPolicy governs the bouncer sidecar image. Empty is PullMissing.
@@ -133,6 +136,10 @@ func Run(ctx context.Context, req Request) error {
 	err = prepareHost(spec)
 	if err != nil {
 		return fmt.Errorf("prepare host: %w", err)
+	}
+	spec.Mounts, err = translateMounts(spec.Mounts, req.DooD)
+	if err != nil {
+		return fmt.Errorf("agent mounts: %w", err)
 	}
 
 	if req.Bouncer != nil {

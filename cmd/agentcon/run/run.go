@@ -71,6 +71,10 @@ func execute(
 	if err != nil {
 		return fmt.Errorf("run request: %w", err)
 	}
+	req.DooD, err = pkgrun.ParseDooD(os.Environ())
+	if err != nil {
+		return fmt.Errorf("docker-outside-of-docker environment: %w", err)
+	}
 
 	runtime, err := moby.New()
 	if err != nil {

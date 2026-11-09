@@ -115,6 +115,10 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	sidecarSpec := withSSHAuthSock(bouncerSidecarSpec(
 		req, labels, extNetName, agentNetName, agentNet.Subnet, extNet.Subnet, hostPort,
 	), sshSock)
+	sidecarSpec.Mounts, err = translateMounts(sidecarSpec.Mounts, req.DooD)
+	if err != nil {
+		return fmt.Errorf("sidecar mounts: %w", err)
+	}
 	sidecarID, err := req.Runtime.Create(ctx, sidecarSpec)
 	if err != nil {
 		return fmt.Errorf("create bouncer sidecar: %w", err)
