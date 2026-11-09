@@ -1,6 +1,8 @@
 package run
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -140,4 +142,67 @@ func TestTranslateMounts(t *testing.T) {
 			wantErr: "/tmp/ssh-agent.sock",
 		})
 	})
+}
+
+func TestDooDNetwork(t *testing.T) {
+	type testCase struct {
+		network container.NetworkInfo
+		netErr  error
+		want    externalNet
+		wantErr string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		rt := &captureRuntime{network: tc.network, netErr: tc.netErr}
+		got, err := doodNetwork(context.Background(), rt, "dev", "agentcon-x-deadbeef-bouncer")
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Fatalf("got %+v, want %+v", got, tc.want)
+		}
+	}
+
+	t.Run("reaches the sidecar by name with no published port", func(t *testing.T) {
+		tester(t, testCase{
+			network: container.NetworkInfo{Name: "dev", Subnet: "172.30.0.0/16"},
+			want:    externalNet{name: "dev", subnet: "172.30.0.0/16", controlAddr: "agentcon-x-deadbeef-bouncer:8228"},
+		})
+	})
+	t.Run("refuses an internal network", func(t *testing.T) {
+		tester(t, testCase{
+			network: container.NetworkInfo{Name: "dev", Subnet: "172.30.0.0/16", Internal: true},
+			wantErr: "DOOD_NETWORK dev is an internal network, so the bouncer sidecar would have no egress",
+		})
+	})
+	t.Run("refuses a network without a subnet", func(t *testing.T) {
+		tester(t, testCase{network: container.NetworkInfo{Name: "dev"}, wantErr: "has no subnet"})
+	})
+	t.Run("reports a failed inspect", func(t *testing.T) {
+		tester(t, testCase{netErr: errors.New("no such network"), wantErr: "no such network"})
+	})
+}
+
+func TestBouncerSidecarSpecOnDooDNetwork(t *testing.T) {
+	ext := externalNet{name: "dev", subnet: "172.30.0.0/16", controlAddr: "agentcon-x-deadbeef-bouncer:8228"}
+	spec := bouncerSidecarSpec(Request{User: testUser}, nil, ext, "agent-net", "10.1.0.0/16")
+	if len(spec.Networks) != 2 || spec.Networks[0] != "dev" || spec.Networks[1] != "agent-net" {
+		t.Fatalf("networks %v", spec.Networks)
+	}
+	if len(spec.Ports) != 0 {
+		t.Fatalf("published ports %+v", spec.Ports)
+	}
+	found := false
+	for _, e := range spec.Env {
+		found = found || e == "MANAGEMENT_NETWORK=172.30.0.0/16"
+	}
+	if !found {
+		t.Fatalf("env %v", spec.Env)
+	}
 }

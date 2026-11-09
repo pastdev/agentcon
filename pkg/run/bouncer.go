@@ -73,16 +73,49 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("ssh-agent: %w", err)
 	}
 
-	hostPort, err := freeLocalPort()
-	if err != nil {
-		return fmt.Errorf("management port: %w", err)
-	}
-
 	labels := sessionLabels(setup.ContextName, req.Project, req.Slug, roleBouncer)
 	agentNetName := running.ResourceName(req.Project, req.Slug, roleAgent)
-	extNetName := running.ResourceName(req.Project, req.Slug, roleExt)
+	sidecarName := running.ResourceName(req.Project, req.Slug, roleBouncer)
 
 	cleanup := context.WithoutCancel(ctx)
+
+	// The external network carries the sidecar's egress and its management
+	// API. It is settled first so a bad DOOD_NETWORK fails before anything
+	// is created.
+	var ext externalNet
+	if req.DooD != nil && req.DooD.Network != "" {
+		ext, err = doodNetwork(ctx, req.Runtime, req.DooD.Network, sidecarName)
+		if err != nil {
+			return fmt.Errorf("external network: %w", err)
+		}
+	} else {
+		var hostPort int
+		hostPort, err = freeLocalPort()
+		if err != nil {
+			return fmt.Errorf("management port: %w", err)
+		}
+		extNetName := running.ResourceName(req.Project, req.Slug, roleExt)
+		var extNetID string
+		extNetID, err = req.Runtime.CreateNetwork(ctx, container.NetworkSpec{
+			Name:   extNetName,
+			Labels: labels,
+		})
+		if err != nil {
+			return fmt.Errorf("create external network: %w", err)
+		}
+		defer func() { _ = req.Runtime.RemoveNetwork(cleanup, extNetID) }()
+		var extNet container.NetworkInfo
+		extNet, err = req.Runtime.InspectNetwork(ctx, extNetID)
+		if err != nil {
+			return fmt.Errorf("inspect external network: %w", err)
+		}
+		ext = externalNet{
+			name:        extNetName,
+			subnet:      extNet.Subnet,
+			hostPort:    hostPort,
+			controlAddr: fmt.Sprintf("127.0.0.1:%d", hostPort),
+		}
+	}
 
 	agentNetID, err := req.Runtime.CreateNetwork(ctx, container.NetworkSpec{
 		Name:     agentNetName,
@@ -94,27 +127,12 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	}
 	defer func() { _ = req.Runtime.RemoveNetwork(cleanup, agentNetID) }()
 
-	extNetID, err := req.Runtime.CreateNetwork(ctx, container.NetworkSpec{
-		Name:   extNetName,
-		Labels: labels,
-	})
-	if err != nil {
-		return fmt.Errorf("create external network: %w", err)
-	}
-	defer func() { _ = req.Runtime.RemoveNetwork(cleanup, extNetID) }()
-
 	agentNet, err := req.Runtime.InspectNetwork(ctx, agentNetID)
 	if err != nil {
 		return fmt.Errorf("inspect agent network: %w", err)
 	}
-	extNet, err := req.Runtime.InspectNetwork(ctx, extNetID)
-	if err != nil {
-		return fmt.Errorf("inspect external network: %w", err)
-	}
 
-	sidecarSpec := withSSHAuthSock(bouncerSidecarSpec(
-		req, labels, extNetName, agentNetName, agentNet.Subnet, extNet.Subnet, hostPort,
-	), sshSock)
+	sidecarSpec := withSSHAuthSock(bouncerSidecarSpec(req, labels, ext, agentNetName, agentNet.Subnet), sshSock)
 	sidecarSpec.Mounts, err = translateMounts(sidecarSpec.Mounts, req.DooD)
 	if err != nil {
 		return fmt.Errorf("sidecar mounts: %w", err)
@@ -136,7 +154,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("start bouncer sidecar: %w", err)
 	}
 
-	client := mgmt.New(fmt.Sprintf("http://127.0.0.1:%d", hostPort), token)
+	client := mgmt.New("http://"+ext.controlAddr, token)
 	err = waitUntilServing(ctx, client)
 	if err != nil {
 		return fmt.Errorf("wait for bouncer: %w", err)
@@ -156,7 +174,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		Project:     req.Project,
 		Slug:        req.Slug,
 		Cwd:         req.Cwd,
-		ControlAddr: fmt.Sprintf("127.0.0.1:%d", hostPort),
+		ControlAddr: ext.controlAddr,
 		Token:       token,
 		ContainerID: sidecarID,
 		PID:         os.Getpid(),
@@ -222,10 +240,10 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 func bouncerSidecarSpec(
 	req Request,
 	labels map[string]string,
-	extNetName, agentNetName, agentSubnet, extSubnet string,
-	hostPort int,
+	ext externalNet,
+	agentNetName, agentSubnet string,
 ) container.Spec {
-	return container.Spec{
+	spec := container.Spec{
 		Name:       running.ResourceName(req.Project, req.Slug, roleBouncer),
 		Image:      sidecarImage,
 		User:       req.User,
@@ -239,19 +257,22 @@ func bouncerSidecarSpec(
 		},
 		Env: []string{
 			"AGENT_NETWORK=" + agentSubnet,
-			"MANAGEMENT_NETWORK=" + extSubnet,
+			"MANAGEMENT_NETWORK=" + ext.subnet,
 			"MANAGEMENT_PORT=" + defaultProxyPort,
 		},
-		Networks: []string{extNetName, agentNetName},
-		Ports: []container.Port{{
-			HostIP:        "127.0.0.1",
-			HostPort:      strconv.Itoa(hostPort),
-			ContainerPort: defaultProxyPort,
-			Protocol:      "tcp",
-		}},
+		Networks:   []string{ext.name, agentNetName},
 		Labels:     labels,
 		ExtraHosts: req.SidecarExtraHosts,
 	}
+	if ext.hostPort > 0 {
+		spec.Ports = []container.Port{{
+			HostIP:        "127.0.0.1",
+			HostPort:      strconv.Itoa(ext.hostPort),
+			ContainerPort: defaultProxyPort,
+			Protocol:      "tcp",
+		}}
+	}
+	return spec
 }
 
 func withSSHAuthSock(spec container.Spec, sock string) container.Spec {

@@ -1,7 +1,9 @@
 package run
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -101,4 +103,35 @@ func (d *DooD) volumeFor(path string) (VolumePath, string, bool) {
 		}
 	}
 	return best, bestRel, found
+}
+
+// externalNet is the bouncer sidecar's external network and the address
+// agentcon uses for the sidecar's management API.
+type externalNet struct {
+	name   string
+	subnet string
+	// hostPort is published on the host loopback. Zero publishes nothing.
+	hostPort    int
+	controlAddr string
+}
+
+// doodNetwork uses DOOD_NETWORK as the sidecar's external network. This
+// container is attached to it, so it reaches the sidecar by container name
+// and needs no published port.
+func doodNetwork(ctx context.Context, rt container.Runtime, network, sidecarName string) (externalNet, error) {
+	info, err := rt.InspectNetwork(ctx, network)
+	if err != nil {
+		return externalNet{}, fmt.Errorf("inspect %s %s: %w", envDooDNetwork, network, err)
+	}
+	if info.Internal {
+		return externalNet{}, fmt.Errorf("%s %s is an internal network, so the bouncer sidecar would have no egress", envDooDNetwork, network)
+	}
+	if info.Subnet == "" {
+		return externalNet{}, fmt.Errorf("%s %s has no subnet", envDooDNetwork, network)
+	}
+	return externalNet{
+		name:        network,
+		subnet:      info.Subnet,
+		controlAddr: net.JoinHostPort(sidecarName, defaultProxyPort),
+	}, nil
 }

@@ -28,6 +28,8 @@ type captureRuntime struct {
 	missing   bool
 	existsErr error
 	pulled    []string
+	network   container.NetworkInfo
+	netErr    error
 }
 
 func (c *captureRuntime) Run(_ context.Context, spec container.Spec) error {
@@ -56,7 +58,7 @@ func (c *captureRuntime) CreateNetwork(context.Context, container.NetworkSpec) (
 	return "", errUnused
 }
 func (c *captureRuntime) InspectNetwork(context.Context, string) (container.NetworkInfo, error) {
-	return container.NetworkInfo{}, errUnused
+	return c.network, c.netErr
 }
 func (c *captureRuntime) ConnectNetwork(context.Context, string, string) error {
 	return errUnused
