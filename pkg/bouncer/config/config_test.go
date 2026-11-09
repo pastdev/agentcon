@@ -37,6 +37,14 @@ func TestHostMatches(t *testing.T) {
 	t.Run("rejects evilgitlab.com", func(t *testing.T) {
 		tester(t, testCase{pats: []string{"gitlab.com"}, host: "evilgitlab.com", want: false})
 	})
+	for _, host := range []string{"evil.example#.github.com", "evil.example?.github.com", "evil.example/.github.com", "u@evil.example.github.com", "evil.example%23.github.com", "evil.example\\.github.com"} {
+		t.Run("rejects smuggled host "+host, func(t *testing.T) {
+			tester(t, testCase{pats: []string{"*.github.com"}, host: host + ":443", want: false})
+		})
+	}
+	t.Run("matches an IPv6 literal", func(t *testing.T) {
+		tester(t, testCase{pats: []string{"[::1]:8443"}, host: "[::1]:8443", want: true})
+	})
 	t.Run("matches a github wildcard subdomain", func(t *testing.T) {
 		tester(t, testCase{pats: []string{"*.github.com"}, host: "api.github.com", want: true})
 	})

@@ -10,9 +10,16 @@ import (
 // may carry a ":port" suffix that must then match exactly. A pattern without
 // a port matches only the default HTTPS port (or a bare host, as for SSH),
 // so "gitlab.com" never matches plain-HTTP gitlab.com:80.
+//
+// A host that is neither an IP nor made of hostname characters never
+// matches: "evil.example#.github.com" ends in ".github.com", but a URL
+// assembled from it as a string points at evil.example.
 func HostMatches(patterns []string, hostport string) bool {
 	host, port := SplitHostPort(hostport)
 	host = asciiLower(strings.TrimSuffix(host, "."))
+	if !validHost(host) {
+		return false
+	}
 	for _, p := range patterns {
 		ph, pp := SplitHostPort(p)
 		ph = asciiLower(ph)
@@ -33,6 +40,24 @@ func HostMatches(patterns []string, hostport string) bool {
 		}
 	}
 	return false
+}
+
+// validHost reports whether host is an IP literal or contains only
+// letters, digits, '.', '-', and '_'.
+func validHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	for i := 0; i < len(host); i++ {
+		c := host[i]
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '.' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // asciiLower lowercases ASCII letters only, leaving other bytes unchanged,
