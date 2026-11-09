@@ -28,6 +28,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/kv"
 	"github.com/pastdev/agentcon/internal/bouncer/notify"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/proxy"
 	"github.com/pastdev/agentcon/internal/bouncer/sshproxy"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
@@ -67,6 +68,7 @@ type Daemon struct {
 	opts      Options
 	CA        *ca.Authority
 	Approvals *approval.Manager
+	Prompts   *prompt.Broker
 	creds     *creds.Store
 	kv        *kv.Store
 	audit     *audit.Log
@@ -158,7 +160,8 @@ func New(opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	d.Approvals = approval.NewManager(cfg.Approvals.TimeoutOrDefault())
+	d.Prompts = prompt.NewBroker(cfg.Approvals.TimeoutOrDefault())
+	d.Approvals = approval.NewManager(d.Prompts)
 	d.env = &chain.Env{
 		Approver: d.Approvals,
 		Resolver: d.resolveGitLabProject,
@@ -274,13 +277,13 @@ func (d *Daemon) apply(cfg *config.Config) error {
 		d.bitwardenMu.Unlock()
 	}
 	d.creds.Update(cfg.Credentials)
-	d.Approvals.SetTimeout(cfg.Approvals.TimeoutOrDefault())
+	d.Prompts.SetTimeout(cfg.Approvals.TimeoutOrDefault())
 	if cfg.Approvals.NotifyEnabled() {
-		d.Approvals.Notify = func(p approval.Pending) {
-			notify.Send("agent-bouncer: approval needed", approval.Display(p.Prompt, 150)+"\n"+approval.Display(p.Request, 150))
-		}
+		d.Prompts.SetNotify(func(p prompt.Pending) {
+			notify.Send("agent-bouncer: approval needed", approval.Display(p.Message, 150)+"\n"+approval.Display(p.Detail, 150))
+		})
 	} else {
-		d.Approvals.Notify = nil
+		d.Prompts.SetNotify(nil)
 	}
 	d.mu.Lock()
 	d.cfg, d.set = cfg, set

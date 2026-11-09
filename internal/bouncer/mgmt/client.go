@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pastdev/agentcon/internal/bouncer/approval"
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 )
 
@@ -137,8 +137,8 @@ func (c *Client) Status() (Status, error) {
 	return st, err
 }
 
-func (c *Client) Approvals() ([]approval.Pending, error) {
-	var list []approval.Pending
+func (c *Client) Approvals() ([]prompt.Pending, error) {
+	var list []prompt.Pending
 	err := c.do(http.MethodGet, "/_bouncer/approvals", nil, &list)
 	return list, err
 }

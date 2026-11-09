@@ -2,11 +2,13 @@ package approval
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 )
 
 func TestAsk(t *testing.T) {
@@ -18,13 +20,14 @@ func TestAsk(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		m := NewManager(tc.timeout)
+		b := prompt.NewBroker(tc.timeout)
+		m := NewManager(b)
 		ok, err := m.Ask(context.Background(), tc.req)
 		if tc.wantErr {
 			if ok || err == nil {
 				t.Fatalf("ok=%v err=%v", ok, err)
 			}
-			if len(m.List()) != 0 {
+			if len(b.List()) != 0 {
 				t.Fatal("timed-out approval still pending")
 			}
 			return
@@ -35,8 +38,9 @@ func TestAsk(t *testing.T) {
 	}
 
 	t.Run("coalesces waiters and remembers the session answer", func(t *testing.T) {
-		m := NewManager(time.Minute)
-		events, cancel := m.Subscribe()
+		b := prompt.NewBroker(time.Minute)
+		m := NewManager(b)
+		events, cancel := b.Subscribe()
 		defer cancel()
 		sess := &chain.Session{ID: "s1"}
 		var wg sync.WaitGroup
@@ -53,10 +57,10 @@ func TestAsk(t *testing.T) {
 			t.Fatal(ev)
 		}
 		time.Sleep(20 * time.Millisecond)
-		if n := len(m.List()); n != 1 {
+		if n := len(b.List()); n != 1 {
 			t.Fatalf("expected one coalesced prompt, got %d", n)
 		}
-		err := m.Resolve(ev.Pending.ID, true, true)
+		err := b.Answer(ev.Pending.ID, prompt.Answer{Allow: true, Remember: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -81,11 +85,34 @@ func TestAsk(t *testing.T) {
 			t.Error("forgotten session still approved")
 		}
 	})
+	t.Run("denies when the prompt is declined", func(t *testing.T) {
+		b := prompt.NewBroker(time.Minute)
+		m := NewManager(b)
+		events, cancel := b.Subscribe()
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			ok, err := m.Ask(context.Background(), chain.AskRequest{Prompt: "x", Request: "r"})
+			if ok {
+				err = errors.New("declined ask was allowed")
+			}
+			done <- err
+		}()
+		err := b.Decline((<-events).Pending.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = <-done
+		if !errors.Is(err, prompt.ErrDeclined) {
+			t.Fatalf("err=%v", err)
+		}
+	})
 	t.Run("denies when the prompt times out", func(t *testing.T) {
 		tester(t, testCase{timeout: 10 * time.Millisecond, req: chain.AskRequest{Prompt: "x"}, wantErr: true})
 	})
 	t.Run("keeps different requests on separate prompts", func(t *testing.T) {
-		m := NewManager(time.Minute)
+		b := prompt.NewBroker(time.Minute)
+		m := NewManager(b)
 		sess := &chain.Session{ID: "s1"}
 		ask := func(req string, key string, out chan bool) {
 			ok, _ := m.Ask(context.Background(), chain.AskRequest{Session: sess, Prompt: "Let the agent in?", Request: req, Key: key})
@@ -95,12 +122,12 @@ func TestAsk(t *testing.T) {
 		go ask("ssh agent@sandbox exec: ls", "", harmless)
 		go ask("ssh agent@sandbox exec: rm -rf /srv", "", dangerous)
 		time.Sleep(20 * time.Millisecond)
-		list := m.List()
+		list := b.List()
 		if len(list) != 2 {
 			t.Fatalf("expected two separate prompts, got %d", len(list))
 		}
 		for _, p := range list {
-			err := m.Resolve(p.ID, p.Request == "ssh agent@sandbox exec: ls", true)
+			err := b.Answer(p.ID, prompt.Answer{Allow: p.Detail == "ssh agent@sandbox exec: ls", Remember: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -119,33 +146,34 @@ func TestAsk(t *testing.T) {
 			t.Fatal("identical request should reuse the remembered approval")
 		}
 
-		a, b := make(chan bool, 1), make(chan bool, 1)
-		go ask("push 1", "push-limit", a)
-		go ask("push 2", "push-limit", b)
+		push1, push2 := make(chan bool, 1), make(chan bool, 1)
+		go ask("push 1", "push-limit", push1)
+		go ask("push 2", "push-limit", push2)
 		time.Sleep(20 * time.Millisecond)
-		list = m.List()
+		list = b.List()
 		if len(list) != 2 {
 			t.Fatalf("explicit key: expected two prompts, got %d", len(list))
 		}
-		err := m.Resolve(list[0].ID, true, true)
+		err := b.Answer(list[0].ID, prompt.Answer{Allow: true, Remember: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !<-a || !<-b {
+		if !<-push1 || !<-push2 {
 			t.Fatal("session-wide approval should settle both")
 		}
 	})
 	t.Run("does not remember an answer for a shared session", func(t *testing.T) {
-		m := NewManager(time.Minute)
+		b := prompt.NewBroker(time.Minute)
+		m := NewManager(b)
 		anon := &chain.Session{ID: "anonymous", Shared: true}
-		events, cancel := m.Subscribe()
+		events, cancel := b.Subscribe()
 		defer cancel()
 		done := make(chan bool, 1)
 		go func() {
 			ok, _ := m.Ask(context.Background(), chain.AskRequest{Session: anon, Prompt: "x", Request: "r"})
 			done <- ok
 		}()
-		err := m.Resolve((<-events).Pending.ID, true, true)
+		err := b.Answer((<-events).Pending.ID, prompt.Answer{Allow: true, Remember: true})
 		if err != nil {
 			t.Fatal(err)
 		}

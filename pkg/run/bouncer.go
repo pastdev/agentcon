@@ -519,7 +519,7 @@ func notifyApprovals(ctx context.Context, client *mgmt.Client, stderr io.Writer)
 					continue
 				}
 				seen[p.ID] = true
-				_, _ = fmt.Fprintf(stderr, "bouncer: pending approval %s: %s (agentcon bouncer approve %s)\n", p.ID, p.Prompt, p.ID)
+				_, _ = fmt.Fprintf(stderr, "bouncer: pending approval %s: %s (agentcon bouncer approve %s)\n", p.ID, p.Message, p.ID)
 			}
 		}
 	}

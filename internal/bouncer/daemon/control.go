@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pastdev/agentcon/internal/bouncer/creds/bitwarden"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 )
 
 // Control serves the /_bouncer/ API used by the CLI. Every call requires
@@ -27,7 +28,7 @@ func (d *Daemon) Control() http.Handler {
 		d.bitwardenMu.Unlock()
 		writeJSON(w, map[string]any{
 			"config": cfg.Path, "profiles": profiles, "default_profile": cfg.DefaultProfile,
-			"sessions": len(d.listSessions()), "pending_approvals": len(d.Approvals.List()),
+			"sessions": len(d.listSessions()), "pending_approvals": len(d.Prompts.List()),
 			"ca": d.CA.CertPath(), "ca_bundle": d.CA.BundlePath(),
 			"ready": len(pending) == 0, "bitwarden_pending": pending,
 		})
@@ -93,7 +94,7 @@ func (d *Daemon) Control() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /_bouncer/approvals", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, d.Approvals.List())
+		writeJSON(w, d.Prompts.List())
 	})
 	mux.HandleFunc("POST /_bouncer/approvals/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if !d.Config().Approvals.CLIEnabled() {
@@ -105,8 +106,13 @@ func (d *Daemon) Control() http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := d.Approvals.Resolve(r.PathValue("id"), body.Allow, body.Remember); err != nil {
+		err := d.Prompts.Answer(r.PathValue("id"), prompt.Answer{Allow: body.Allow, Remember: body.Remember})
+		switch {
+		case errors.Is(err, prompt.ErrNotFound):
 			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		case err != nil:
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

@@ -31,7 +31,7 @@ func approvalsCmd() *cobra.Command {
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "ID\tSESSION\tPROMPT\tREQUEST\tEXPIRES")
 			for _, p := range list {
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.ID, p.SessionLabel, p.Prompt, p.Request, time.Until(p.Expires).Round(time.Second))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.ID, p.SessionLabel, p.Message, p.Detail, time.Until(p.Expires).Round(time.Second))
 			}
 			return w.Flush()
 		},
