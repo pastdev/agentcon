@@ -40,6 +40,52 @@ Agent `tunnel` hosts are unioned onto root profiles.
 `agentcon config` prints that list under `agents`.
 There is no builtin host list in the binary.
 
+## Choosing `unmatched`
+
+`unmatched` decides what happens to HTTP and HTTPS traffic for a host that no `http` service claims and no `tunnel` entry lists.
+It does not apply to SSH.
+SSH to a host without an `ssh` entry is always refused.
+
+Credentials stay in the sidecar either way.
+The choice is about where else the agent can send data.
+
+With `tunnel`, the sidecar splices the connection to the destination without terminating TLS.
+No filter sees the traffic and no credential is attached.
+The audit log records only the host and port, with decision `tunnel`.
+Loopback, private, link-local, and CGNAT destinations are still refused unless the profile sets `allow_private: true`.
+
+With `deny`, the agent reaches only intercepted services and the hosts on the profile `tunnel` list.
+That list includes the agent `tunnel` hosts described in [Agent tunnels](#agent-tunnels).
+Everything else gets a 403 that names the profile.
+The agent network has no route out except through the sidecar.
+
+Choose `tunnel` when:
+
+- The agent needs package registries, documentation, or other hosts you cannot list in advance.
+- Nothing in the workspace would matter if it left the machine.
+- You are bringing up a new agent or project and want to learn which hosts it uses.
+
+Choose `deny` when:
+
+- The workspace holds source, data, or secrets that must not leave.
+- The work fits a known set of hosts.
+- Every new outbound host should be a reviewed decision.
+
+`deny` limits destinations, not content.
+An agent allowed to push to a GitHub repo can still put data in that repo.
+Use `rules` and filters on intercepted services to control what reaches them.
+
+To move from `tunnel` to `deny`, run with `tunnel` and collect the tunneled hosts from the sidecar audit log.
+Then put the ones you accept on the profile `tunnel` list and switch to `deny`.
+
+```bash
+docker exec agentcon-<bounded>-<slug>-bouncer cat /opt/agentcon/state/audit.jsonl \
+  | grep '"decision":"tunnel"'
+```
+
+The audit log lives in the sidecar and is removed with it, so collect it before the session ends.
+Container names are described in [Sessions](#sessions).
+
 ## Credentials
 
 Each credential is a composite of slots (`username`, `password`, `token`, `private_key`, `certificate`).
