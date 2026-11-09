@@ -13,7 +13,7 @@ import (
 )
 
 func New(loader *pkgcfg.Loader, contextName *string) *cobra.Command {
-	var agent, bouncerName, project, slug string
+	var agent, bouncerName, project, slug, pull string
 	var noBouncer bool
 	cmd := &cobra.Command{
 		Use:          "run [-- agent-args...]",
@@ -25,6 +25,7 @@ func New(loader *pkgcfg.Loader, contextName *string) *cobra.Command {
 				Agent:     agent,
 				Bouncer:   bouncerName,
 				NoBouncer: noBouncer,
+				Pull:      pull,
 			}
 			if contextName != nil {
 				flags.Context = *contextName
@@ -37,6 +38,7 @@ func New(loader *pkgcfg.Loader, contextName *string) *cobra.Command {
 	cmd.Flags().BoolVar(&noBouncer, "no-bouncer", false, "skip the bouncer sidecar")
 	cmd.Flags().StringVar(&project, "project", "", "project path relative to the context root (default: cwd)")
 	cmd.Flags().StringVar(&slug, "slug", "", "session slug (default: generated)")
+	cmd.Flags().StringVar(&pull, "pull", "", "image pull policy: missing, always, or never (default: agent pull_policy, else missing)")
 	return cmd
 }
 

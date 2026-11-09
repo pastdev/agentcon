@@ -16,6 +16,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/container"
+	"github.com/pastdev/agentcon/pkg/log"
 	"github.com/pastdev/agentcon/pkg/version"
 )
 
@@ -41,6 +42,13 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	err := checkPromptable(setup.PolicyYAML)
 	if err != nil {
 		return fmt.Errorf("bouncer policy: %w", err)
+	}
+	// Before any networks exist, so a missing image leaves nothing to clean up.
+	out := log.InfoWriter()
+	err = ensureImage(ctx, req.Runtime, sidecarImage, req.SidecarPullPolicy, out)
+	out.Flush()
+	if err != nil {
+		return fmt.Errorf("sidecar image: %w", err)
 	}
 	envVars, err := hostEnvCreds(setup.PolicyYAML, req.SidecarEnv)
 	if err != nil {

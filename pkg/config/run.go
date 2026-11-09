@@ -16,6 +16,8 @@ type RunFlags struct {
 	Agent     string
 	Bouncer   string
 	NoBouncer bool
+	// Pull overrides the agent pull_policy and applies to the sidecar image.
+	Pull string
 }
 
 func NewRunRequest(cfg *Config, flags RunFlags, cwd, home string) (run.Request, error) {
@@ -58,6 +60,11 @@ func NewRunRequest(cfg *Config, flags RunFlags, cwd, home string) (run.Request, 
 		return run.Request{}, err
 	}
 
+	agentPull, sidecarPull, err := pullPolicies(agentName, agent, flags.Pull)
+	if err != nil {
+		return run.Request{}, err
+	}
+
 	mounts, err := resolveAgentMounts(agent.Mounts, home)
 	if err != nil {
 		return run.Request{}, err
@@ -76,16 +83,36 @@ func NewRunRequest(cfg *Config, flags RunFlags, cwd, home string) (run.Request, 
 	}
 
 	return run.Request{
-		Image:   image,
-		Build:   build,
-		Mounts:  mounts,
-		Root:    root,
-		Cwd:     absCwd,
-		Home:    home,
-		Context: name,
-		Agent:   agentName,
-		Bouncer: setup,
+		Image:             image,
+		Build:             build,
+		PullPolicy:        agentPull,
+		SidecarPullPolicy: sidecarPull,
+		Mounts:            mounts,
+		Root:              root,
+		Cwd:               absCwd,
+		Home:              home,
+		Context:           name,
+		Agent:             agentName,
+		Bouncer:           setup,
 	}, nil
+}
+
+// pullPolicies resolves the agent and sidecar pull policies. The --pull
+// flag overrides the agent's pull_policy and also applies to the sidecar,
+// which otherwise pulls only when its image is missing.
+func pullPolicies(agentName string, agent AgentSpec, flag string) (run.PullPolicy, run.PullPolicy, error) {
+	agentPull, err := run.ParsePullPolicy(agent.PullPolicy)
+	if err != nil {
+		return "", "", fmt.Errorf("agent %q pull_policy: %w", agentName, err)
+	}
+	if flag == "" {
+		return agentPull, run.PullMissing, nil
+	}
+	p, err := run.ParsePullPolicy(flag)
+	if err != nil {
+		return "", "", fmt.Errorf("--pull: %w", err)
+	}
+	return p, p, nil
 }
 
 func (c Config) contextByName(name string) (ContextSpec, string, error) {
