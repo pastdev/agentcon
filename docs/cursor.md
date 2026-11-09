@@ -83,6 +83,7 @@ The list in the README getting-started `agents.yaml` is the current set:
 If `build` is set, `run` always builds and tags the image, then starts it.
 Progress is logged at info, the same shape as `docker build --progress plain`.
 Docker layer cache makes an unchanged Dockerfile cheap.
+Set `pull_policy: always` or pass `--pull=always` to also refresh the base image.
 Edit `~/.config/agentcon.d/cursor/Dockerfile` when the agent needs more tools.
 
 The [workspace contract](../README.md#workspace-contract) is what `run` always does.

@@ -53,9 +53,11 @@ Copy that tree into the config directory for a real agent.
 The [README](../README.md) getting-started path does that copy and the YAML.
 Set `build.context` with `{{relativeDir "cursor"}}` so it resolves against that file before configs merge.
 When `build` is set, `run` always builds and relies on the daemon cache.
+`pull_policy: always` or `--pull=always` also refreshes the base images.
 Build progress is logged at info.
 
 When bouncer is enabled, `run` starts the sidecar from `registry.access.redhat.com/ubi10/ubi-minimal:10.2` and replaces the entrypoint with a copied `agentcon` binary.
+`run` pulls that image when it is missing, or before every run with `--pull=always`.
 Entrypoint xtrace is off unless `AGENTCON_XTRACE=1`.
 When that is set, the Cursor example writes the trace to `/agent/cursor/entrypoint.xtrace` (host `~/.cursor/entrypoint.xtrace`).
 Override the path with `AGENTCON_XTRACE_LOG`.
