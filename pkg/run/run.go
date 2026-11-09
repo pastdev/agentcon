@@ -77,6 +77,10 @@ type Request struct {
 	Entrypoint        []string
 	ExtraHosts        []string
 	SidecarExtraHosts []string
+	// PullPolicy governs the agent image. Empty is PullMissing.
+	PullPolicy PullPolicy
+	// SidecarPullPolicy governs the bouncer sidecar image. Empty is PullMissing.
+	SidecarPullPolicy PullPolicy
 	// SidecarEnv is extra NAME=value pairs for source: env credentials.
 	// They overlay the host environment and are PUT to the sidecar after serve is up.
 	// They are not passed as container environment variables.
@@ -106,10 +110,18 @@ func Run(ctx context.Context, req Request) error {
 			Dockerfile: req.Build.Dockerfile,
 			Tags:       req.Build.Tags,
 			Output:     out,
+			PullParent: req.PullPolicy == PullAlways,
 		})
 		out.Flush()
 		if err != nil {
 			return fmt.Errorf("build image: %w", err)
+		}
+	} else {
+		out := log.InfoWriter()
+		err = ensureImage(ctx, req.Runtime, req.Image, req.PullPolicy, out)
+		out.Flush()
+		if err != nil {
+			return fmt.Errorf("agent image: %w", err)
 		}
 	}
 

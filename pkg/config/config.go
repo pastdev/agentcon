@@ -60,6 +60,8 @@ type AgentSpec struct {
 	Build  *BuildSpec  `json:"build,omitempty" yaml:"build,omitempty"`
 	Mounts []MountSpec `json:"mounts,omitempty" yaml:"mounts,omitempty"`
 	Tunnel []string    `json:"tunnel,omitempty" yaml:"tunnel,omitempty"`
+	// PullPolicy is missing (default), always, or never.
+	PullPolicy string `json:"pull_policy,omitempty" yaml:"pull_policy,omitempty"`
 }
 
 // BuildSpec is a Compose-style image build.

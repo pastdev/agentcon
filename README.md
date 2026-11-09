@@ -114,6 +114,12 @@ contexts:
 When it is set, `run` always builds and tags that image before start, then relies on the Docker layer cache.
 If `image` is omitted, the tag is `agentcon/<agent-name>`.
 
+`pull_policy` decides when `run` fetches images from a registry.
+`missing` (the default) pulls `image` only when it is not present locally.
+`always` pulls it before every start, and a `build` refreshes its base images.
+`never` never pulls `image` and fails when it is missing, though a `build` still fetches base images it does not have.
+`run` pulls without registry credentials, so run `docker pull` yourself for a private image.
+
 `run` always applies the [workspace contract](#workspace-contract).
 The Cursor binds and tunnel hosts in the YAML above are extra.
 Why they exist is in [docs/cursor.md](docs/cursor.md).
@@ -137,6 +143,7 @@ agentcon run
 Omitting it uses `default_context`.
 Cwd must be at or under that `root`.
 `--agent` and `--bouncer` override the names on the context.
+`--pull` overrides `pull_policy` for one run and also applies to the bouncer sidecar image, which otherwise uses `missing`.
 
 The first start builds the image.
 Progress is logged at info:
@@ -176,6 +183,7 @@ The image entrypoint or `CMD` is the agent.
 
 ### What `run` always does
 
+- Pulls `agents.<name>.image` first when `pull_policy` calls for it
 - Starts a Linux container from `agents.<name>.image`
 - Sets the container user to the host UID and GID
 - Adds the container to group `0` (`group-add 0`)

@@ -24,6 +24,10 @@ const (
 type captureRuntime struct {
 	spec  container.Spec
 	build container.Build
+	// missing makes every image absent locally.
+	missing   bool
+	existsErr error
+	pulled    []string
 }
 
 func (c *captureRuntime) Run(_ context.Context, spec container.Spec) error {
@@ -58,6 +62,13 @@ func (c *captureRuntime) ConnectNetwork(context.Context, string, string) error {
 	return errUnused
 }
 func (c *captureRuntime) RemoveNetwork(context.Context, string) error { return errUnused }
+func (c *captureRuntime) ImageExists(context.Context, string) (bool, error) {
+	return !c.missing, c.existsErr
+}
+func (c *captureRuntime) Pull(_ context.Context, ref string, _ io.Writer) error {
+	c.pulled = append(c.pulled, ref)
+	return nil
+}
 func (c *captureRuntime) Build(_ context.Context, spec container.Build) error {
 	c.build = spec
 	return nil
@@ -65,17 +76,18 @@ func (c *captureRuntime) Build(_ context.Context, spec container.Build) error {
 
 func TestRun(t *testing.T) {
 	type testCase struct {
-		req    Request
-		setenv map[string]string
-		setup  func(*testing.T, *Request)
-		check  func(*testing.T, *captureRuntime)
+		req     Request
+		missing bool
+		setenv  map[string]string
+		setup   func(*testing.T, *Request)
+		check   func(*testing.T, *captureRuntime)
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		for k, v := range tc.setenv {
 			t.Setenv(k, v)
 		}
-		rt := &captureRuntime{}
+		rt := &captureRuntime{missing: tc.missing}
 		tc.req.Runtime = rt
 		if tc.setup != nil {
 			tc.setup(t, &tc.req)
@@ -193,6 +205,51 @@ func TestRun(t *testing.T) {
 				}
 				if len(rt.build.Tags) != 1 || rt.build.Tags[0] != testImage {
 					t.Fatalf("tags %v", rt.build.Tags)
+				}
+				if rt.spec.Image != testImage {
+					t.Fatalf("image %q", rt.spec.Image)
+				}
+				if rt.build.PullParent || len(rt.pulled) != 0 {
+					t.Fatalf("pulled for a build: parent=%v pulled=%v", rt.build.PullParent, rt.pulled)
+				}
+			},
+		})
+	})
+	t.Run("refreshes a build's base image when pulling always", func(t *testing.T) {
+		root := t.TempDir()
+		tester(t, testCase{
+			req: Request{
+				Image:      testImage,
+				Build:      &ImageBuild{Context: root, Dockerfile: "Dockerfile", Tags: []string{testImage}},
+				PullPolicy: PullAlways,
+				Root:       root,
+				Cwd:        root,
+				Home:       t.TempDir(),
+				User:       testUser,
+			},
+			check: func(t *testing.T, rt *captureRuntime) {
+				t.Helper()
+				if !rt.build.PullParent || len(rt.pulled) != 0 {
+					t.Fatalf("parent=%v pulled=%v", rt.build.PullParent, rt.pulled)
+				}
+			},
+		})
+	})
+	t.Run("pulls a missing agent image", func(t *testing.T) {
+		root := t.TempDir()
+		tester(t, testCase{
+			req: Request{
+				Image: testImage,
+				Root:  root,
+				Cwd:   root,
+				Home:  t.TempDir(),
+				User:  testUser,
+			},
+			missing: true,
+			check: func(t *testing.T, rt *captureRuntime) {
+				t.Helper()
+				if len(rt.pulled) != 1 || rt.pulled[0] != testImage {
+					t.Fatalf("pulled %v", rt.pulled)
 				}
 				if rt.spec.Image != testImage {
 					t.Fatalf("image %q", rt.spec.Image)

@@ -441,3 +441,50 @@ func TestNewRunRequest(t *testing.T) {
 		})
 	})
 }
+
+func TestRunRequestPullPolicy(t *testing.T) {
+	type testCase struct {
+		agentPolicy string
+		flag        string
+		wantAgent   run.PullPolicy
+		wantSidecar run.PullPolicy
+		wantErr     string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		root := t.TempDir()
+		cfg := agentCfg(root)
+		agent := cfg.Agents["cursor"]
+		agent.PullPolicy = tc.agentPolicy
+		cfg.Agents["cursor"] = agent
+		req, err := NewRunRequest(&cfg, RunFlags{Pull: tc.flag}, root, t.TempDir())
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.PullPolicy != tc.wantAgent || req.SidecarPullPolicy != tc.wantSidecar {
+			t.Fatalf("agent %q sidecar %q, want %q %q", req.PullPolicy, req.SidecarPullPolicy, tc.wantAgent, tc.wantSidecar)
+		}
+	}
+
+	t.Run("defaults both to missing", func(t *testing.T) {
+		tester(t, testCase{wantAgent: run.PullMissing, wantSidecar: run.PullMissing})
+	})
+	t.Run("applies the agent pull_policy to the agent only", func(t *testing.T) {
+		tester(t, testCase{agentPolicy: "always", wantAgent: run.PullAlways, wantSidecar: run.PullMissing})
+	})
+	t.Run("overrides with the flag for both", func(t *testing.T) {
+		tester(t, testCase{agentPolicy: "always", flag: "never", wantAgent: run.PullNever, wantSidecar: run.PullNever})
+	})
+	t.Run("rejects an unknown pull_policy", func(t *testing.T) {
+		tester(t, testCase{agentPolicy: "sometimes", wantErr: `agent "cursor" pull_policy`})
+	})
+	t.Run("rejects an unknown flag value", func(t *testing.T) {
+		tester(t, testCase{flag: "sometimes", wantErr: "--pull"})
+	})
+}

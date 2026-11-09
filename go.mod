@@ -4,6 +4,7 @@ go 1.27
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
+	github.com/containerd/errdefs v1.0.0
 	github.com/dop251/goja v0.0.0-20261028213108-85be1416108e
 	github.com/evanw/esbuild v0.28.2
 	github.com/fsnotify/fsnotify v1.10.1
@@ -25,7 +26,6 @@ require (
 )
 
 require (
-	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/distribution/reference v0.6.0 // indirect

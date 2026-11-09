@@ -9,6 +9,10 @@ import (
 type Runtime interface {
 	Run(ctx context.Context, spec Spec) error
 	Build(ctx context.Context, spec Build) error
+	// ImageExists reports whether an image is present locally.
+	ImageExists(ctx context.Context, ref string) (bool, error)
+	// Pull fetches an image from its registry, writing progress to out.
+	Pull(ctx context.Context, ref string, out io.Writer) error
 	Create(ctx context.Context, spec Spec) (string, error)
 	Start(ctx context.Context, id string) error
 	AttachStartWait(ctx context.Context, id string, spec Spec) error
@@ -92,6 +96,8 @@ type Build struct {
 	Dockerfile string
 	Tags       []string
 	Output     io.Writer
+	// PullParent fetches base images even when a copy is cached.
+	PullParent bool
 }
 
 func (e *ExitError) Error() string {
