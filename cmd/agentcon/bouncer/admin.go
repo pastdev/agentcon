@@ -7,33 +7,76 @@ import (
 	"time"
 
 	"github.com/pastdev/agentcon/internal/bouncer/app"
+	"github.com/pastdev/agentcon/internal/bouncer/approval"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/spf13/cobra"
 )
 
-func approvalsCmd() *cobra.Command {
+func promptsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "approvals",
-		Short: "List pending approvals",
+		Use:   "prompts",
+		Short: "List pending prompts",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			c, err := dial()
 			if err != nil {
 				return err
 			}
-			list, err := c.Approvals()
+			list, err := c.Prompts()
 			if err != nil {
-				return fmt.Errorf("approvals: %w", err)
+				return fmt.Errorf("prompts: %w", err)
 			}
 			if len(list) == 0 {
-				fmt.Println("no pending approvals")
+				fmt.Println("no pending prompts")
 				return nil
 			}
+			d := approval.Display
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			_, _ = fmt.Fprintln(w, "ID\tSESSION\tPROMPT\tREQUEST\tEXPIRES")
+			_, _ = fmt.Fprintln(w, "ID\tKIND\tSOURCE\tSESSION\tMESSAGE\tDETAIL\tEXPIRES")
 			for _, p := range list {
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.ID, p.SessionLabel, p.Message, p.Detail, time.Until(p.Expires).Round(time.Second))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.ID, p.Kind, d(p.Source, 60), d(p.SessionLabel, 60),
+					d(p.Message, 80), d(p.Detail, 80), time.Until(p.Expires).Round(time.Second))
 			}
 			return w.Flush()
+		},
+	}
+}
+
+func answerCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "answer ID",
+		Short: "Answer a pending prompt at this terminal",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			c, err := dial()
+			if err != nil {
+				return err
+			}
+			list, err := c.Prompts()
+			if err != nil {
+				return fmt.Errorf("prompts: %w", err)
+			}
+			for _, p := range list {
+				if p.ID == args[0] {
+					return app.AnswerAtTerminal(c, os.Stdin, os.Stderr, p)
+				}
+			}
+			return fmt.Errorf("no pending prompt %s", args[0])
+		},
+	}
+}
+
+func declineCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "decline ID",
+		Short: "Refuse to answer a pending prompt",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			c, err := dial()
+			if err != nil {
+				return err
+			}
+			return c.DeclinePrompt(args[0])
 		},
 	}
 }
@@ -53,7 +96,7 @@ func approveCmd(allow bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return c.ResolveApproval(args[0], allow, session)
+			return c.AnswerPrompt(args[0], prompt.Answer{Allow: allow, Remember: session})
 		},
 	}
 	cmd.Flags().BoolVarP(&session, "session", "s", false, "apply to identical requests for the rest of the session")

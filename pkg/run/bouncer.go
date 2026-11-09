@@ -12,9 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pastdev/agentcon/internal/bouncer/approval"
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
 	"github.com/pastdev/agentcon/internal/bouncer/envexport"
 	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/container"
 	"github.com/pastdev/agentcon/pkg/version"
@@ -183,7 +185,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		_, _ = fmt.Fprintf(req.Stderr, "agentcon session %s project %s\n", req.Slug, project)
 	}
 
-	go notifyApprovals(ctx, client, req.Stderr)
+	go notifyPrompts(ctx, client, req.Stderr)
 
 	id, err := req.Runtime.Create(ctx, agentSpec)
 	if err != nil {
@@ -501,7 +503,7 @@ func readBitwardenCode(ctx context.Context, fd int, stderr io.Writer, label, met
 	return line, nil
 }
 
-func notifyApprovals(ctx context.Context, client *mgmt.Client, stderr io.Writer) {
+func notifyPrompts(ctx context.Context, client *mgmt.Client, stderr io.Writer) {
 	seen := map[string]bool{}
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -510,7 +512,7 @@ func notifyApprovals(ctx context.Context, client *mgmt.Client, stderr io.Writer)
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			list, err := client.Approvals()
+			list, err := client.Prompts()
 			if err != nil {
 				continue
 			}
@@ -519,7 +521,12 @@ func notifyApprovals(ctx context.Context, client *mgmt.Client, stderr io.Writer)
 					continue
 				}
 				seen[p.ID] = true
-				_, _ = fmt.Fprintf(stderr, "bouncer: pending approval %s: %s (agentcon bouncer approve %s)\n", p.ID, p.Message, p.ID)
+				what, command := "prompt", "answer"
+				if p.Kind == prompt.KindConfirm {
+					what, command = "approval", "approve"
+				}
+				_, _ = fmt.Fprintf(stderr, "bouncer: pending %s %s: %s (agentcon bouncer %s %s)\n",
+					what, p.ID, approval.Display(p.Message, 150), command, p.ID)
 			}
 		}
 	}

@@ -64,7 +64,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	cfg := d.Config()
 	logger.Printf("config %s", cfg.Path)
 	logger.Printf("CA certificate %s", d.CA.CertPath())
-	if cfg.Approvals.TerminalEnabled() && opts.Interactive {
+	if cfg.Prompts.TerminalEnabled() && opts.Interactive {
 		in, out := opts.Stdin, opts.Stderr
 		if in == nil {
 			in = os.Stdin
@@ -73,8 +73,8 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 			out = os.Stderr
 		}
 		go d.RunTerminalApprover(in, out)
-	} else if cfg.Approvals.CLIEnabled() {
-		logger.Printf("answer approvals with `agentcon bouncer approvals` / `agentcon bouncer approve <id>`")
+	} else if cfg.Prompts.CLIEnabled() {
+		logger.Printf("answer prompts with `agentcon bouncer prompts` / `agentcon bouncer answer <id>`")
 	}
 	if opts.Context != "" && opts.Home != "" {
 		token, err := os.ReadFile(daemon.AdminTokenPath(opts.StateDir))

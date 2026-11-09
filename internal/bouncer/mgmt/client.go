@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,7 +125,7 @@ type Status struct {
 	Profiles         []string `json:"profiles"`
 	DefaultProfile   string   `json:"default_profile"`
 	Sessions         int      `json:"sessions"`
-	PendingApprovals int      `json:"pending_approvals"`
+	PendingPrompts   int      `json:"pending_prompts"`
 	CA               string   `json:"ca"`
 	CABundle         string   `json:"ca_bundle"`
 	Ready            bool     `json:"ready"`
@@ -137,17 +138,25 @@ func (c *Client) Status() (Status, error) {
 	return st, err
 }
 
-func (c *Client) Approvals() ([]prompt.Pending, error) {
+// Prompts lists the questions waiting on a human answer.
+func (c *Client) Prompts() ([]prompt.Pending, error) {
 	var list []prompt.Pending
-	err := c.do(http.MethodGet, "/_bouncer/approvals", nil, &list)
+	err := c.do(http.MethodGet, "/_bouncer/prompts", nil, &list)
 	return list, err
 }
 
-func (c *Client) ResolveApproval(id string, allow, remember bool) error {
-	return c.do(http.MethodPost, "/_bouncer/approvals/"+id, map[string]bool{
-		"allow":    allow,
-		"remember": remember,
-	}, nil)
+// AnswerPrompt settles a pending prompt.
+func (c *Client) AnswerPrompt(id string, a prompt.Answer) error {
+	return c.do(http.MethodPost, "/_bouncer/prompts/"+url.PathEscape(id), struct {
+		Allow    bool   `json:"allow"`
+		Remember bool   `json:"remember"`
+		Value    string `json:"value,omitempty"`
+	}{a.Allow, a.Remember, a.Value}, nil)
+}
+
+// DeclinePrompt settles a pending prompt without an answer.
+func (c *Client) DeclinePrompt(id string) error {
+	return c.do(http.MethodDelete, "/_bouncer/prompts/"+url.PathEscape(id), nil, nil)
 }
 
 func (c *Client) Sessions() ([]daemon.SessionRecord, error) {

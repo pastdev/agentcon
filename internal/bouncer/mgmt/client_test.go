@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 )
 
@@ -29,7 +30,7 @@ func TestClient(t *testing.T) {
 		tc.check(t, c)
 	}
 
-	t.Run("returns status and resolves an approval", func(t *testing.T) {
+	t.Run("returns status and settles prompts", func(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /_bouncer/status", func(w http.ResponseWriter, r *http.Request) {
 			if got := r.Header.Get("Authorization"); got != "Bearer secret" {
@@ -37,11 +38,21 @@ func TestClient(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(Status{Ready: true, Config: "/tmp/c.yaml"})
 		})
-		mux.HandleFunc("POST /_bouncer/approvals/abc", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("POST /_bouncer/prompts/abc", func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
-			if !strings.Contains(string(body), `"allow":true`) {
+			if string(body) != `{"allow":true,"remember":false}` {
 				t.Errorf("body %s", body)
 			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		mux.HandleFunc("POST /_bouncer/prompts/def", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if string(body) != `{"allow":false,"remember":false,"value":"123456"}` {
+				t.Errorf("body %s", body)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		mux.HandleFunc("DELETE /_bouncer/prompts/ghi", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		})
 		tester(t, testCase{
@@ -56,7 +67,15 @@ func TestClient(t *testing.T) {
 				if !st.Ready || st.Config != "/tmp/c.yaml" {
 					t.Fatalf("%+v", st)
 				}
-				err = c.ResolveApproval("abc", true, false)
+				err = c.AnswerPrompt("abc", prompt.Answer{Allow: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = c.AnswerPrompt("def", prompt.Answer{Value: "123456"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = c.DeclinePrompt("ghi")
 				if err != nil {
 					t.Fatal(err)
 				}

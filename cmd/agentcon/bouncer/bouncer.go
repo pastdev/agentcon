@@ -37,8 +37,10 @@ agentcon run starts the sidecar next to the agent. Use these commands from the
 host to lint policy and talk to a running sidecar.
 
   agentcon bouncer check                validate policy and compile filters
-  agentcon bouncer approvals            list pending asks
+  agentcon bouncer prompts              list pending prompts
+  agentcon bouncer answer ID            answer a pending prompt
   agentcon bouncer approve ID           allow a pending request
+  agentcon bouncer decline ID           refuse to answer a pending prompt
 
 Host commands pick a live session by --slug, then --project, then cwd.`,
 		SilenceUsage: true,
@@ -59,9 +61,11 @@ Host commands pick a live session by --slug, then --project, then cwd.`,
 	cmd.AddCommand(
 		serveCmd(),
 		sshConnectCmd(),
-		approvalsCmd(),
+		promptsCmd(),
+		answerCmd(),
 		approveCmd(true),
 		approveCmd(false),
+		declineCmd(),
 		sessionsCmd(),
 		checkCmd(),
 	)

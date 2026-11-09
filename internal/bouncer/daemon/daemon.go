@@ -160,7 +160,7 @@ func New(opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	d.Prompts = prompt.NewBroker(cfg.Approvals.TimeoutOrDefault())
+	d.Prompts = prompt.NewBroker(cfg.Prompts.TimeoutOrDefault())
 	d.Approvals = approval.NewManager(d.Prompts)
 	d.env = &chain.Env{
 		Approver: d.Approvals,
@@ -277,10 +277,14 @@ func (d *Daemon) apply(cfg *config.Config) error {
 		d.bitwardenMu.Unlock()
 	}
 	d.creds.Update(cfg.Credentials)
-	d.Prompts.SetTimeout(cfg.Approvals.TimeoutOrDefault())
-	if cfg.Approvals.NotifyEnabled() {
+	d.Prompts.SetTimeout(cfg.Prompts.TimeoutOrDefault())
+	if cfg.Prompts.NotifyEnabled() {
 		d.Prompts.SetNotify(func(p prompt.Pending) {
-			notify.Send("agent-bouncer: approval needed", approval.Display(p.Message, 150)+"\n"+approval.Display(p.Detail, 150))
+			title := "agent-bouncer: input needed"
+			if p.Kind == prompt.KindConfirm {
+				title = "agent-bouncer: approval needed"
+			}
+			notify.Send(title, approval.Display(p.Message, 150)+"\n"+approval.Display(p.Detail, 150))
 		})
 	} else {
 		d.Prompts.SetNotify(nil)
