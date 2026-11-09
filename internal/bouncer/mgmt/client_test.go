@@ -2,7 +2,6 @@ package mgmt
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -93,35 +92,6 @@ func TestClient(t *testing.T) {
 				err := c.EndSession("missing")
 				if err == nil || !strings.Contains(err.Error(), "no such session") {
 					t.Fatalf("got %v", err)
-				}
-			},
-		})
-	})
-	t.Run("unlocks bitwarden after a need-code challenge", func(t *testing.T) {
-		mux := http.NewServeMux()
-		mux.HandleFunc("POST /_bouncer/credentials/sources/bitwarden/unlock", func(w http.ResponseWriter, r *http.Request) {
-			body, _ := io.ReadAll(r.Body)
-			w.Header().Set("Content-Type", "application/json")
-			if strings.Contains(string(body), `"code":"123456"`) {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "need_code", "method": "authenticator app"})
-		})
-		tester(t, testCase{
-			handler: mux,
-			token:   "secret",
-			check: func(t *testing.T, c *Client) {
-				t.Helper()
-				err := c.UnlockBitwarden("pw", "")
-				var need *NeedCodeError
-				if !errors.As(err, &need) || need.Method != "authenticator app" {
-					t.Fatalf("got %v", err)
-				}
-				err = c.UnlockBitwarden("pw", "123456")
-				if err != nil {
-					t.Fatal(err)
 				}
 			},
 		})

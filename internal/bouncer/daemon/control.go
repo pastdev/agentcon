@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -9,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pastdev/agentcon/internal/bouncer/creds/bitwarden"
 	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 )
 
@@ -23,44 +21,17 @@ func (d *Daemon) Control() http.Handler {
 		for name := range cfg.Profiles {
 			profiles = append(profiles, name)
 		}
-		d.bitwardenMu.Lock()
-		pending := append([]string{}, d.bitwardenPending...)
-		d.bitwardenMu.Unlock()
+		done, startupErr := d.Startup()
+		errText := ""
+		if startupErr != nil {
+			errText = startupErr.Error()
+		}
 		writeJSON(w, map[string]any{
 			"config": cfg.Path, "profiles": profiles, "default_profile": cfg.DefaultProfile,
 			"sessions": len(d.listSessions()), "pending_prompts": len(d.Prompts.List()),
 			"ca": d.CA.CertPath(), "ca_bundle": d.CA.BundlePath(),
-			"ready": len(pending) == 0, "bitwarden_pending": pending,
+			"ready": done && startupErr == nil, "error": errText,
 		})
-	})
-	mux.HandleFunc("POST /_bouncer/credentials/sources/bitwarden/unlock", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Password string `json:"password"`
-			Code     string `json:"code"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		bitwarden.SetPrompt(&bitwarden.StaticPrompter{Password: body.Password, Code: body.Code})
-		if err := d.creds.Prepare(context.Background(), d.Config().Credentials); err != nil {
-			var need *bitwarden.NeedCodeError
-			if errors.As(err, &need) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusConflict)
-				_ = json.NewEncoder(w).Encode(map[string]string{
-					"error":  "need_code",
-					"method": need.Method,
-				})
-				return
-			}
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		d.bitwardenMu.Lock()
-		d.bitwardenPending = nil
-		d.bitwardenMu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /_bouncer/sessions", func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ ID, Profile, Label, TTL string }

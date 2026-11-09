@@ -8,7 +8,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
@@ -117,7 +119,7 @@ func TestGet(t *testing.T) {
 			http.Error(w, "nope", http.StatusInternalServerError)
 		}))
 		t.Cleanup(srv.Close)
-		ConfigureBitwarden(t.TempDir(), nil)
+		ConfigureBitwarden(t.TempDir(), nil, prompt.NewBroker(time.Minute))
 		s := NewStore(map[string]*config.Credential{"bw": tokenCred("bw", config.ValueSource{
 			Source: "bitwarden", Email: "user@example.com", Server: srv.URL, Item: "GitLab", Path: "$.login.password",
 		})})

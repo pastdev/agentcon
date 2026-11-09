@@ -177,7 +177,7 @@ func showPrompt(out io.Writer, p prompt.Pending) {
 			p.ID, d(session, 60), d(p.Profile, 60), d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), prompt.ConfirmChoices)
 		return
 	}
-	_, _ = fmt.Fprintf(out, "\n=== input needed [%s] source=%s\n  %s (empty or Ctrl-C to decline) > ",
+	_, _ = fmt.Fprintf(out, "\n=== input needed [%s] source=%s\n  %s\n  empty or Ctrl-C declines > ",
 		p.ID, d(p.Source, 60), d(p.Message, 300))
 }
 

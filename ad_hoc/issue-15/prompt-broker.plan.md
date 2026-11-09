@@ -58,14 +58,15 @@ Do not unify bouncer logging (issue 13).
 
 ### Bitwarden
 
-- `Prompter` methods take a context: `MasterPassword(ctx, label)` and `TwoFactorCode(ctx, label, method)`.
+- `Prompter` methods take a context and the attempt: `MasterPassword(ctx, label, attempt, attempts)` and `TwoFactorCode(ctx, label, method, attempt, attempts)`.
 - `bitwarden.Configure` receives the prompter once and it never changes for the life of the process.
+- `bitwarden.BrokerPrompter` is the broker-backed prompter, so it can be tested against the fake vault server.
 - The daemon supplies a prompter that raises `secret` questions for the master password and `text` questions for a verification code.
 - Prompt messages are fixed strings built in Go from the account label and two-factor method.
 - The existing attempt loops (3 passwords, 5 codes) stay, and each attempt raises a new question.
-  A retry message names the attempt, for example `Master password (incorrect, attempt 2 of 3)`.
+  A retry message names the attempt, for example `Bitwarden master password (incorrect, attempt 2 of 3)`.
 - Declining or a timeout ends the unlock with an error.
-- Removed: `SetPrompt`, `StaticPrompter`, `NeedCodeError`, `stdPrompter`, `ErrNeedTerminal`, and `creds.NeedPasswordError`.
+- Removed: `SetPrompt`, `StaticPrompter`, `NeedCodeError`, `stdPrompter`, `ErrNeedTerminal`, `creds.NeedPasswordError`, `mgmt.NeedCodeError`, and `mgmt.Client.UnlockBitwarden`.
 
 ### Startup and reload
 
@@ -136,7 +137,9 @@ Each step builds, passes `go test -race ./...`, and passes lint.
 5. Give the Bitwarden prompter a context and a broker-backed implementation.
    Run startup and reload preparation in the background and report `ready` and `error` on status.
    Remove the unlock endpoint, `SetPrompt`, and the other Bitwarden-specific types listed above.
-6. Make `agentcon run` answer prompts generically in `waitReady` and remove `unlockBitwarden` and `completeBitwardenUnlock`.
+   Remove `unlockBitwarden` and `completeBitwardenUnlock` from `pkg/run`, since they call the removed endpoint.
+   Until step 6, `agentcon run` waits for `ready` and its prompts are answered with `agentcon bouncer answer`.
+6. Make `agentcon run` answer prompts generically in `waitReady`.
 7. Update `README.md`, `docs/bouncer.md`, and `docs/bouncer-filters.md` for the new API, CLI, and config key.
 
 ## Tests

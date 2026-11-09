@@ -2,7 +2,6 @@ package run
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,7 +18,6 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/container"
-	"github.com/pastdev/agentcon/pkg/term"
 	"github.com/pastdev/agentcon/pkg/version"
 )
 
@@ -137,7 +135,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("put host credentials: %w", err)
 	}
-	err = waitReady(ctx, client, req)
+	err = waitReady(ctx, client)
 	if err != nil {
 		return fmt.Errorf("wait for bouncer: %w", err)
 	}
@@ -396,7 +394,9 @@ func waitUntilServing(ctx context.Context, client *mgmt.Client) error {
 	return fmt.Errorf("timed out waiting for bouncer management API")
 }
 
-func waitReady(ctx context.Context, client *mgmt.Client, req Request) error {
+// waitReady waits for the sidecar to finish preparing credentials. Any
+// prompts it raises meanwhile can be answered with `agentcon bouncer answer`.
+func waitReady(ctx context.Context, client *mgmt.Client) error {
 	deadline := time.Now().Add(2 * time.Minute)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
@@ -410,97 +410,12 @@ func waitReady(ctx context.Context, client *mgmt.Client, req Request) error {
 		if status.Ready {
 			return nil
 		}
-		if len(status.BitwardenPending) > 0 {
-			err = unlockBitwarden(ctx, client, req, status.BitwardenPending[0])
-			if err != nil {
-				return fmt.Errorf("bitwarden unlock: %w", err)
-			}
-			continue
+		if status.Error != "" {
+			return fmt.Errorf("bouncer startup: %s", status.Error)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	return fmt.Errorf("timed out waiting for bouncer management API")
-}
-
-func unlockBitwarden(ctx context.Context, client *mgmt.Client, req Request, label string) error {
-	fd := -1
-	if f, ok := req.Stdin.(*os.File); ok {
-		fd = int(f.Fd())
-	}
-	if fd < 0 || !term.IsTerminal(fd) {
-		return fmt.Errorf("bitwarden vault %s needs a master password (run from a terminal)", label)
-	}
-	_, _ = fmt.Fprintf(req.Stderr, "Bitwarden master password for %s: ", label)
-	pw, err := term.New(fd).ReadLine(ctx, nil)
-	_, _ = fmt.Fprintln(req.Stderr)
-	if err != nil {
-		return fmt.Errorf("read bitwarden password: %w", err)
-	}
-	err = completeBitwardenUnlock(client.UnlockBitwarden, string(pw), func(method string) (string, error) {
-		return readBitwardenCode(ctx, fd, req.Stderr, label, method)
-	})
-	if err != nil {
-		return fmt.Errorf("unlock bitwarden: %w", err)
-	}
-	return nil
-}
-
-const bitwardenCodeAttempts = 3
-
-func completeBitwardenUnlock(unlock func(password, code string) error, password string, promptCode func(method string) (string, error)) error {
-	code := ""
-	for attempt := 0; attempt < bitwardenCodeAttempts; attempt++ {
-		err := unlock(password, code)
-		if err == nil {
-			return nil
-		}
-		var need *mgmt.NeedCodeError
-		if errors.As(err, &need) {
-			code, err = promptCode(need.Method)
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		if code != "" && bitwardenInvalidCode(err) {
-			code, err = promptCode("")
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		return err
-	}
-	return fmt.Errorf("bitwarden verification code rejected")
-}
-
-func bitwardenInvalidCode(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "Invalid TOTP") || strings.Contains(msg, "invalid verification code")
-}
-
-func readBitwardenCode(ctx context.Context, fd int, stderr io.Writer, label, method string) (string, error) {
-	if fd < 0 || !term.IsTerminal(fd) {
-		return "", fmt.Errorf("bitwarden vault %s needs a verification code (run from a terminal)", label)
-	}
-	if method != "" {
-		_, _ = fmt.Fprintf(stderr, "Bitwarden verification code (%s) for %s: ", method, label)
-	} else {
-		_, _ = fmt.Fprintf(stderr, "Bitwarden verification code for %s: ", label)
-	}
-	b, err := term.New(fd).ReadLine(ctx, stderr)
-	_, _ = fmt.Fprintln(stderr)
-	if err != nil {
-		return "", fmt.Errorf("read bitwarden verification code: %w", err)
-	}
-	line := strings.TrimSpace(string(b))
-	if line == "" {
-		return "", fmt.Errorf("empty verification code")
-	}
-	return line, nil
+	return fmt.Errorf("timed out waiting for the bouncer to be ready")
 }
 
 func notifyPrompts(ctx context.Context, client *mgmt.Client, stderr io.Writer) {
