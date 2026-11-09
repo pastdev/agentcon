@@ -29,7 +29,13 @@ Do not unify bouncer logging (issue 13).
 
 - New package `internal/bouncer/prompt` holds the generic broker.
 - A question has a kind: `confirm`, `text`, or `secret`.
-- `Ask(ctx, Question, timeout)` blocks until the question is answered, declined, timed out, or ctx ends.
+- `Raise(Question)` records a question and returns a ticket with its id without waiting.
+  `Ticket.Wait(ctx)` blocks until the question is answered, declined, timed out, or ctx ends.
+  `Ask(ctx, Question)` does both.
+  Approvals need the id before blocking so a remembered answer can settle other pending asks.
+- The broker has one timeout, set from config with `SetTimeout`.
+  A per-call limit, such as the filter `ask()` option, is a ctx deadline.
+- When ctx ends first, the question is withdrawn.
 - `Answer(id, Answer)` and `Decline(id)` settle a pending question.
 - `List()` returns pending questions oldest first.
 - `Subscribe()` returns events for new and settled questions.
@@ -40,7 +46,7 @@ Do not unify bouncer logging (issue 13).
 - `Answer` checks that the answer fits the kind.
   A confirm takes `allow` and `remember`.
   A text or secret takes a non-empty `value`.
-- `Notify` is called for each new question with its source and message only.
+- `SetNotify` sets a function called for each new question with the question only.
 
 ### Approvals
 
