@@ -77,7 +77,7 @@ func DialContext(home string, q running.Query, stateDir, configPath string) (*Cl
 		}
 		var amb *running.AmbiguousError
 		if errors.As(err, &amb) || (stateDir == "" && configPath == "") {
-			return nil, err
+			return nil, fmt.Errorf("find session: %w", err)
 		}
 	}
 	return Dial(stateDir, configPath)

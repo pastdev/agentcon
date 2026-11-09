@@ -140,7 +140,7 @@ func cleanRepo(p string) string {
 func ReadPkt(r io.Reader) (payload []byte, special string, err error) {
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("pkt-line header: %w", err)
 	}
 	n, err := strconv.ParseUint(string(hdr[:]), 16, 16)
 	if err != nil {
@@ -158,7 +158,7 @@ func ReadPkt(r io.Reader) (payload []byte, special string, err error) {
 	}
 	buf := make([]byte, n-4)
 	if _, err := io.ReadFull(r, buf); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("pkt-line payload: %w", err)
 	}
 	return buf, "", nil
 }
@@ -181,7 +181,7 @@ func ParsePush(r io.Reader) (*Push, error) {
 			if lr.N <= 0 {
 				return nil, errors.New("push command list exceeds size limit")
 			}
-			if err == io.EOF && empty {
+			if errors.Is(err, io.EOF) && empty {
 				// Empty body (e.g. a ref advertisement probe).
 				return p, nil
 			}

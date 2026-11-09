@@ -44,7 +44,7 @@ func readLine(br *bufio.Reader, max int) (string, error) {
 	for b.Len() < max {
 		c, err := br.ReadByte()
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("read preamble: %w", err)
 		}
 		b.WriteByte(c)
 		if c == '\n' {
@@ -90,7 +90,7 @@ func (s *Server) Serve(l net.Listener) error {
 	for {
 		c, err := l.Accept()
 		if err != nil {
-			return err
+			return fmt.Errorf("accept: %w", err)
 		}
 		go s.handle(c)
 	}
@@ -216,7 +216,7 @@ func (s *Server) prepare(ctx context.Context, p *Preamble) (*conn, error) {
 
 	signers, err := s.Creds.SSHSigners(ctx, svc.Config.Credential)
 	if err != nil {
-		return cn, err
+		return cn, fmt.Errorf("ssh signers: %w", err)
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	hkcb, algos, err := hostKeyCallback(svc.Config, addr)
@@ -261,7 +261,7 @@ func hostKeyCallback(svc *config.SSHService, addr string) (ssh.HostKeyCallback, 
 	if len(files) == 0 {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("home dir: %w", err)
 		}
 		files = []string{filepath.Join(home, ".ssh", "known_hosts")}
 	}
@@ -276,7 +276,7 @@ func hostKeyCallback(svc *config.SSHService, addr string) (ssh.HostKeyCallback, 
 	}
 	cb, err := knownhosts.New(existing...)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("known_hosts: %w", err)
 	}
 	// Probe with a throwaway key to learn which key types are on file.
 	var algos []string
@@ -583,4 +583,4 @@ type bufConn struct {
 	r *bufio.Reader
 }
 
-func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) } //nolint:wrapcheck // io.Reader contract: io.EOF must be returned unwrapped

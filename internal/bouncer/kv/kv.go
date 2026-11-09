@@ -5,6 +5,7 @@ package kv
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,10 +38,10 @@ func Open(path string) (*Store, error) {
 		switch {
 		case err == nil:
 			if err := json.Unmarshal(b, &s.data); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("parse kv store: %w", err)
 			}
 		case !errors.Is(err, os.ErrNotExist):
-			return nil, err
+			return nil, fmt.Errorf("read kv store: %w", err)
 		}
 	}
 	go s.loop()
@@ -160,12 +161,16 @@ func (s *Store) Flush() error {
 func (s *Store) write(b []byte) error {
 	tmp := s.path + ".tmp"
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return err
+		return fmt.Errorf("kv dir: %w", err)
 	}
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
+		return fmt.Errorf("write kv store: %w", err)
 	}
-	return os.Rename(tmp, s.path)
+	err := os.Rename(tmp, s.path)
+	if err != nil {
+		return fmt.Errorf("replace kv store: %w", err)
+	}
+	return nil
 }
 
 // Close stops the background writer and flushes.

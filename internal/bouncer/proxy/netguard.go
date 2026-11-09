@@ -29,7 +29,7 @@ func publicDialer() *net.Dialer {
 		Control: func(_, address string, _ syscall.RawConn) error {
 			host, _, err := net.SplitHostPort(address)
 			if err != nil {
-				return err
+				return fmt.Errorf("dial address: %w", err)
 			}
 			if ip := net.ParseIP(host); ip == nil || nonPublic(ip) {
 				return fmt.Errorf("%w: %s", errNonPublic, host)
@@ -49,10 +49,15 @@ var errNonPublic error = nonPublicError{}
 
 // tunnelDial dials an unmatched host for a profile.
 func (s *Server) tunnelDial(ctx context.Context, allowPrivate bool, addr string) (net.Conn, error) {
-	if allowPrivate {
-		return s.Dialer.DialContext(ctx, "tcp", addr)
+	d := s.Dialer
+	if !allowPrivate {
+		d = publicDialer()
 	}
-	return publicDialer().DialContext(ctx, "tcp", addr)
+	c, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("tunnel: %w", err)
+	}
+	return c, nil
 }
 
 // tunnelTransport forwards plain-HTTP requests to unmatched hosts.

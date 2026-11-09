@@ -58,7 +58,7 @@ type leaf struct {
 // LoadOrCreate loads the CAs from dir, generating them on first use.
 func LoadOrCreate(dir string) (*Authority, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ca dir: %w", err)
 	}
 	a := &Authority{dir: dir, leaves: map[string]*leaf{}}
 	if err := a.loadTLS(); err != nil {
@@ -91,10 +91,10 @@ func (a *Authority) loadTLS() error {
 		return a.createTLS(cp, kp)
 	}
 	if cerr != nil {
-		return cerr
+		return fmt.Errorf("read ca cert: %w", cerr)
 	}
 	if kerr != nil {
-		return kerr
+		return fmt.Errorf("read ca key: %w", kerr)
 	}
 	pair, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
@@ -102,7 +102,7 @@ func (a *Authority) loadTLS() error {
 	}
 	a.cert, err = x509.ParseCertificate(pair.Certificate[0])
 	if err != nil {
-		return err
+		return fmt.Errorf("parse ca cert: %w", err)
 	}
 	a.key = pair.PrivateKey.(crypto.Signer)
 	a.certPEM = certPEM
@@ -112,7 +112,7 @@ func (a *Authority) loadTLS() error {
 func (a *Authority) createTLS(cp, kp string) error {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return err
+		return fmt.Errorf("generate ca key: %w", err)
 	}
 	host, _ := os.Hostname()
 	tmpl := &x509.Certificate{
@@ -127,18 +127,18 @@ func (a *Authority) createTLS(cp, kp string) error {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
 	if err != nil {
-		return err
+		return fmt.Errorf("create ca cert: %w", err)
 	}
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal ca key: %w", err)
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	if err := os.WriteFile(kp, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
-		return err
+		return fmt.Errorf("write ca key: %w", err)
 	}
 	if err := os.WriteFile(cp, certPEM, 0o644); err != nil {
-		return err
+		return fmt.Errorf("write ca cert: %w", err)
 	}
 	a.cert, _ = x509.ParseCertificate(der)
 	a.key = key
@@ -156,7 +156,7 @@ func (a *Authority) Leaf(host string) (*tls.Certificate, error) {
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("generate leaf key: %w", err)
 	}
 	now := time.Now()
 	tmpl := &x509.Certificate{
@@ -174,7 +174,7 @@ func (a *Authority) Leaf(host string) (*tls.Certificate, error) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, a.cert, key.Public(), a.key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create leaf cert: %w", err)
 	}
 	cert := &tls.Certificate{Certificate: [][]byte{der, a.cert.Raw}, PrivateKey: key}
 	a.leafMu.Lock()
@@ -199,23 +199,31 @@ func randSerial() *big.Int {
 func loadOrCreateSSHKey(path string) (ssh.Signer, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
-		return ssh.ParsePrivateKey(data)
+		s, perr := ssh.ParsePrivateKey(data)
+		if perr != nil {
+			return nil, fmt.Errorf("parse ssh key: %w", perr)
+		}
+		return s, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+		return nil, fmt.Errorf("read ssh key: %w", err)
 	}
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("generate ssh key: %w", err)
 	}
 	block, err := ssh.MarshalPrivateKey(priv, "agent-bouncer")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("marshal ssh key: %w", err)
 	}
 	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("write ssh key: %w", err)
 	}
-	return ssh.NewSignerFromKey(priv)
+	s, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		return nil, fmt.Errorf("ssh signer: %w", err)
+	}
+	return s, nil
 }
 
 // SSHKnownHostsLine is a known_hosts entry trusting the bouncer SSH CA for
@@ -247,11 +255,11 @@ func (a *Authority) SSHHostSigner(host string) (ssh.Signer, error) {
 		ValidBefore:     uint64(now.AddDate(1, 0, 0).Unix()),
 	}
 	if err := cert.SignCert(rand.Reader, a.sshCA); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sign host cert: %w", err)
 	}
 	s, err := ssh.NewCertSigner(cert, a.sshHostKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("host cert signer: %w", err)
 	}
 	a.sshCerts.Store(host, s)
 	return s, nil

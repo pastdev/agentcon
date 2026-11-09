@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -118,7 +119,7 @@ func (m *Manager) Ask(ctx context.Context, a chain.AskRequest) (bool, error) {
 		if !existing {
 			m.resolve(p, false, false)
 		}
-		return false, ctx.Err()
+		return false, fmt.Errorf("approval %s: %w", p.ID, ctx.Err())
 	}
 }
 

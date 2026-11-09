@@ -78,17 +78,17 @@ func newAPI(c *http.Client) *api {
 }
 
 type preloginResponse struct {
-	KDF           flexUint `json:"kdf"`
-	KDFIterations flexUint `json:"kdfIterations"`
-	KDFMemory     flexUint `json:"kdfMemory"`
-	KDFParallel   flexUint `json:"kdfParallelism"`
+	KDF           kdfParam `json:"kdf"`
+	KDFIterations kdfParam `json:"kdfIterations"`
+	KDFMemory     kdfParam `json:"kdfMemory"`
+	KDFParallel   kdfParam `json:"kdfParallelism"`
 }
 
-// flexUint accepts a JSON number, a numeric string, or null. Prelogin
-// responses use all three, depending on the server.
-type flexUint uint32
+// kdfParam is a prelogin KDF setting. It accepts a JSON number, a numeric
+// string, or null, since servers send all three.
+type kdfParam uint32
 
-func (n *flexUint) UnmarshalJSON(b []byte) error {
+func (n *kdfParam) UnmarshalJSON(b []byte) error {
 	b = bytes.TrimSpace(b)
 	if len(b) == 0 || string(b) == "null" {
 		return nil
@@ -96,20 +96,20 @@ func (n *flexUint) UnmarshalJSON(b []byte) error {
 	if b[0] == '"' {
 		var s string
 		if err := json.Unmarshal(b, &s); err != nil {
-			return err
+			return fmt.Errorf("kdf parameter: %w", err)
 		}
 		u, err := strconv.ParseUint(s, 10, 32)
 		if err != nil {
-			return err
+			return fmt.Errorf("kdf parameter: %w", err)
 		}
-		*n = flexUint(u)
+		*n = kdfParam(u)
 		return nil
 	}
 	var u uint32
 	if err := json.Unmarshal(b, &u); err != nil {
-		return err
+		return fmt.Errorf("kdf parameter: %w", err)
 	}
-	*n = flexUint(u)
+	*n = kdfParam(u)
 	return nil
 }
 
@@ -408,7 +408,7 @@ func (a *api) sync(ctx context.Context, apiBase, accessToken string) (*syncResul
 func (a *api) do(ctx context.Context, method, rawURL string, body io.Reader, hdr http.Header, limit int64) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("bitwarden request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Bitwarden-Client-Name", clientID)
@@ -422,12 +422,12 @@ func (a *api) do(ctx context.Context, method, rawURL string, body io.Reader, hdr
 	}
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("bitwarden %s: %w", req.URL.Path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return nil, resp.StatusCode, err
+		return nil, resp.StatusCode, fmt.Errorf("bitwarden %s body: %w", req.URL.Path, err)
 	}
 	if int64(len(b)) > limit {
 		return nil, resp.StatusCode, errors.New("response is too large")
@@ -457,7 +457,11 @@ func decodeBW(body []byte, dest any) error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(norm, dest)
+	err = json.Unmarshal(norm, dest)
+	if err != nil {
+		return fmt.Errorf("decode bitwarden json: %w", err)
+	}
+	return nil
 }
 
 func canonicalize(body []byte) ([]byte, error) {
@@ -465,9 +469,13 @@ func canonicalize(body []byte) ([]byte, error) {
 	dec.UseNumber()
 	var v any
 	if err := dec.Decode(&v); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse json: %w", err)
 	}
-	return json.Marshal(rewriteKeys(v))
+	out, err := json.Marshal(rewriteKeys(v))
+	if err != nil {
+		return nil, fmt.Errorf("marshal json: %w", err)
+	}
+	return out, nil
 }
 
 func rewriteKeys(v any) any {

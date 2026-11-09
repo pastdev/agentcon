@@ -96,7 +96,7 @@ func Find(paths []string) ([]string, error) {
 	for _, p := range paths {
 		st, err := os.Stat(p)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("test path: %w", err)
 		}
 		if !st.IsDir() {
 			out = append(out, p)
@@ -115,7 +115,7 @@ func Find(paths []string) ([]string, error) {
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("walk %s: %w", p, err)
 		}
 	}
 	sort.Strings(out)
@@ -127,7 +127,7 @@ func Find(paths []string) ([]string, error) {
 func RunFile(path string) ([]Result, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read test file: %w", err)
 	}
 	var spec Spec
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -156,18 +156,18 @@ func RunFile(path string) ([]Result, error) {
 	case spec.Filter != "":
 		f, err := jsfilter.Load(jsfilter.Options{Path: filepath.Join(dir, spec.Filter), Config: spec.FilterConfig, Env: env, KV: store})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("load filter: %w", err)
 		}
 		one := func(string) ([]chain.Filter, string, error) { return []chain.Filter{f}, "test", nil }
 		httpChain, sshChain = one, one
 	case spec.Config != "":
 		cfg, err := config.Load(filepath.Join(dir, spec.Config))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("load config: %w", err)
 		}
 		set, err := policy.Compile(cfg, env, store)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("compile policy: %w", err)
 		}
 		prof, ok := set.Profiles[spec.Profile]
 		if !ok {

@@ -47,7 +47,11 @@ func (a *Authority) WriteBundle() error {
 	buf.Write(a.certPEM)
 	buf.WriteByte('\n')
 	buf.Write(roots)
-	return os.WriteFile(a.BundlePath(), buf.Bytes(), 0o644)
+	err := os.WriteFile(a.BundlePath(), buf.Bytes(), 0o644)
+	if err != nil {
+		return fmt.Errorf("write ca bundle: %w", err)
+	}
+	return nil
 }
 
 var linuxBundles = []string{

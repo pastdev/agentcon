@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"path/filepath"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 func (d *Daemon) watch() (func(), error) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("config watcher: %w", err)
 	}
 	dirs := map[string]bool{}
 	refresh := func() {

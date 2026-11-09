@@ -200,7 +200,10 @@ func checkKeys(body []byte) error {
 			}
 		}
 		_, err := dec.Token() // closing brace
-		return err
+		if err != nil {
+			return fmt.Errorf("graphql: body: %w", err)
+		}
+		return nil
 	}
 	switch tok {
 	case json.Delim('{'):

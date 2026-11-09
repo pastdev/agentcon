@@ -101,7 +101,7 @@ func resolve() error {
 			dir := pkgcfg.BouncerLayoutDir(home, name)
 			path, err := cfg.WriteBouncer(name, dir)
 			if err != nil {
-				return err
+				return fmt.Errorf("write bouncer %s: %w", name, err)
 			}
 			if path != "" {
 				configPath = path
@@ -133,7 +133,11 @@ func flagContext() string {
 }
 
 func loadBouncerService() (*bouncercfg.Config, error) {
-	return pkgcfg.LoadBouncerService(configPath)
+	cfg, err := pkgcfg.LoadBouncerService(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("bouncer config: %w", err)
+	}
+	return cfg, nil
 }
 
 func bouncerLoader() func() (*bouncercfg.Config, error) {
@@ -142,16 +146,24 @@ func bouncerLoader() func() (*bouncercfg.Config, error) {
 
 func dial() (*mgmt.Client, error) {
 	if fileFlag != "" || stateFlag != "" {
-		return mgmt.Dial(stateDir, configPath)
+		c, err := mgmt.Dial(stateDir, configPath)
+		if err != nil {
+			return nil, fmt.Errorf("dial bouncer: %w", err)
+		}
+		return c, nil
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("working directory: %w", err)
 	}
-	return mgmt.DialContext(homeDir, running.Query{
+	c, err := mgmt.DialContext(homeDir, running.Query{
 		Context: contextName,
 		Project: projectFlag,
 		Slug:    slugFlag,
 		Cwd:     cwd,
 	}, "", "")
+	if err != nil {
+		return nil, fmt.Errorf("dial bouncer: %w", err)
+	}
+	return c, nil
 }

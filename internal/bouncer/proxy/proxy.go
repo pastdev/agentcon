@@ -540,13 +540,13 @@ type bufferedConn struct {
 	r *bufio.Reader
 }
 
-func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) } //nolint:wrapcheck // io.Reader contract: io.EOF must be returned unwrapped
 
 func (c *bufferedConn) CloseWrite() error {
 	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
-		return cw.CloseWrite()
+		return cw.CloseWrite() //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
 	}
-	return c.Conn.Close()
+	return c.Conn.Close() //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
 }
 
 // oneConnListener hands a single connection to http.Server and then blocks
@@ -590,5 +590,5 @@ type notifyCloseConn struct {
 func (c *notifyCloseConn) Close() error {
 	err := c.Conn.Close()
 	c.once.Do(c.onClose)
-	return err
+	return err //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
 }

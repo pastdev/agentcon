@@ -198,11 +198,11 @@ func parseCipherString(s string) (cipherString, error) {
 func encryptSymmetric(k keys, plain []byte) (string, error) {
 	iv := make([]byte, aes.BlockSize)
 	if _, err := rand.Read(iv); err != nil {
-		return "", err
+		return "", fmt.Errorf("iv: %w", err)
 	}
 	block, err := aes.NewCipher(k.enc)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("aes key: %w", err)
 	}
 	padded := pkcs7Pad(plain, aes.BlockSize)
 	ct := make([]byte, len(padded))
@@ -255,7 +255,7 @@ func decryptSymmetric(k keys, cs cipherString) ([]byte, error) {
 	}
 	block, err := aes.NewCipher(k.enc)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("aes key: %w", err)
 	}
 	plain := make([]byte, len(cs.ct))
 	cipher.NewCBCDecrypter(block, cs.iv).CryptBlocks(plain, cs.ct)
@@ -295,7 +295,7 @@ func parsePrivateKey(der []byte) (*rsa.PrivateKey, error) {
 		if k, err2 := x509.ParsePKCS1PrivateKey(der); err2 == nil {
 			return k, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("parse private key: %w", err)
 	}
 	rk, ok := key.(*rsa.PrivateKey)
 	if !ok {

@@ -196,9 +196,9 @@ func (f *Filter) newInstance() (*instance, error) {
 	if err != nil {
 		var ie *goja.InterruptedError
 		if errors.As(err, &ie) {
-			return nil, fmt.Errorf("filter top-level code exceeded %s CPU budget", f.opts.Timeout)
+			return nil, fmt.Errorf("filter %s top-level code exceeded %s CPU budget", f.name, f.opts.Timeout)
 		}
-		return nil, err
+		return nil, fmt.Errorf("filter %s top-level code: %w", f.name, err)
 	}
 	mod := vm.Get(globalName)
 	if mod == nil || goja.IsUndefined(mod) {

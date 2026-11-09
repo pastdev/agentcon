@@ -49,7 +49,7 @@ func Compile(cfg *config.Config, env *chain.Env, store *kv.Store) (*Set, error) 
 	for name := range cfg.Profiles {
 		rp, err := cfg.ResolvedProfile(name)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("resolve profile: %w", err)
 		}
 		p := &Profile{Name: name, Unmatched: rp.UnmatchedMode(), Tunnel: rp.Tunnel, AllowPrivate: rp.AllowPrivate != nil && *rp.AllowPrivate}
 		load := func(refs []config.FilterRef) ([]chain.Filter, error) {

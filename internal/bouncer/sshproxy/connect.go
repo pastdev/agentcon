@@ -22,7 +22,7 @@ func Dial(addr string, p Preamble) (net.Conn, error) {
 	b, _ := json.Marshal(p)
 	if _, err := fmt.Fprintf(c, "%s%s\n", preamblePrefix, b); err != nil {
 		_ = c.Close()
-		return nil, err
+		return nil, fmt.Errorf("send preamble: %w", err)
 	}
 	// Read the reply byte by byte so no SSH data is consumed.
 	var line strings.Builder

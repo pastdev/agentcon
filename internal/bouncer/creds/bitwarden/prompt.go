@@ -90,7 +90,7 @@ func (p stdPrompter) MasterPassword(label string) (string, error) {
 	b, err := term.ReadPassword(int(in.Fd()))
 	_, _ = fmt.Fprintln(out)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read password: %w", err)
 	}
 	if len(b) == 0 {
 		return "", errors.New("empty master password")
@@ -113,7 +113,7 @@ func (p stdPrompter) TwoFactorCode(label, method string) (string, error) {
 	_, _ = fmt.Fprintf(out, "Bitwarden verification code (%s) for %s: ", method, label)
 	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
+		return "", fmt.Errorf("read verification code: %w", err)
 	}
 	line = strings.TrimSpace(line)
 	if line == "" {

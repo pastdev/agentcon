@@ -164,7 +164,7 @@ func (i *instance) installHost() error {
 	host.Set("kv", kvObj)
 
 	if err := vm.Set("__bouncer_host", host); err != nil {
-		return err
+		return fmt.Errorf("bouncer host: %w", err)
 	}
 	console := vm.NewObject()
 	logFn := func(call goja.FunctionCall) goja.Value {
@@ -184,7 +184,11 @@ func (i *instance) installHost() error {
 	for _, n := range []string{"log", "info", "warn", "error", "debug"} {
 		console.Set(n, logFn)
 	}
-	return vm.Set("console", console)
+	err := vm.Set("console", console)
+	if err != nil {
+		return fmt.Errorf("console: %w", err)
+	}
+	return nil
 }
 
 func (i *instance) log(msg string, fields map[string]any) {
@@ -407,7 +411,7 @@ func (i *instance) body(b *chain.Body) *goja.Object {
 		return i.guarded(gen, !b.Complete(), func() (goja.Value, error) {
 			p, err := b.ReadAll()
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("read body: %w", err)
 			}
 			return i.jsonParse(goja.Undefined(), i.vm.ToValue(string(p)))
 		})
@@ -462,7 +466,7 @@ func (i *instance) wrapRequest(req *chain.Request) *goja.Object {
 			return i.hostCall(!bodyComplete(req), func() (goja.Value, error) {
 				ops, err := req.GraphQL()
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("parse graphql: %w", err)
 				}
 				if ops == nil {
 					return goja.Null(), nil
@@ -481,7 +485,7 @@ func (i *instance) wrapRequest(req *chain.Request) *goja.Object {
 		push := func() (goja.Value, error) {
 			p, err := req.Push()
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("parse push: %w", err)
 			}
 			if p == nil {
 				return goja.Null(), nil
@@ -493,7 +497,7 @@ func (i *instance) wrapRequest(req *chain.Request) *goja.Object {
 			return i.hostCall(!bodyComplete(req), func() (goja.Value, error) {
 				p, err := req.Push()
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("parse push: %w", err)
 				}
 				if p == nil || p.Updates == nil {
 					return vm.NewArray(), nil

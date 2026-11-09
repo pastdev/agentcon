@@ -3,6 +3,7 @@ package audit
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -40,11 +41,11 @@ func Open(path string, mirror func(Entry)) (*Log, error) {
 		return l, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("audit dir: %w", err)
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("audit log: %w", err)
 	}
 	l.w = f
 	return l, nil
@@ -71,5 +72,9 @@ func (l *Log) Close() error {
 	if l.w == nil {
 		return nil
 	}
-	return l.w.Close()
+	err := l.w.Close()
+	if err != nil {
+		return fmt.Errorf("audit log: %w", err)
+	}
+	return nil
 }

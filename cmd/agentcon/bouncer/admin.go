@@ -22,7 +22,7 @@ func approvalsCmd() *cobra.Command {
 			}
 			list, err := c.Approvals()
 			if err != nil {
-				return err
+				return fmt.Errorf("approvals: %w", err)
 			}
 			if len(list) == 0 {
 				fmt.Println("no pending approvals")
@@ -72,7 +72,7 @@ func sessionsCmd() *cobra.Command {
 			}
 			list, err := c.Sessions()
 			if err != nil {
-				return err
+				return fmt.Errorf("sessions: %w", err)
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "ID\tLABEL\tPROFILE\tCREATED")
@@ -109,7 +109,7 @@ func checkCmd() *cobra.Command {
 			}
 			got, err := app.Check(svc)
 			if err != nil {
-				return err
+				return fmt.Errorf("check: %w", err)
 			}
 			for _, p := range got.Profiles {
 				fmt.Printf("profile %-14s %d http, %d ssh, unmatched=%s\n", p.Name, p.HTTP, p.SSH, p.Unmatched)

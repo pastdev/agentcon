@@ -181,7 +181,7 @@ func client(t *testing.T, bouncer string, authority *ca.Authority, token string)
 	}}
 	cc, chans, reqs, err := ssh.NewClientConn(c, "127.0.0.1:22", &ssh.ClientConfig{User: "git", HostKeyCallback: checker.CheckHostKey})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ssh handshake: %w", err)
 	}
 	return ssh.NewClient(cc, chans, reqs), nil
 }

@@ -59,7 +59,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		},
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("daemon setup: %w", err)
 	}
 	cfg := d.Config()
 	logger.Printf("config %s", cfg.Path)
@@ -103,7 +103,11 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		logger.Printf("session %s", slug)
 		defer func() { _ = running.Remove(opts.Home, slug) }()
 	}
-	return d.Run(ctx)
+	err = d.Run(ctx)
+	if err != nil {
+		return fmt.Errorf("daemon: %w", err)
+	}
+	return nil
 }
 
 // FormatDecision is the one-line serve log for an audit entry.

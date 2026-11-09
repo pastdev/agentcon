@@ -372,7 +372,11 @@ func (v *Vaults) masterPassword(a Account) (string, error) {
 	if v.prompt == nil {
 		return "", fmt.Errorf("master password for %s required; set password_env or run `bouncer serve` in a terminal", a.label())
 	}
-	return v.prompt.MasterPassword(a.label())
+	pw, err := v.prompt.MasterPassword(a.label())
+	if err != nil {
+		return "", fmt.Errorf("master password: %w", err)
+	}
+	return pw, nil
 }
 
 const verificationCodeAttempts = 5
@@ -436,7 +440,11 @@ func (v *Vaults) verificationCode(email, method string) (string, error) {
 	if v.prompt == nil {
 		return "", &NeedCodeError{Method: method}
 	}
-	return v.prompt.TwoFactorCode(email, method)
+	code, err := v.prompt.TwoFactorCode(email, method)
+	if err != nil {
+		return "", fmt.Errorf("verification code: %w", err)
+	}
+	return code, nil
 }
 
 func openVault(master keys, s *syncResult) (*unlocked, error) {
@@ -763,7 +771,7 @@ func (v *Vaults) saveState(email, apiBase string, st accountState) {
 func newDeviceID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
+		return "", fmt.Errorf("device id: %w", err)
 	}
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
