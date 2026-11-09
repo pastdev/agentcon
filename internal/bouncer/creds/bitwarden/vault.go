@@ -190,7 +190,7 @@ func (v *Vaults) Get(ctx context.Context, q Query) (string, error) {
 	}
 	field := q.Field
 	if field == "" {
-		field = "password"
+		field = fieldPassword
 	}
 	return u.lookup(q.Item, q.Folder, field)
 }
@@ -582,9 +582,12 @@ func decryptField(k keys, s *string) (string, bool) {
 	return pt, true
 }
 
+// fieldPassword is the item field returned when a query names none.
+const fieldPassword = "password"
+
 func (u *unlocked) lookup(item, folder, field string) (string, error) {
 	if field == "" {
-		field = "password"
+		field = fieldPassword
 	}
 	e, err := u.find(item, folder)
 	if err != nil {
@@ -695,7 +698,7 @@ func (e entry) field(name string) (string, error) {
 		ok bool
 	)
 	switch name {
-	case "password":
+	case fieldPassword:
 		v, ok = e.password, e.hasPassword
 	case "username":
 		v, ok = e.username, e.hasUsername
@@ -734,7 +737,7 @@ func (v *Vaults) loadState(email, apiBase string) accountState {
 	if path == "" {
 		return accountState{}
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // path from operator config or the state dir, not the agent
 	if err != nil {
 		return accountState{}
 	}
@@ -750,7 +753,7 @@ func (v *Vaults) saveState(email, apiBase string, st accountState) {
 	if path == "" {
 		return
 	}
-	b, err := json.Marshal(st)
+	b, err := json.Marshal(st) //nolint:gosec // persisting the refresh token is the purpose of this 0600 state file
 	if err != nil {
 		return
 	}

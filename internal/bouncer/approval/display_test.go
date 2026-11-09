@@ -18,7 +18,7 @@ func TestDisplay(t *testing.T) {
 		t.Helper()
 		got := Display(tc.in, tc.max)
 		if tc.escapeCtrl {
-			if strings.ContainsAny(got, "\x1b\r‮​") || !strings.Contains(got, `\u001b`) {
+			if strings.ContainsAny(got, "\x1b\r\u202e\u200b") || !strings.Contains(got, `\u001b`) {
 				t.Fatalf("control characters survived: %q", got)
 			}
 			return
@@ -36,7 +36,7 @@ func TestDisplay(t *testing.T) {
 
 	t.Run("escapes control characters", func(t *testing.T) {
 		tester(t, testCase{
-			in:         "GET /x\x1b[2K\rGET /harmless‮​",
+			in:         "GET /x\x1b[2K\rGET /harmless\u202e\u200b",
 			max:        200,
 			escapeCtrl: true,
 		})

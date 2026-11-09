@@ -244,7 +244,7 @@ func (i *instance) run(req *chain.Request, next chain.Handler) (resp *chain.Resp
 	}()
 
 	jsReq := i.wrapRequest(req)
-	jsCtx := i.context(req)
+	jsCtx := i.context()
 
 	hook := i.onRequest
 	if req.Transport == chain.TransportSSH {
@@ -297,13 +297,13 @@ func (i *instance) settle(v goja.Value) (goja.Value, error) {
 	case goja.PromiseStateFulfilled:
 		return p.Result(), nil
 	case goja.PromiseStateRejected:
-		return nil, jsError(i.vm, p.Result())
-	default:
-		return nil, errors.New("filter promise never settled (awaiting something bouncer doesn't provide?)")
+		return nil, jsError(p.Result())
+	case goja.PromiseStatePending:
 	}
+	return nil, errors.New("filter promise never settled (awaiting something bouncer doesn't provide?)")
 }
 
-func jsError(vm *goja.Runtime, v goja.Value) error {
+func jsError(v goja.Value) error {
 	if o, ok := v.(*goja.Object); ok {
 		if st := o.Get("stack"); st != nil && !goja.IsUndefined(st) {
 			return errors.New(st.String())

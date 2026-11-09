@@ -652,7 +652,7 @@ func AdminTokenPath(stateDir string) string { return filepath.Join(stateDir, "ad
 // LoadOrCreateAdminToken returns the control API token, creating it if needed.
 func LoadOrCreateAdminToken(stateDir string) (string, error) {
 	p := AdminTokenPath(stateDir)
-	if b, err := os.ReadFile(p); err == nil {
+	if b, err := os.ReadFile(p); err == nil { //nolint:gosec // path from operator config or the state dir, not the agent
 		if t := strings.TrimSpace(string(b)); t != "" {
 			return t, nil
 		}

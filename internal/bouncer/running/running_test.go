@@ -1,6 +1,7 @@
 package running
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -270,7 +271,8 @@ func TestMatch(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected ambiguous project across contexts")
 			}
-			if _, ok := err.(*AmbiguousError); !ok {
+			var amb *AmbiguousError
+			if !errors.As(err, &amb) {
 				t.Fatalf("got %v", err)
 			}
 			return

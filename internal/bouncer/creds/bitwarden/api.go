@@ -88,9 +88,14 @@ type preloginResponse struct {
 // string, or null, since servers send all three.
 type kdfParam uint32
 
+const (
+	jsonNull          = "null"
+	headerContentType = "Content-Type"
+)
+
 func (n *kdfParam) UnmarshalJSON(b []byte) error {
 	b = bytes.TrimSpace(b)
-	if len(b) == 0 || string(b) == "null" {
+	if len(b) == 0 || string(b) == jsonNull {
 		return nil
 	}
 	if b[0] == '"' {
@@ -116,7 +121,7 @@ func (n *kdfParam) UnmarshalJSON(b []byte) error {
 func (a *api) prelogin(ctx context.Context, identityBase, email string) (kdfParams, error) {
 	body, status, err := a.do(ctx, http.MethodPost, identityBase+"/accounts/prelogin",
 		strings.NewReader(`{"email":`+jsonString(email)+`}`),
-		http.Header{"Content-Type": {"application/json"}}, authBodyLimit)
+		http.Header{headerContentType: {"application/json"}}, authBodyLimit)
 	if err != nil {
 		return kdfParams{}, err
 	}
@@ -181,8 +186,8 @@ func (a *api) login(ctx context.Context, identityBase, email, deviceID, password
 		form.Set("newDeviceOtp", newDeviceOtp)
 	}
 	hdr := http.Header{
-		"Content-Type": {"application/x-www-form-urlencoded"},
-		"auth-email":   {b64URL(email)},
+		headerContentType: {"application/x-www-form-urlencoded"},
+		"auth-email":      {b64URL(email)},
 	}
 	body, status, err := a.do(ctx, http.MethodPost, identityBase+"/connect/token", strings.NewReader(form.Encode()), hdr, authBodyLimit)
 	if err != nil {
@@ -197,7 +202,7 @@ func (a *api) refresh(ctx context.Context, identityBase, refreshToken string) (a
 		"client_id":     {clientID},
 		"refresh_token": {refreshToken},
 	}
-	hdr := http.Header{"Content-Type": {"application/x-www-form-urlencoded"}}
+	hdr := http.Header{headerContentType: {"application/x-www-form-urlencoded"}}
 	body, status, err := a.do(ctx, http.MethodPost, identityBase+"/connect/token", strings.NewReader(form.Encode()), hdr, authBodyLimit)
 	if err != nil {
 		return "", "", err
@@ -284,7 +289,7 @@ func isDeviceVerification(res tokenResponse) bool {
 
 func parseProviders(raw json.RawMessage) []int {
 	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || string(raw) == "null" {
+	if len(raw) == 0 || string(raw) == jsonNull {
 		return nil
 	}
 	var nums []int
@@ -363,7 +368,7 @@ type syncCipher struct {
 
 func (c syncCipher) deleted() bool {
 	b := bytes.TrimSpace(c.DeletedDate)
-	return len(b) > 0 && string(b) != "null"
+	return len(b) > 0 && string(b) != jsonNull
 }
 
 type syncLogin struct {

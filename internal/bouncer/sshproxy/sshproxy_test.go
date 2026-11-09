@@ -33,7 +33,7 @@ type backend struct {
 }
 
 func (b backend) Session(tok string) (*chain.Session, bool) {
-	if tok == "tok" && !(b.revoked != nil && *b.revoked) {
+	if tok == "tok" && (b.revoked == nil || !*b.revoked) {
 		return &chain.Session{ID: "s1", Profile: "p"}, true
 	}
 	return nil, false
@@ -171,7 +171,7 @@ profiles:
 	return up, l.Addr().String(), authority, revoked
 }
 
-func client(t *testing.T, bouncer string, authority *ca.Authority, token string) (*ssh.Client, error) {
+func client(_ *testing.T, bouncer string, authority *ca.Authority, token string) (*ssh.Client, error) {
 	c, err := Dial(bouncer, Preamble{Token: token, Host: "127.0.0.1", Port: 22, User: "git"})
 	if err != nil {
 		return nil, err

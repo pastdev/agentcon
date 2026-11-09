@@ -198,7 +198,7 @@ func (i *instance) log(msg string, fields map[string]any) {
 }
 
 // context is the third argument to hooks.
-func (i *instance) context(req *chain.Request) goja.Value {
+func (i *instance) context() goja.Value {
 	o := i.vm.NewObject()
 	o.Set("name", i.f.name)
 	cfg := i.f.opts.Config
@@ -479,9 +479,9 @@ func (i *instance) wrapRequest(req *chain.Request) *goja.Object {
 	}
 
 	if g := req.Git(); g != nil {
-		go_ := vm.NewObject()
-		go_.Set("service", g.Service)
-		go_.Set("repo", g.Repo)
+		goObj := vm.NewObject()
+		goObj.Set("service", g.Service)
+		goObj.Set("repo", g.Repo)
 		push := func() (goja.Value, error) {
 			p, err := req.Push()
 			if err != nil {
@@ -492,8 +492,8 @@ func (i *instance) wrapRequest(req *chain.Request) *goja.Object {
 			}
 			return i.plain(p), nil
 		}
-		go_.Set("push", func() goja.Value { return i.hostCall(!bodyComplete(req), push) })
-		go_.Set("refUpdates", func() goja.Value {
+		goObj.Set("push", func() goja.Value { return i.hostCall(!bodyComplete(req), push) })
+		goObj.Set("refUpdates", func() goja.Value {
 			return i.hostCall(!bodyComplete(req), func() (goja.Value, error) {
 				p, err := req.Push()
 				if err != nil {
@@ -505,7 +505,7 @@ func (i *instance) wrapRequest(req *chain.Request) *goja.Object {
 				return i.plain(p.Updates), nil
 			})
 		})
-		o.Set("git", go_)
+		o.Set("git", goObj)
 	} else {
 		o.Set("git", goja.Null())
 	}

@@ -60,11 +60,11 @@ func setup(t *testing.T, profileYAML string) *env {
 		}
 		if r.URL.Path == "/redirect" {
 			// Echo the URL (query included) back to the client.
-			http.Redirect(w, r, "/new?"+r.URL.RawQuery, http.StatusMovedPermanently)
+			http.Redirect(w, r, "/new?"+r.URL.RawQuery, http.StatusMovedPermanently) //nolint:gosec // test upstream echoes the request on purpose
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
-		_, _ = fmt.Fprintf(w, "widget=%s auth=%s private=%s path=%s query=%s body=%s", r.Header.Get("X-Widget-Key"), r.Header.Get("Authorization"), r.Header.Get("Private-Token"), r.URL.EscapedPath(), r.URL.RawQuery, body)
+		_, _ = fmt.Fprintf(w, "widget=%s auth=%s private=%s path=%s query=%s body=%s", r.Header.Get("X-Widget-Key"), r.Header.Get("Authorization"), r.Header.Get("Private-Token"), r.URL.EscapedPath(), r.URL.RawQuery, body) //nolint:gosec // test upstream echoes the request on purpose
 	}))
 	t.Cleanup(e.upstream.Close)
 	_, e.port, _ = net.SplitHostPort(e.upstream.Listener.Addr().String())
@@ -89,7 +89,7 @@ profiles:
 		t.Fatal(err)
 	}
 	tr := NewTransport()
-	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test upstream uses a self-signed certificate
 	log, err := audit.Open("", func(en audit.Entry) { e.audit = append(e.audit, en) })
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,6 @@ func TestIntercept(t *testing.T) {
 		notContains  []string
 		wantCount    map[string]int
 		clientGetErr string
-		plainGet     bool
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
@@ -333,7 +332,7 @@ func TestIntercept(t *testing.T) {
 	})
 	t.Run("refuses plain http forwarding to loopback", func(t *testing.T) {
 		e := setup(t, scopedProfile)
-		plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "reached") }))
+		plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "reached") }))
 		t.Cleanup(plain.Close)
 		tester(t, testCase{
 			e:           e,
@@ -357,7 +356,7 @@ func TestIntercept(t *testing.T) {
 	})
 	t.Run("does not inject credentials over plain http unless insecure", func(t *testing.T) {
 		var gotAuth []string
-		plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plain := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			gotAuth = append(gotAuth, r.Header.Get("Authorization"))
 		}))
 		t.Cleanup(plain.Close)

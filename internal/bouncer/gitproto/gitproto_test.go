@@ -171,7 +171,6 @@ func TestFromHTTP(t *testing.T) {
 		query     string
 		wantSvc   string
 		wantRepo  string
-		wantOK    bool
 		wantNotOK bool
 	}
 	tester := func(t *testing.T, tc testCase) {
@@ -214,7 +213,6 @@ func TestFromSSHCommand(t *testing.T) {
 		cmd      string
 		wantSvc  string
 		wantRepo string
-		wantOK   bool
 		wantBad  bool
 	}
 	tester := func(t *testing.T, tc testCase) {

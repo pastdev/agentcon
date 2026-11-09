@@ -78,10 +78,7 @@ func resolve() error {
 	stateDir = stateFlag
 
 	if fileFlag != "" {
-		configPath, err = policyPath(fileFlag)
-		if err != nil {
-			return err
-		}
+		configPath = policyPath(fileFlag)
 		if stateDir == "" {
 			stateDir = filepath.Join(filepath.Dir(configPath), "state")
 		}
@@ -117,12 +114,12 @@ func resolve() error {
 	return fmt.Errorf("bouncer policy not set: set contexts.<name>.bouncer or pass --file")
 }
 
-func policyPath(flag string) (string, error) {
+func policyPath(flag string) string {
 	info, err := os.Stat(flag)
 	if err == nil && info.IsDir() {
-		return filepath.Join(flag, bouncercfg.FileName), nil
+		return filepath.Join(flag, bouncercfg.FileName)
 	}
-	return flag, nil
+	return flag
 }
 
 func flagContext() string {

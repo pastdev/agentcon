@@ -38,10 +38,10 @@ const preamblePrefix = "BOUNCER-SSH/1 "
 // maxPreamble bounds the preamble line.
 const maxPreamble = 8 << 10
 
-// readLine reads up to and including '\n', failing past max bytes.
-func readLine(br *bufio.Reader, max int) (string, error) {
+// readLine reads up to and including '\n', failing past limit bytes.
+func readLine(br *bufio.Reader, limit int) (string, error) {
 	var b strings.Builder
-	for b.Len() < max {
+	for b.Len() < limit {
 		c, err := br.ReadByte()
 		if err != nil {
 			return "", fmt.Errorf("read preamble: %w", err)
@@ -134,7 +134,7 @@ func (s *Server) handle(c net.Conn) {
 	defer cancel()
 	cn, err := s.prepare(ctx, &p)
 	if err != nil {
-		e := audit.Entry{Transport: "ssh", Request: fmt.Sprintf("ssh %s@%s connect", p.User, p.Host), Decision: "deny", Reason: err.Error()}
+		e := audit.Entry{Transport: "ssh", Request: fmt.Sprintf("ssh %s@%s connect", p.User, p.Host), Decision: audit.DecisionDeny, Reason: err.Error()}
 		if cn != nil && cn.sess != nil {
 			e.Session, e.Label, e.Profile = cn.sess.ID, cn.sess.Label, cn.sess.Profile
 		}
@@ -321,9 +321,9 @@ func (cn *conn) decide(req *chain.Request) *chain.Response {
 	e := cn.entry(req)
 	e.DurationMS = time.Since(start).Milliseconds()
 	if resp.Denial != nil {
-		e.Decision, e.By, e.Reason = "deny", resp.Denial.By, resp.Denial.Reason
+		e.Decision, e.By, e.Reason = audit.DecisionDeny, resp.Denial.By, resp.Denial.Reason
 	} else {
-		e.Decision, e.By = "allow", req.AllowedBy
+		e.Decision, e.By = audit.DecisionAllow, req.AllowedBy
 	}
 	cn.s.Audit.Write(e)
 	return resp
@@ -340,7 +340,7 @@ func (cn *conn) globalRequests(reqs <-chan *ssh.Request) {
 			req := cn.request(config.SSHKindForward)
 			req.SSH.Target = "remote listen"
 			e := cn.entry(req)
-			e.Decision, e.By, e.Reason = "deny", "bouncer", "remote port forwarding is not supported"
+			e.Decision, e.By, e.Reason = audit.DecisionDeny, "bouncer", "remote port forwarding is not supported"
 			cn.s.Audit.Write(e)
 		}
 		if r.WantReply {
@@ -473,7 +473,7 @@ func (cn *conn) start(ch ssh.Channel, r *ssh.Request, setup []*ssh.Request, env 
 			req.SSH.Kind = config.SSHKindGit
 		}
 	case "subsystem":
-		req.SSH.Kind = "subsystem"
+		req.SSH.Kind = config.SSHKindSubsystem
 		var p struct{ Name string }
 		err := ssh.Unmarshal(r.Payload, &p)
 		if err != nil {
@@ -566,7 +566,7 @@ func (cn *conn) start(ch ssh.Channel, r *ssh.Request, setup []*ssh.Request, env 
 // malformed audits and refuses a channel request whose payload does not parse.
 func (cn *conn) malformed(r *ssh.Request, req *chain.Request) {
 	e := cn.entry(req)
-	e.Decision, e.By, e.Reason = "deny", "bouncer", "malformed "+r.Type+" request"
+	e.Decision, e.By, e.Reason = audit.DecisionDeny, "bouncer", "malformed "+r.Type+" request"
 	cn.s.Audit.Write(e)
 	_ = r.Reply(false, nil)
 }

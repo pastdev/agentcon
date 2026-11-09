@@ -14,7 +14,7 @@ func dialAgent() (net.Conn, error) {
 	if sock == "" {
 		return nil, errors.New("SSH_AUTH_SOCK is not set")
 	}
-	c, err := net.Dial("unix", sock)
+	c, err := net.Dial("unix", sock) //nolint:gosec // SSH_AUTH_SOCK is the host's own agent socket
 	if err != nil {
 		return nil, fmt.Errorf("ssh-agent: %w", err)
 	}

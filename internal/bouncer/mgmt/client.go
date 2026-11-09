@@ -98,7 +98,7 @@ func Dial(stateDir, _ string) (*Client, error) {
 }
 
 func locate(stateDir string) (string, error) {
-	if b, err := os.ReadFile(filepath.Join(stateDir, "host.json")); err == nil {
+	if b, err := os.ReadFile(filepath.Join(stateDir, "host.json")); err == nil { //nolint:gosec // path from operator config or the state dir, not the agent
 		var host struct {
 			ControlAddr string `json:"control_addr"`
 		}

@@ -114,8 +114,8 @@ func proxyAuthRequired(w http.ResponseWriter) {
 		http.StatusProxyAuthRequired)
 }
 
-func (s *Server) entry(sess *chain.Session, transport, service, request string) audit.Entry {
-	e := audit.Entry{Transport: transport, Service: service, Request: request}
+func (s *Server) entry(sess *chain.Session, service, request string) audit.Entry {
+	e := audit.Entry{Transport: "http", Service: service, Request: request}
 	if sess != nil {
 		e.Session, e.Label, e.Profile = sess.ID, sess.Label, sess.Profile
 	}
@@ -140,8 +140,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	svc := prof.MatchHTTP(target)
 	if svc == nil && !prof.Tunnels(target) {
-		e := s.entry(sess, "http", "", "CONNECT "+target)
-		e.Decision, e.Reason, e.Status, e.DurationMS = "deny", "host not allowed by profile "+prof.Name, 403, time.Since(start).Milliseconds()
+		e := s.entry(sess, "", "CONNECT "+target)
+		e.Decision, e.Reason, e.Status, e.DurationMS = audit.DecisionDeny, "host not allowed by profile "+prof.Name, 403, time.Since(start).Milliseconds()
 		s.Audit.Write(e)
 		http.Error(w, "agent-bouncer: "+e.Reason, http.StatusForbidden)
 		return
@@ -152,18 +152,18 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	var up net.Conn
 	var err error
 	if svc == nil {
-		e := s.entry(sess, "http", "", "CONNECT "+target)
+		e := s.entry(sess, "", "CONNECT "+target)
 		up, err = s.tunnelDial(r.Context(), prof.AllowPrivate, target)
 		if err != nil {
-			e.Decision, e.Reason, e.Status = "deny", err.Error(), 403
+			e.Decision, e.Reason, e.Status = audit.DecisionDeny, err.Error(), 403
 			if !errors.Is(err, errNonPublic) {
-				e.Decision, e.Status = "error", 502
+				e.Decision, e.Status = audit.DecisionError, 502
 			}
 			s.Audit.Write(e)
 			http.Error(w, "agent-bouncer: "+err.Error(), e.Status)
 			return
 		}
-		e.Decision = "tunnel"
+		e.Decision = audit.DecisionTunnel
 		s.Audit.Write(e)
 	}
 
@@ -190,8 +190,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if first[0] != 0x16 {
-		e := s.entry(sess, "http", svc.Config.Name, "CONNECT "+target)
-		e.Decision, e.Reason = "deny", "non-TLS traffic to an intercepted host"
+		e := s.entry(sess, svc.Config.Name, "CONNECT "+target)
+		e.Decision, e.Reason = audit.DecisionDeny, "non-TLS traffic to an intercepted host"
 		s.Audit.Write(e)
 		_ = client.Close()
 		return
@@ -280,14 +280,14 @@ func (s *Server) handleAbsolute(w http.ResponseWriter, r *http.Request) {
 		s.intercept(w, r, sess, prof, svc, &u)
 		return
 	}
-	e := s.entry(sess, "http", "", r.Method+" "+u.String())
+	e := s.entry(sess, "", r.Method+" "+u.String())
 	if !prof.Tunnels(hostport) {
-		e.Decision, e.Reason, e.Status = "deny", "host not allowed by profile "+prof.Name, 403
+		e.Decision, e.Reason, e.Status = audit.DecisionDeny, "host not allowed by profile "+prof.Name, 403
 		s.Audit.Write(e)
 		http.Error(w, "agent-bouncer: "+e.Reason, http.StatusForbidden)
 		return
 	}
-	e.Decision = "tunnel"
+	e.Decision = audit.DecisionTunnel
 	s.Audit.Write(e)
 	out := r.Clone(r.Context())
 	out.RequestURI = ""
@@ -353,7 +353,7 @@ func (s *Server) intercept(w http.ResponseWriter, r *http.Request, sess *chain.S
 		Ctx: r.Context(), Transport: chain.TransportHTTP, Session: sess, Profile: prof.Name, Service: svc.Config.Name,
 		Method: r.Method, URL: u, Header: header, Body: chain.NewBody(r.Body),
 	}
-	e := s.entry(sess, "http", svc.Config.Name, req.Describe())
+	e := s.entry(sess, svc.Config.Name, req.Describe())
 	defer func() {
 		e.DurationMS = time.Since(start).Milliseconds()
 		s.Audit.Write(e)
@@ -373,14 +373,14 @@ func (s *Server) intercept(w http.ResponseWriter, r *http.Request, sess *chain.S
 		err = chain.CheckMethodOverride(req)
 	}
 	if err != nil {
-		e.Decision, e.By, e.Reason, e.Status = "deny", "bouncer", err.Error(), 400
+		e.Decision, e.By, e.Reason, e.Status = audit.DecisionDeny, "bouncer", err.Error(), 400
 		writeDenial(w, &chain.Denial{By: "bouncer", Reason: err.Error(), Status: 400})
 		return
 	}
 	h := chain.Build(svc.Filters, s.forwarder(svc, r.ContentLength))
 	resp, _ := h(req)
 	if resp.Denial != nil {
-		e.Decision, e.By, e.Reason, e.Status = "deny", resp.Denial.By, resp.Denial.Reason, resp.Denial.Status
+		e.Decision, e.By, e.Reason, e.Status = audit.DecisionDeny, resp.Denial.By, resp.Denial.Reason, resp.Denial.Status
 		if result := pushRejection(req, resp.Denial); result != nil {
 			// Consume the pack so the client reads our response instead of
 			// failing mid-upload.
@@ -397,7 +397,7 @@ func (s *Server) intercept(w http.ResponseWriter, r *http.Request, sess *chain.S
 		}
 		return
 	}
-	e.Decision, e.By, e.Status = "allow", req.AllowedBy, resp.Status
+	e.Decision, e.By, e.Status = audit.DecisionAllow, req.AllowedBy, resp.Status
 	s.writeResponse(w, resp)
 }
 
@@ -433,7 +433,7 @@ func (s *Server) writeResponse(w http.ResponseWriter, resp *chain.Response) {
 	h := resp.Header
 	removeHopHeaders(h)
 	copyHeader(w.Header(), h)
-	var body io.ReadCloser = io.NopCloser(strings.NewReader(""))
+	body := io.NopCloser(strings.NewReader(""))
 	if resp.Body != nil {
 		body = resp.Body.Reader()
 		if n := resp.Body.Len(); n >= 0 {
@@ -546,7 +546,7 @@ func (c *bufferedConn) CloseWrite() error {
 	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
 		return cw.CloseWrite() //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
 	}
-	return c.Conn.Close() //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
+	return c.Close() //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
 }
 
 // oneConnListener hands a single connection to http.Server and then blocks

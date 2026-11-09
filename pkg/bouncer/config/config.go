@@ -48,6 +48,8 @@ const (
 	SSHKindShell   = "shell"
 	SSHKindSFTP    = "sftp"
 	SSHKindForward = "forward"
+	// SSHKindSubsystem is a subsystem other than sftp. It is never allowed.
+	SSHKindSubsystem = "subsystem"
 )
 
 // Credential slot names. A credential is a composite of these sources.

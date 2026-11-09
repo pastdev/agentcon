@@ -117,11 +117,11 @@ func BoundedName(project string) string {
 	if project == "" {
 		s = "root"
 	}
-	max := boundedMax()
-	if len(s) <= max {
+	limit := boundedMax()
+	if len(s) <= limit {
 		return s
 	}
-	s = strings.TrimLeft(s[len(s)-max:], "-")
+	s = strings.TrimLeft(s[len(s)-limit:], "-")
 	if s == "" {
 		return "root"
 	}

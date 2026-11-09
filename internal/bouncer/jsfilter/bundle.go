@@ -10,6 +10,9 @@ import (
 
 const globalName = "__bouncer_filter"
 
+// bouncerModuleName is the import path of the virtual module filters use.
+const bouncerModuleName = "bouncer"
+
 // bouncerModule is the virtual "bouncer" import that filters use.
 const bouncerModule = `
 const h = globalThis.__bouncer_host;
@@ -24,12 +27,12 @@ export default { defineFilter, deny, respond, ask, log, kv, credential };
 `
 
 var bouncerPlugin = api.Plugin{
-	Name: "bouncer",
+	Name: bouncerModuleName,
 	Setup: func(b api.PluginBuild) {
 		b.OnResolve(api.OnResolveOptions{Filter: `^bouncer$`}, func(api.OnResolveArgs) (api.OnResolveResult, error) {
-			return api.OnResolveResult{Path: "bouncer", Namespace: "bouncer"}, nil
+			return api.OnResolveResult{Path: bouncerModuleName, Namespace: bouncerModuleName}, nil
 		})
-		b.OnLoad(api.OnLoadOptions{Filter: `.*`, Namespace: "bouncer"}, func(api.OnLoadArgs) (api.OnLoadResult, error) {
+		b.OnLoad(api.OnLoadOptions{Filter: `.*`, Namespace: bouncerModuleName}, func(api.OnLoadArgs) (api.OnLoadResult, error) {
 			src := bouncerModule
 			return api.OnLoadResult{Contents: &src, Loader: api.LoaderJS}, nil
 		})

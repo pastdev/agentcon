@@ -34,7 +34,7 @@ type Store struct {
 func Open(path string) (*Store, error) {
 	s := &Store{path: path, data: map[string]entry{}, stop: make(chan struct{}), done: make(chan struct{})}
 	if path != "" {
-		b, err := os.ReadFile(path)
+		b, err := os.ReadFile(path) //nolint:gosec // path from operator config or the state dir, not the agent
 		switch {
 		case err == nil:
 			if err := json.Unmarshal(b, &s.data); err != nil {

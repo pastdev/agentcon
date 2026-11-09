@@ -10,7 +10,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // Bitwarden mandates RSA-OAEP with SHA-1
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -279,7 +279,7 @@ func decryptOrgKey(user keys, priv *rsa.PrivateKey, enc string) (keys, error) {
 			return keys{}, errors.New("organization key is encrypted with RSA but the account has no private key")
 		}
 		// Bitwarden's type 4 is RSA-2048 OAEP with SHA-1. SHA-1 is the protocol, not a choice.
-		raw, err = rsa.DecryptOAEP(sha1.New(), rand.Reader, priv, cs.ct, nil)
+		raw, err = rsa.DecryptOAEP(sha1.New(), rand.Reader, priv, cs.ct, nil) //nolint:gosec // Bitwarden mandates RSA-OAEP with SHA-1
 	default:
 		err = fmt.Errorf("unsupported organization key type %d", cs.typ)
 	}
@@ -309,7 +309,7 @@ func pkcs7Pad(b []byte, n int) []byte {
 	out := make([]byte, len(b)+pad)
 	copy(out, b)
 	for i := len(b); i < len(out); i++ {
-		out[i] = byte(pad)
+		out[i] = byte(pad) //nolint:gosec // PKCS#7 padding is at most one block (16)
 	}
 	return out
 }

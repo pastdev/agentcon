@@ -373,7 +373,7 @@ func (s *Store) fetchPayload(ctx context.Context, credName string, src *config.V
 	case "command":
 		ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, src.Command[0], src.Command[1:]...)
+		cmd := exec.CommandContext(ctx, src.Command[0], src.Command[1:]...) //nolint:gosec // command source runs what the operator configured
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()

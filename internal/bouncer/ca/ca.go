@@ -85,8 +85,8 @@ func (a *Authority) Cert() *x509.Certificate { return a.cert }
 
 func (a *Authority) loadTLS() error {
 	cp, kp := filepath.Join(a.dir, certFile), filepath.Join(a.dir, keyFile)
-	certPEM, cerr := os.ReadFile(cp)
-	keyPEM, kerr := os.ReadFile(kp)
+	certPEM, cerr := os.ReadFile(cp) //nolint:gosec // path from operator config or the state dir, not the agent
+	keyPEM, kerr := os.ReadFile(kp)  //nolint:gosec // path from operator config or the state dir, not the agent
 	if errors.Is(cerr, os.ErrNotExist) && errors.Is(kerr, os.ErrNotExist) {
 		return a.createTLS(cp, kp)
 	}
@@ -137,7 +137,7 @@ func (a *Authority) createTLS(cp, kp string) error {
 	if err := os.WriteFile(kp, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
 		return fmt.Errorf("write ca key: %w", err)
 	}
-	if err := os.WriteFile(cp, certPEM, 0o644); err != nil {
+	if err := os.WriteFile(cp, certPEM, 0o644); err != nil { //nolint:gosec // the CA cert is public and must be readable by the agent's uid
 		return fmt.Errorf("write ca cert: %w", err)
 	}
 	a.cert, _ = x509.ParseCertificate(der)
@@ -197,7 +197,7 @@ func randSerial() *big.Int {
 }
 
 func loadOrCreateSSHKey(path string) (ssh.Signer, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path from operator config or the state dir, not the agent
 	if err == nil {
 		s, perr := ssh.ParsePrivateKey(data)
 		if perr != nil {
@@ -251,8 +251,8 @@ func (a *Authority) SSHHostSigner(host string) (ssh.Signer, error) {
 		CertType:        ssh.HostCert,
 		KeyId:           "agent-bouncer:" + host,
 		ValidPrincipals: []string{host},
-		ValidAfter:      uint64(now.Add(-time.Hour).Unix()),
-		ValidBefore:     uint64(now.AddDate(1, 0, 0).Unix()),
+		ValidAfter:      uint64(now.Add(-time.Hour).Unix()),  //nolint:gosec // unix time of a current date is positive
+		ValidBefore:     uint64(now.AddDate(1, 0, 0).Unix()), //nolint:gosec // unix time of a current date is positive
 	}
 	if err := cert.SignCert(rand.Reader, a.sshCA); err != nil {
 		return nil, fmt.Errorf("sign host cert: %w", err)

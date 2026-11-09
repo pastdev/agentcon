@@ -162,7 +162,7 @@ func TestEndpoints(t *testing.T) {
 		tester(t, testCase{server: "https://vault.example.com/bw", wantAPI: "https://vault.example.com/bw/api", wantID: "https://vault.example.com/bw/identity"})
 	})
 	t.Run("rejects userinfo in the server url", func(t *testing.T) {
-		tester(t, testCase{server: "https://user:pass@vault.example.com", wantErr: true})
+		tester(t, testCase{server: "https://user:pass@vault.example.com", wantErr: true}) //nolint:gosec // fake credentials the test expects to be rejected
 	})
 }
 

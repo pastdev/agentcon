@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // Bitwarden mandates RSA-OAEP with SHA-1
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -124,7 +124,7 @@ func (s *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"access_token": "access-1", "refresh_token": s.refreshToken})
 	case strings.HasSuffix(r.URL.Path, "/sync"):
 		if r.Header.Get("Authorization") == "" || r.Header.Get("Bitwarden-Client-Version") == "" {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		s.syncs++
@@ -170,7 +170,7 @@ func buildVault(t *testing.T, id identity) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rsaCT, err := rsa.EncryptOAEP(sha1.New(), rand.Reader, &priv.PublicKey, orgMaterial, nil)
+	rsaCT, err := rsa.EncryptOAEP(sha1.New(), rand.Reader, &priv.PublicKey, orgMaterial, nil) //nolint:gosec // Bitwarden mandates RSA-OAEP with SHA-1
 	if err != nil {
 		t.Fatal(err)
 	}

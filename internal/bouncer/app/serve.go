@@ -52,7 +52,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		Load:       opts.Load,
 		Logf:       logger.Printf,
 		Decision: func(e audit.Entry) {
-			if opts.Quiet || (e.Decision == "tunnel" && !opts.ShowTunnels) {
+			if opts.Quiet || (e.Decision == audit.DecisionTunnel && !opts.ShowTunnels) {
 				return
 			}
 			logger.Print(FormatDecision(e))
@@ -117,11 +117,11 @@ func FormatDecision(e audit.Entry) string {
 		who = e.Session
 	}
 	s := fmt.Sprintf("%-6s [%s] %s", strings.ToUpper(e.Decision), who, e.Request)
-	if e.Status != 0 && e.Decision == "allow" {
+	if e.Status != 0 && e.Decision == audit.DecisionAllow {
 		s += fmt.Sprintf(" -> %d", e.Status)
 	}
 	switch {
-	case e.Decision == "deny" || e.Decision == "error":
+	case e.Decision == audit.DecisionDeny || e.Decision == audit.DecisionError:
 		s += fmt.Sprintf("  (%s: %s)", e.By, e.Reason)
 	case e.By != "":
 		s += fmt.Sprintf("  (%s)", e.By)
