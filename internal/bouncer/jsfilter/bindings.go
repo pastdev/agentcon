@@ -207,13 +207,13 @@ func (i *instance) context(req *chain.Request) goja.Value {
 
 func (i *instance) resolved(v goja.Value) goja.Value {
 	p, resolve, _ := i.vm.NewPromise()
-	resolve(v)
+	_ = resolve(v)
 	return i.vm.ToValue(p)
 }
 
 func (i *instance) rejected(err error) goja.Value {
 	p, _, reject := i.vm.NewPromise()
-	reject(i.vm.NewGoError(err))
+	_ = reject(i.vm.NewGoError(err))
 	return i.vm.ToValue(p)
 }
 
@@ -274,7 +274,10 @@ func exportPlain(v goja.Value) any {
 		return nil
 	}
 	var out any
-	json.Unmarshal(b, &out)
+	err = json.Unmarshal(b, &out)
+	if err != nil {
+		return nil
+	}
 	return out
 }
 

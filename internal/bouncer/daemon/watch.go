@@ -53,7 +53,7 @@ func (d *Daemon) watch() (func(), error) {
 			}
 		}
 	}()
-	return func() { close(done); w.Close() }, nil
+	return func() { close(done); _ = w.Close() }, nil
 }
 
 func relevant(name string) bool {

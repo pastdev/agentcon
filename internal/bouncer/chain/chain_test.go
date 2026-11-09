@@ -709,7 +709,7 @@ func TestCheckMethodOverride(t *testing.T) {
 	})
 	t.Run("does not consume the body", func(t *testing.T) {
 		r := form("title=hello")
-		CheckMethodOverride(r)
+		_ = CheckMethodOverride(r)
 		b, err := io.ReadAll(r.Body.Reader())
 		if err != nil {
 			t.Fatal(err)

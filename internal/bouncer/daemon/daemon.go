@@ -481,8 +481,12 @@ func (d *Daemon) saveSessions() {
 	d.mu.RUnlock()
 	b, _ := json.MarshalIndent(recs, "", "  ")
 	tmp := d.sessionsFile() + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		os.Rename(tmp, d.sessionsFile())
+	err := os.WriteFile(tmp, b, 0o600)
+	if err == nil {
+		err = os.Rename(tmp, d.sessionsFile())
+	}
+	if err != nil {
+		d.opts.Logf("warning: saving sessions: %v", err)
 	}
 }
 
@@ -527,7 +531,7 @@ func (d *Daemon) resolveGitLabProject(ctx context.Context, service, host, projec
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("GET %s: %s", u, resp.Status)
 	}
@@ -555,15 +559,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	sshL, err := net.Listen("tcp", plan.ssh)
 	if err != nil {
-		httpL.Close()
+		_ = httpL.Close()
 		return fmt.Errorf("ssh listen: %w", err)
 	}
 	var mgmtL net.Listener
 	if plan.split {
 		mgmtL, err = net.Listen("tcp", plan.mgmt)
 		if err != nil {
-			httpL.Close()
-			sshL.Close()
+			_ = httpL.Close()
+			_ = sshL.Close()
 			return fmt.Errorf("management listen: %w", err)
 		}
 	}
@@ -599,7 +603,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := os.WriteFile(RuntimePath(d.opts.StateDir), rt, 0o600); err != nil {
 		d.opts.Logf("warning: writing runtime file: %v", err)
 	}
-	defer os.Remove(RuntimePath(d.opts.StateDir))
+	defer func() { _ = os.Remove(RuntimePath(d.opts.StateDir)) }()
 	if plan.split {
 		d.opts.Logf("proxy listening on %s, ssh on %s, management on %s", httpL.Addr(), sshL.Addr(), mgmtL.Addr())
 	} else {
@@ -609,17 +613,23 @@ func (d *Daemon) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	case err = <-errc:
 	}
-	httpL.Close()
-	sshL.Close()
+	_ = httpL.Close()
+	_ = sshL.Close()
 	if mgmtL != nil {
-		mgmtL.Close()
+		_ = mgmtL.Close()
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	httpSrv.Shutdown(shutdownCtx)
-	mgmtSrv.Shutdown(shutdownCtx)
-	d.kv.Close()
-	d.audit.Close()
+	_ = httpSrv.Shutdown(shutdownCtx)
+	_ = mgmtSrv.Shutdown(shutdownCtx)
+	kvErr := d.kv.Close()
+	if kvErr != nil {
+		d.opts.Logf("warning: saving kv store: %v", kvErr)
+	}
+	auditErr := d.audit.Close()
+	if auditErr != nil {
+		d.opts.Logf("warning: closing audit log: %v", auditErr)
+	}
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		err = nil
 	}

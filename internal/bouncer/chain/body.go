@@ -106,7 +106,7 @@ func (b *Body) Set(data []byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.src != nil {
-		b.src.Close()
+		_ = b.src.Close()
 	}
 	b.src, b.buf, b.eof, b.err, b.consumed = nil, append([]byte(nil), data...), true, nil, false
 }

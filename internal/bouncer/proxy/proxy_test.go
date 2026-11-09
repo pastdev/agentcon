@@ -52,10 +52,10 @@ func setup(t *testing.T, profileYAML string) *env {
 	e.upstream = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/upgrade" {
 			conn, buf, _ := http.NewResponseController(w).Hijack()
-			buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: echo\r\nConnection: Upgrade\r\n\r\n")
-			buf.Flush()
-			io.Copy(conn, buf)
-			conn.Close()
+			_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: echo\r\nConnection: Upgrade\r\n\r\n")
+			_ = buf.Flush()
+			_, _ = io.Copy(conn, buf)
+			_ = conn.Close()
 			return
 		}
 		if r.URL.Path == "/redirect" {
@@ -64,7 +64,7 @@ func setup(t *testing.T, profileYAML string) *env {
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
-		fmt.Fprintf(w, "widget=%s auth=%s private=%s path=%s query=%s body=%s", r.Header.Get("X-Widget-Key"), r.Header.Get("Authorization"), r.Header.Get("Private-Token"), r.URL.EscapedPath(), r.URL.RawQuery, body)
+		_, _ = fmt.Fprintf(w, "widget=%s auth=%s private=%s path=%s query=%s body=%s", r.Header.Get("X-Widget-Key"), r.Header.Get("Authorization"), r.Header.Get("Private-Token"), r.URL.EscapedPath(), r.URL.RawQuery, body)
 	}))
 	t.Cleanup(e.upstream.Close)
 	_, e.port, _ = net.SplitHostPort(e.upstream.Listener.Addr().String())
@@ -131,7 +131,7 @@ func (e *env) get(t *testing.T, method, rawURL string, hdr map[string]string) (i
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, rawURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -333,7 +333,7 @@ func TestIntercept(t *testing.T) {
 	})
 	t.Run("refuses plain http forwarding to loopback", func(t *testing.T) {
 		e := setup(t, scopedProfile)
-		plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "reached") }))
+		plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "reached") }))
 		t.Cleanup(plain.Close)
 		tester(t, testCase{
 			e:           e,
@@ -391,7 +391,7 @@ func TestIntercept(t *testing.T) {
 	t.Run("hides credential error details from the agent", func(t *testing.T) {
 		e := setup(t, scopedProfile)
 		t.Setenv("BOUNCER_TEST_TOKEN", "")
-		os.Unsetenv("BOUNCER_TEST_TOKEN")
+		_ = os.Unsetenv("BOUNCER_TEST_TOKEN")
 		_, body := e.get(t, "GET", "https://localhost:"+e.port+"/api/v4/projects/group%2Fproj", nil)
 		if !strings.Contains(body, "unavailable; see the bouncer log") || strings.Contains(body, "BOUNCER_TEST_TOKEN") {
 			t.Fatalf("agent saw credential error details: %s", body)
@@ -407,7 +407,7 @@ func TestIntercept(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != 200 || !strings.Contains(string(b), "auth=Bearer real-secret") || !strings.Contains(string(b), "path=/api/v4/projects/group%2Fproj") {
 			t.Fatalf("%d %s", resp.StatusCode, b)
 		}
@@ -483,7 +483,7 @@ func TestIntercept(t *testing.T) {
 		if string(buf) != "ping" {
 			t.Fatalf("echo: %q", buf)
 		}
-		rwc.Close()
+		_ = rwc.Close()
 	})
 	t.Run("preserves a malformed query and scrubs secrets from redirects", func(t *testing.T) {
 		e := setup(t, `
@@ -507,7 +507,7 @@ func TestIntercept(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if loc := resp.Header.Get("Location"); strings.Contains(loc, "real-secret") {
 			t.Fatalf("secret leaked in Location: %q", loc)
 		}

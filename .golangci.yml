@@ -26,8 +26,19 @@ linters:
     - whitespace
     - wrapcheck
   settings:
+    errcheck:
+      exclude-functions:
+        # Filter bindings define properties on objects they just created,
+        # which goja cannot refuse.
+        - (*github.com/dop251/goja.Object).Set
+        - (*github.com/dop251/goja.Object).DefineDataProperty
+        - (*github.com/dop251/goja.Object).DefineAccessorProperty
     goconst:
       ignore-tests: true
+    gosec:
+      excludes:
+        # Unchecked errors belong to errcheck, which honors exclude-functions.
+        - G104
   exclusions:
     generated: lax
     presets:
@@ -36,8 +47,6 @@ linters:
       - third_party$
       - builtin$
       - examples$
-      - internal/bouncer
-      - cmd/agentcon/bouncer
 formatters:
   enable:
     - gofmt
@@ -47,5 +56,3 @@ formatters:
       - third_party$
       - builtin$
       - examples$
-      - internal/bouncer
-      - cmd/agentcon/bouncer

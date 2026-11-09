@@ -342,7 +342,7 @@ export default defineFilter({
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 		var prompts []string
 		env := &chain.Env{Approver: approver(func(a chain.AskRequest) bool { prompts = append(prompts, a.Prompt); return a.Prompt == "push #2?" })}
 		f := load(t, `
@@ -541,7 +541,7 @@ export default { async onRequest(req, next) {
   return deny("second");
 } };`, Options{})
 		h := chain.Build([]chain.Filter{f}, term)
-		h(sessReq(t, "s1"))
+		_, _ = h(sessReq(t, "s1"))
 		resp, err := h(sessReq(t, "s1"))
 		if err != nil {
 			t.Fatal(err)

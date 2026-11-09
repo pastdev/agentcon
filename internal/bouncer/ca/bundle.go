@@ -90,7 +90,7 @@ func systemRootsPEM() []byte {
 		if r.Constraint != nil {
 			continue
 		}
-		pem.Encode(&out, &pem.Block{Type: "CERTIFICATE", Bytes: r.Certificate})
+		_ = pem.Encode(&out, &pem.Block{Type: "CERTIFICATE", Bytes: r.Certificate})
 	}
 	return out.Bytes()
 }

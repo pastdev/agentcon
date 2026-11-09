@@ -80,7 +80,7 @@ func (s *Server) forwarder(svc *policy.Service, origLength int64) chain.Handler 
 			// the service permits it; otherwise an upstream could hand the
 			// agent a raw stream on a request that was never meant to upgrade.
 			if header.Get("Upgrade") == "" || (svc.Config.Credential != "" && !svc.Config.AllowUpgrade) {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				return synthetic(http.StatusBadGateway, "agent-bouncer: unexpected protocol upgrade from upstream"), nil
 			}
 			if rwc, ok := resp.Body.(io.ReadWriteCloser); ok {

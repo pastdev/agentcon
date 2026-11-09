@@ -62,7 +62,8 @@ func (l *Log) Write(e Entry) {
 	}
 	b, _ := json.Marshal(e)
 	l.mu.Lock()
-	l.w.Write(append(b, '\n'))
+	// A failed audit write must not fail the request it describes.
+	_, _ = l.w.Write(append(b, '\n'))
 	l.mu.Unlock()
 }
 

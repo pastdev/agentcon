@@ -137,7 +137,7 @@ func RunFile(path string) ([]Result, error) {
 	}
 	dir := filepath.Dir(path)
 	store, _ := kv.Open("")
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	approver := &scriptedApprover{}
 	logs := &bytes.Buffer{}
 	env := &chain.Env{

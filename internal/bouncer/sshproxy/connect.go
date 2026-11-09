@@ -21,16 +21,16 @@ func Dial(addr string, p Preamble) (net.Conn, error) {
 	}
 	b, _ := json.Marshal(p)
 	if _, err := fmt.Fprintf(c, "%s%s\n", preamblePrefix, b); err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 	// Read the reply byte by byte so no SSH data is consumed.
 	var line strings.Builder
 	one := make([]byte, 1)
-	c.SetReadDeadline(time.Now().Add(90 * time.Second))
+	_ = c.SetReadDeadline(time.Now().Add(90 * time.Second))
 	for {
 		if _, err := c.Read(one); err != nil {
-			c.Close()
+			_ = c.Close()
 			return nil, fmt.Errorf("reading bouncer reply: %w", err)
 		}
 		if one[0] == '\n' {
@@ -38,16 +38,16 @@ func Dial(addr string, p Preamble) (net.Conn, error) {
 		}
 		line.WriteByte(one[0])
 		if line.Len() > 4096 {
-			c.Close()
+			_ = c.Close()
 			return nil, errors.New("bouncer reply too long")
 		}
 	}
-	c.SetReadDeadline(time.Time{})
+	_ = c.SetReadDeadline(time.Time{})
 	reply := line.String()
 	if reply == "OK" {
 		return c, nil
 	}
-	c.Close()
+	_ = c.Close()
 	return nil, errors.New(strings.TrimPrefix(reply, "ERR "))
 }
 
@@ -57,16 +57,16 @@ func Connect(addr string, p Preamble, stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		io.Copy(stdout, bufio.NewReader(c))
+		_, _ = io.Copy(stdout, bufio.NewReader(c))
 	}()
-	io.Copy(c, stdin)
+	_, _ = io.Copy(c, stdin)
 	if tc, ok := c.(*net.TCPConn); ok {
-		tc.CloseWrite()
+		_ = tc.CloseWrite()
 	}
 	wg.Wait()
 	return nil

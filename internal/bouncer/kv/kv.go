@@ -122,9 +122,9 @@ func (s *Store) loop() {
 	for {
 		select {
 		case <-t.C:
-			s.Flush()
+			// A failed write leaves the store dirty, so the next tick retries.
+			_ = s.Flush()
 		case <-s.stop:
-			s.Flush()
 			return
 		}
 	}
@@ -146,9 +146,18 @@ func (s *Store) Flush() error {
 	b, err := json.Marshal(s.data)
 	s.dirty = false
 	s.mu.Unlock()
-	if err != nil {
-		return err
+	if err == nil {
+		err = s.write(b)
 	}
+	if err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+	}
+	return err
+}
+
+func (s *Store) write(b []byte) error {
 	tmp := s.path + ".tmp"
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
@@ -159,9 +168,9 @@ func (s *Store) Flush() error {
 	return os.Rename(tmp, s.path)
 }
 
-// Close flushes and stops the background writer.
+// Close stops the background writer and flushes.
 func (s *Store) Close() error {
 	close(s.stop)
 	<-s.done
-	return nil
+	return s.Flush()
 }

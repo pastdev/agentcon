@@ -173,7 +173,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 	client := &bufferedConn{Conn: conn, r: buf.Reader}
@@ -186,14 +186,14 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Only TLS can be inspected; anything else to an intercepted host is refused.
 	first, err := client.r.Peek(1)
 	if err != nil {
-		client.Close()
+		_ = client.Close()
 		return
 	}
 	if first[0] != 0x16 {
 		e := s.entry(sess, "http", svc.Config.Name, "CONNECT "+target)
 		e.Decision, e.Reason = "deny", "non-TLS traffic to an intercepted host"
 		s.Audit.Write(e)
-		client.Close()
+		_ = client.Close()
 		return
 	}
 	host, _ := config.SplitHostPort(target)
@@ -205,7 +205,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	})
 	if err := tlsConn.HandshakeContext(r.Context()); err != nil {
 		s.logf("TLS handshake with client for %s failed (does it trust the bouncer CA?): %v", host, err)
-		tlsConn.Close()
+		_ = tlsConn.Close()
 		return
 	}
 	token := s.proxyToken(r)
@@ -239,7 +239,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		ReadHeaderTimeout: 30 * time.Second,
 		ErrorLog:          nil,
 	}
-	srv.Serve(newOneConnListener(tlsConn))
+	_ = srv.Serve(newOneConnListener(tlsConn))
 }
 
 // hostForURL drops the default port.
@@ -302,7 +302,7 @@ func (s *Server) handleAbsolute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agent-bouncer: upstream error: "+err.Error(), status)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	removeHopHeaders(resp.Header)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
@@ -384,16 +384,16 @@ func (s *Server) intercept(w http.ResponseWriter, r *http.Request, sess *chain.S
 		if result := pushRejection(req, resp.Denial); result != nil {
 			// Consume the pack so the client reads our response instead of
 			// failing mid-upload.
-			io.Copy(io.Discard, io.LimitReader(req.Body.Reader(), 1<<30))
+			_, _ = io.Copy(io.Discard, io.LimitReader(req.Body.Reader(), 1<<30))
 			w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.WriteHeader(http.StatusOK)
-			w.Write(result)
+			_, _ = w.Write(result)
 			return
 		}
 		writeDenial(w, resp.Denial)
 		if resp.Body != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		return
 	}
@@ -422,7 +422,7 @@ func writeDenial(w http.ResponseWriter, d *chain.Denial) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Bouncer-Denied-By", d.By)
 	w.WriteHeader(status)
-	fmt.Fprintf(w, "agent-bouncer: request denied by %s: %s\n", d.By, d.Reason)
+	_, _ = fmt.Fprintf(w, "agent-bouncer: request denied by %s: %s\n", d.By, d.Reason)
 }
 
 func (s *Server) writeResponse(w http.ResponseWriter, resp *chain.Response) {
@@ -440,7 +440,7 @@ func (s *Server) writeResponse(w http.ResponseWriter, resp *chain.Response) {
 			w.Header().Set("Content-Length", fmt.Sprint(n))
 		}
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	w.WriteHeader(resp.Status)
 	copyFlush(w, body)
 }
@@ -448,15 +448,15 @@ func (s *Server) writeResponse(w http.ResponseWriter, resp *chain.Response) {
 func (s *Server) writeUpgrade(w http.ResponseWriter, resp *chain.Response) {
 	conn, buf, err := http.NewResponseController(w).Hijack()
 	if err != nil {
-		resp.Upgrade.Close()
+		_ = resp.Upgrade.Close()
 		return
 	}
-	fmt.Fprintf(buf, "HTTP/1.1 101 Switching Protocols\r\n")
-	resp.Header.Write(buf)
-	buf.WriteString("\r\n")
+	_, _ = fmt.Fprintf(buf, "HTTP/1.1 101 Switching Protocols\r\n")
+	_ = resp.Header.Write(buf)
+	_, _ = buf.WriteString("\r\n")
 	if err := buf.Flush(); err != nil {
-		conn.Close()
-		resp.Upgrade.Close()
+		_ = conn.Close()
+		_ = resp.Upgrade.Close()
 		return
 	}
 	splice(&bufferedConn{Conn: conn, r: buf.Reader}, resp.Upgrade)
@@ -480,7 +480,7 @@ func copyFlush(w http.ResponseWriter, r io.Reader) {
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				return
 			}
-			rc.Flush()
+			_ = rc.Flush()
 		}
 		if err != nil {
 			return
@@ -520,18 +520,18 @@ func splice(a io.ReadWriteCloser, b io.ReadWriteCloser) {
 	wg.Add(2)
 	cp := func(dst, src io.ReadWriteCloser) {
 		defer wg.Done()
-		io.Copy(dst, src)
+		_, _ = io.Copy(dst, src)
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
+			_ = cw.CloseWrite()
 		} else {
-			dst.Close()
+			_ = dst.Close()
 		}
 	}
 	go cp(a, b)
 	go cp(b, a)
 	wg.Wait()
-	a.Close()
-	b.Close()
+	_ = a.Close()
+	_ = b.Close()
 }
 
 // bufferedConn is a hijacked conn whose reads go through the server's buffer.
@@ -560,7 +560,7 @@ type oneConnListener struct {
 
 func newOneConnListener(c net.Conn) *oneConnListener {
 	l := &oneConnListener{closed: make(chan struct{})}
-	l.conn = &notifyCloseConn{Conn: c, onClose: func() { l.Close() }}
+	l.conn = &notifyCloseConn{Conn: c, onClose: func() { _ = l.Close() }}
 	return l
 }
 

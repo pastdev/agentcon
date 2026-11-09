@@ -424,7 +424,7 @@ func (a *api) do(ctx context.Context, method, rawURL string, body io.Reader, hdr
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, resp.StatusCode, err

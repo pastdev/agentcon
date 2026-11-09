@@ -29,9 +29,9 @@ func approvalsCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tSESSION\tPROMPT\tREQUEST\tEXPIRES")
+			_, _ = fmt.Fprintln(w, "ID\tSESSION\tPROMPT\tREQUEST\tEXPIRES")
 			for _, p := range list {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.ID, p.SessionLabel, p.Prompt, p.Request, time.Until(p.Expires).Round(time.Second))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.ID, p.SessionLabel, p.Prompt, p.Request, time.Until(p.Expires).Round(time.Second))
 			}
 			return w.Flush()
 		},
@@ -75,9 +75,9 @@ func sessionsCmd() *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tLABEL\tPROFILE\tCREATED")
+			_, _ = fmt.Fprintln(w, "ID\tLABEL\tPROFILE\tCREATED")
 			for _, s := range list {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, s.Label, s.Profile, s.Created.Format(time.DateTime))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, s.Label, s.Profile, s.Created.Format(time.DateTime))
 			}
 			return w.Flush()
 		},

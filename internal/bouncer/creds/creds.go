@@ -435,7 +435,7 @@ func agentSigners(name string, src *config.ValueSource) ([]ssh.Signer, error) {
 	// released when the process exits or the agent hangs up.
 	signers, err := agent.NewClient(conn).Signers()
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	if src.Fingerprint == "" {
@@ -446,6 +446,6 @@ func agentSigners(name string, src *config.ValueSource) ([]ssh.Signer, error) {
 			return []ssh.Signer{sg}, nil
 		}
 	}
-	conn.Close()
+	_ = conn.Close()
 	return nil, fmt.Errorf("credential %q: no agent key with fingerprint %s", name, src.Fingerprint)
 }

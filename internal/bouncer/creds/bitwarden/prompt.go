@@ -86,9 +86,9 @@ func (p stdPrompter) MasterPassword(label string) (string, error) {
 	if !term.IsTerminal(int(in.Fd())) {
 		return "", fmt.Errorf("%w: master password for %s required", ErrNeedTerminal, label)
 	}
-	fmt.Fprintf(out, "Bitwarden master password for %s: ", label)
+	_, _ = fmt.Fprintf(out, "Bitwarden master password for %s: ", label)
 	b, err := term.ReadPassword(int(in.Fd()))
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 	if err != nil {
 		return "", err
 	}
@@ -110,7 +110,7 @@ func (p stdPrompter) TwoFactorCode(label, method string) (string, error) {
 	if !term.IsTerminal(int(in.Fd())) {
 		return "", fmt.Errorf("%w: verification code (%s) for %s required", ErrNeedTerminal, method, label)
 	}
-	fmt.Fprintf(out, "Bitwarden verification code (%s) for %s: ", method, label)
+	_, _ = fmt.Fprintf(out, "Bitwarden verification code (%s) for %s: ", method, label)
 	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
