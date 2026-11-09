@@ -106,7 +106,7 @@ func (r *Rules) act(req *Request, next Handler, i int, action, by, reason, promp
 		}
 		ok, err := r.env.Approver.Ask(req.Ctx, AskRequest{Session: req.Session, Filter: r.name, Prompt: prompt, Request: req.Describe()})
 		if err != nil {
-			return Deny(by, "approval failed: "+err.Error()), nil
+			return Deny(by, "approval failed: "+err.Error()), nil //nolint:nilerr // a failed approval is a deny, not an error
 		}
 		if !ok {
 			if reason == "" {

@@ -151,7 +151,7 @@ func (r *Request) Push() (*gitproto.Push, error) {
 			r.push = &gitproto.Push{}
 			return
 		}
-		var src io.Reader = r.Body.PeekReader()
+		src := r.Body.PeekReader()
 		if r.Header != nil && strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
 			zr, err := gzip.NewReader(src)
 			if err != nil {

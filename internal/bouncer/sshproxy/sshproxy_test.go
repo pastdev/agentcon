@@ -33,7 +33,7 @@ type backend struct {
 }
 
 func (b backend) Session(tok string) (*chain.Session, bool) {
-	if tok == "tok" && !(b.revoked != nil && *b.revoked) {
+	if tok == "tok" && (b.revoked == nil || !*b.revoked) {
 		return &chain.Session{ID: "s1", Profile: "p"}, true
 	}
 	return nil, false
@@ -62,7 +62,7 @@ func startUpstream(t *testing.T, clientKey ssh.PublicKey) *upstream {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { l.Close() })
+	t.Cleanup(func() { _ = l.Close() })
 	u := &upstream{addr: l.Addr().String(), hostKey: hs.PublicKey(), received: map[string][]byte{}}
 	go func() {
 		for {
@@ -87,38 +87,38 @@ func startUpstream(t *testing.T, clientKey ssh.PublicKey) *upstream {
 }
 
 func (u *upstream) serve(ch ssh.Channel, reqs <-chan *ssh.Request) {
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 	var env []string
 	for r := range reqs {
 		if r.Type == "env" {
 			var e struct{ Name, Value string }
-			ssh.Unmarshal(r.Payload, &e)
+			_ = ssh.Unmarshal(r.Payload, &e)
 			env = append(env, e.Name+"="+e.Value)
-			r.Reply(true, nil)
+			_ = r.Reply(true, nil)
 			continue
 		}
 		if r.Type != "exec" {
-			r.Reply(false, nil)
+			_ = r.Reply(false, nil)
 			continue
 		}
 		var p struct{ Command string }
-		ssh.Unmarshal(r.Payload, &p)
-		r.Reply(true, nil)
+		_ = ssh.Unmarshal(r.Payload, &p)
+		_ = r.Reply(true, nil)
 		switch {
 		case p.Command == "echo hi":
-			io.WriteString(ch, "hi\n")
+			_, _ = io.WriteString(ch, "hi\n")
 		case p.Command == "env":
-			io.WriteString(ch, strings.Join(env, ","))
+			_, _ = io.WriteString(ch, strings.Join(env, ","))
 		case strings.HasPrefix(p.Command, "git-receive-pack"):
-			ch.Write(gitproto.EncodePkt(strings.Repeat("a", 40) + " refs/heads/main\x00report-status\n"))
-			ch.Write(gitproto.Flush)
+			_, _ = ch.Write(gitproto.EncodePkt(strings.Repeat("a", 40) + " refs/heads/main\x00report-status\n"))
+			_, _ = ch.Write(gitproto.Flush)
 			data, _ := io.ReadAll(ch)
 			u.mu.Lock()
 			u.received[p.Command] = data
 			u.mu.Unlock()
-			io.WriteString(ch, "pushed\n")
+			_, _ = io.WriteString(ch, "pushed\n")
 		}
-		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 		return
 	}
 }
@@ -130,7 +130,7 @@ func setupR(t *testing.T) (*upstream, string, *ca.Authority, *bool) {
 	_, ck, _ := ed25519.GenerateKey(rand.Reader)
 	block, _ := ssh.MarshalPrivateKey(ck, "")
 	keyPath := filepath.Join(dir, "id")
-	os.WriteFile(keyPath, pem.EncodeToMemory(block), 0o600)
+	_ = os.WriteFile(keyPath, pem.EncodeToMemory(block), 0o600)
 	cs, _ := ssh.NewSignerFromKey(ck)
 	up := startUpstream(t, cs.PublicKey())
 	_, port, _ := net.SplitHostPort(up.addr)
@@ -166,12 +166,12 @@ profiles:
 	revoked := new(bool)
 	srv := &Server{Backend: backend{set: set, revoked: revoked}, CA: authority, Creds: creds.NewStore(cfg.Credentials), Audit: log}
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
-	t.Cleanup(func() { l.Close() })
-	go srv.Serve(l)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() { _ = srv.Serve(l) }()
 	return up, l.Addr().String(), authority, revoked
 }
 
-func client(t *testing.T, bouncer string, authority *ca.Authority, token string) (*ssh.Client, error) {
+func client(_ *testing.T, bouncer string, authority *ca.Authority, token string) (*ssh.Client, error) {
 	c, err := Dial(bouncer, Preamble{Token: token, Host: "127.0.0.1", Port: 22, User: "git"})
 	if err != nil {
 		return nil, err
@@ -181,7 +181,7 @@ func client(t *testing.T, bouncer string, authority *ca.Authority, token string)
 	}}
 	cc, chans, reqs, err := ssh.NewClientConn(c, "127.0.0.1:22", &ssh.ClientConfig{User: "git", HostKeyCallback: checker.CheckHostKey})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ssh handshake: %w", err)
 	}
 	return ssh.NewClient(cc, chans, reqs), nil
 }
@@ -191,7 +191,7 @@ func run(t *testing.T, cl *ssh.Client, cmd string, stdin []byte) (string, string
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	var out, errb bytes.Buffer
 	s.Stdout, s.Stderr = &out, &errb
 	if stdin != nil {
@@ -234,7 +234,7 @@ func TestServe(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer cl.Close()
+		defer func() { _ = cl.Close() }()
 
 		if out, _, err := run(t, cl, "echo hi", nil); err != nil || out != "hi\n" {
 			t.Fatalf("exec: %q %v", out, err)
@@ -283,12 +283,12 @@ func TestServe(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer cl.Close()
+		defer func() { _ = cl.Close() }()
 		s, err := cl.NewSession()
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 		err = s.Setenv("GIT_PROTOCOL", "version=2")
 		if err != nil {
 			t.Fatalf("allowlisted env refused: %v", err)
@@ -308,7 +308,7 @@ func TestServe(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		_, err = c.Write([]byte(preamblePrefix + strings.Repeat("x", maxPreamble+10)))
 		if err != nil {
 			t.Fatal(err)
@@ -330,7 +330,7 @@ func TestServe(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer cl.Close()
+		defer func() { _ = cl.Close() }()
 		if out, _, err := run(t, cl, "echo hi", nil); err != nil || out != "hi\n" {
 			t.Fatalf("first exec: %q %v", out, err)
 		}
@@ -338,6 +338,43 @@ func TestServe(t *testing.T) {
 		if _, err := cl.NewSession(); err == nil {
 			t.Fatal("opened a new channel after the session was revoked")
 		}
+	})
+}
+
+func TestMalformedRequest(t *testing.T) {
+	type testCase struct {
+		kind    string
+		payload []byte
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		_, addr, authority := setup(t)
+		cl, err := client(t, addr, authority, "tok")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = cl.Close() }()
+		ch, reqs, err := cl.OpenChannel("session", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = ch.Close() }()
+		go ssh.DiscardRequests(reqs)
+		ok, err := ch.SendRequest(tc.kind, true, tc.payload)
+		if err == nil && ok {
+			t.Fatalf("%s with payload %q was not refused as malformed", tc.kind, tc.payload)
+		}
+	}
+
+	valid := ssh.Marshal(struct{ Command string }{"echo hi"})
+	t.Run("exec with trailing data", func(t *testing.T) {
+		tester(t, testCase{kind: "exec", payload: append(append([]byte{}, valid...), 'x')})
+	})
+	t.Run("exec with truncated command", func(t *testing.T) {
+		tester(t, testCase{kind: "exec", payload: valid[:6]})
+	})
+	t.Run("subsystem with truncated name", func(t *testing.T) {
+		tester(t, testCase{kind: "subsystem", payload: []byte{0, 0, 0, 9, 's'}})
 	})
 }
 

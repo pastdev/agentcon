@@ -20,7 +20,7 @@ import (
 func writeFilter(t *testing.T, dir, name, src string) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
-	err := os.WriteFile(p, []byte(src), 0o644)
+	err := os.WriteFile(p, []byte(src), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func load(t *testing.T, src string, opts Options) *Filter {
 	return f
 }
 
-func req(t *testing.T, method, raw string, body []byte) *chain.Request {
+func req(_ *testing.T, method, raw string, body []byte) *chain.Request {
 	u, _ := url.Parse(raw)
 	return &chain.Request{Ctx: context.Background(), Transport: chain.TransportHTTP, Method: method, URL: u,
 		Header: http.Header{}, Body: chain.BytesBody(body), Session: &chain.Session{ID: "s1"}}
@@ -342,7 +342,7 @@ export default defineFilter({
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 		var prompts []string
 		env := &chain.Env{Approver: approver(func(a chain.AskRequest) bool { prompts = append(prompts, a.Prompt); return a.Prompt == "push #2?" })}
 		f := load(t, `
@@ -541,7 +541,7 @@ export default { async onRequest(req, next) {
   return deny("second");
 } };`, Options{})
 		h := chain.Build([]chain.Filter{f}, term)
-		h(sessReq(t, "s1"))
+		_, _ = h(sessReq(t, "s1"))
 		resp, err := h(sessReq(t, "s1"))
 		if err != nil {
 			t.Fatal(err)

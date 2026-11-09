@@ -10,7 +10,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // Bitwarden mandates RSA-OAEP with SHA-1
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -198,11 +198,11 @@ func parseCipherString(s string) (cipherString, error) {
 func encryptSymmetric(k keys, plain []byte) (string, error) {
 	iv := make([]byte, aes.BlockSize)
 	if _, err := rand.Read(iv); err != nil {
-		return "", err
+		return "", fmt.Errorf("iv: %w", err)
 	}
 	block, err := aes.NewCipher(k.enc)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("aes key: %w", err)
 	}
 	padded := pkcs7Pad(plain, aes.BlockSize)
 	ct := make([]byte, len(padded))
@@ -255,7 +255,7 @@ func decryptSymmetric(k keys, cs cipherString) ([]byte, error) {
 	}
 	block, err := aes.NewCipher(k.enc)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("aes key: %w", err)
 	}
 	plain := make([]byte, len(cs.ct))
 	cipher.NewCBCDecrypter(block, cs.iv).CryptBlocks(plain, cs.ct)
@@ -279,7 +279,7 @@ func decryptOrgKey(user keys, priv *rsa.PrivateKey, enc string) (keys, error) {
 			return keys{}, errors.New("organization key is encrypted with RSA but the account has no private key")
 		}
 		// Bitwarden's type 4 is RSA-2048 OAEP with SHA-1. SHA-1 is the protocol, not a choice.
-		raw, err = rsa.DecryptOAEP(sha1.New(), rand.Reader, priv, cs.ct, nil)
+		raw, err = rsa.DecryptOAEP(sha1.New(), rand.Reader, priv, cs.ct, nil) //nolint:gosec // Bitwarden mandates RSA-OAEP with SHA-1
 	default:
 		err = fmt.Errorf("unsupported organization key type %d", cs.typ)
 	}
@@ -295,7 +295,7 @@ func parsePrivateKey(der []byte) (*rsa.PrivateKey, error) {
 		if k, err2 := x509.ParsePKCS1PrivateKey(der); err2 == nil {
 			return k, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("parse private key: %w", err)
 	}
 	rk, ok := key.(*rsa.PrivateKey)
 	if !ok {
@@ -309,7 +309,7 @@ func pkcs7Pad(b []byte, n int) []byte {
 	out := make([]byte, len(b)+pad)
 	copy(out, b)
 	for i := len(b); i < len(out); i++ {
-		out[i] = byte(pad)
+		out[i] = byte(pad) //nolint:gosec // PKCS#7 padding is at most one block (16)
 	}
 	return out
 }

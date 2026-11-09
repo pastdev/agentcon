@@ -47,7 +47,11 @@ func (a *Authority) WriteBundle() error {
 	buf.Write(a.certPEM)
 	buf.WriteByte('\n')
 	buf.Write(roots)
-	return os.WriteFile(a.BundlePath(), buf.Bytes(), 0o644)
+	err := os.WriteFile(a.BundlePath(), buf.Bytes(), 0o644) //nolint:gosec // the CA bundle is public and must be readable by the agent's uid
+	if err != nil {
+		return fmt.Errorf("write ca bundle: %w", err)
+	}
+	return nil
 }
 
 var linuxBundles = []string{
@@ -68,7 +72,7 @@ func systemRootsPEM() []byte {
 			"/System/Library/Keychains/SystemRootCertificates.keychain",
 			"/Library/Keychains/System.keychain",
 		} {
-			b, err := exec.Command("/usr/bin/security", "find-certificate", "-a", "-p", kc).Output()
+			b, err := exec.Command("/usr/bin/security", "find-certificate", "-a", "-p", kc).Output() //nolint:gosec // fixed binary; kc is a keychain path from a fixed list
 			if err == nil {
 				out.Write(b)
 			}
@@ -80,7 +84,7 @@ func systemRootsPEM() []byte {
 		// No portable PEM export; use the Mozilla bundle below.
 	default:
 		for _, f := range linuxBundles {
-			if b, err := os.ReadFile(f); err == nil && len(b) > 0 {
+			if b, err := os.ReadFile(f); err == nil && len(b) > 0 { //nolint:gosec // path from operator config or the state dir, not the agent
 				return b
 			}
 		}
@@ -90,7 +94,7 @@ func systemRootsPEM() []byte {
 		if r.Constraint != nil {
 			continue
 		}
-		pem.Encode(&out, &pem.Block{Type: "CERTIFICATE", Bytes: r.Certificate})
+		_ = pem.Encode(&out, &pem.Block{Type: "CERTIFICATE", Bytes: r.Certificate})
 	}
 	return out.Bytes()
 }

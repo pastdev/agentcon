@@ -114,8 +114,8 @@ func proxyAuthRequired(w http.ResponseWriter) {
 		http.StatusProxyAuthRequired)
 }
 
-func (s *Server) entry(sess *chain.Session, transport, service, request string) audit.Entry {
-	e := audit.Entry{Transport: transport, Service: service, Request: request}
+func (s *Server) entry(sess *chain.Session, service, request string) audit.Entry {
+	e := audit.Entry{Transport: "http", Service: service, Request: request}
 	if sess != nil {
 		e.Session, e.Label, e.Profile = sess.ID, sess.Label, sess.Profile
 	}
@@ -140,8 +140,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	svc := prof.MatchHTTP(target)
 	if svc == nil && !prof.Tunnels(target) {
-		e := s.entry(sess, "http", "", "CONNECT "+target)
-		e.Decision, e.Reason, e.Status, e.DurationMS = "deny", "host not allowed by profile "+prof.Name, 403, time.Since(start).Milliseconds()
+		e := s.entry(sess, "", "CONNECT "+target)
+		e.Decision, e.Reason, e.Status, e.DurationMS = audit.DecisionDeny, "host not allowed by profile "+prof.Name, 403, time.Since(start).Milliseconds()
 		s.Audit.Write(e)
 		http.Error(w, "agent-bouncer: "+e.Reason, http.StatusForbidden)
 		return
@@ -152,18 +152,18 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	var up net.Conn
 	var err error
 	if svc == nil {
-		e := s.entry(sess, "http", "", "CONNECT "+target)
+		e := s.entry(sess, "", "CONNECT "+target)
 		up, err = s.tunnelDial(r.Context(), prof.AllowPrivate, target)
 		if err != nil {
-			e.Decision, e.Reason, e.Status = "deny", err.Error(), 403
+			e.Decision, e.Reason, e.Status = audit.DecisionDeny, err.Error(), 403
 			if !errors.Is(err, errNonPublic) {
-				e.Decision, e.Status = "error", 502
+				e.Decision, e.Status = audit.DecisionError, 502
 			}
 			s.Audit.Write(e)
 			http.Error(w, "agent-bouncer: "+err.Error(), e.Status)
 			return
 		}
-		e.Decision = "tunnel"
+		e.Decision = audit.DecisionTunnel
 		s.Audit.Write(e)
 	}
 
@@ -173,7 +173,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 	client := &bufferedConn{Conn: conn, r: buf.Reader}
@@ -186,14 +186,14 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Only TLS can be inspected; anything else to an intercepted host is refused.
 	first, err := client.r.Peek(1)
 	if err != nil {
-		client.Close()
+		_ = client.Close()
 		return
 	}
 	if first[0] != 0x16 {
-		e := s.entry(sess, "http", svc.Config.Name, "CONNECT "+target)
-		e.Decision, e.Reason = "deny", "non-TLS traffic to an intercepted host"
+		e := s.entry(sess, svc.Config.Name, "CONNECT "+target)
+		e.Decision, e.Reason = audit.DecisionDeny, "non-TLS traffic to an intercepted host"
 		s.Audit.Write(e)
-		client.Close()
+		_ = client.Close()
 		return
 	}
 	host, _ := config.SplitHostPort(target)
@@ -205,7 +205,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	})
 	if err := tlsConn.HandshakeContext(r.Context()); err != nil {
 		s.logf("TLS handshake with client for %s failed (does it trust the bouncer CA?): %v", host, err)
-		tlsConn.Close()
+		_ = tlsConn.Close()
 		return
 	}
 	token := s.proxyToken(r)
@@ -239,7 +239,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		ReadHeaderTimeout: 30 * time.Second,
 		ErrorLog:          nil,
 	}
-	srv.Serve(newOneConnListener(tlsConn))
+	_ = srv.Serve(newOneConnListener(tlsConn))
 }
 
 // hostForURL drops the default port.
@@ -280,14 +280,14 @@ func (s *Server) handleAbsolute(w http.ResponseWriter, r *http.Request) {
 		s.intercept(w, r, sess, prof, svc, &u)
 		return
 	}
-	e := s.entry(sess, "http", "", r.Method+" "+u.String())
+	e := s.entry(sess, "", r.Method+" "+u.String())
 	if !prof.Tunnels(hostport) {
-		e.Decision, e.Reason, e.Status = "deny", "host not allowed by profile "+prof.Name, 403
+		e.Decision, e.Reason, e.Status = audit.DecisionDeny, "host not allowed by profile "+prof.Name, 403
 		s.Audit.Write(e)
 		http.Error(w, "agent-bouncer: "+e.Reason, http.StatusForbidden)
 		return
 	}
-	e.Decision = "tunnel"
+	e.Decision = audit.DecisionTunnel
 	s.Audit.Write(e)
 	out := r.Clone(r.Context())
 	out.RequestURI = ""
@@ -302,7 +302,7 @@ func (s *Server) handleAbsolute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agent-bouncer: upstream error: "+err.Error(), status)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	removeHopHeaders(resp.Header)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
@@ -353,7 +353,7 @@ func (s *Server) intercept(w http.ResponseWriter, r *http.Request, sess *chain.S
 		Ctx: r.Context(), Transport: chain.TransportHTTP, Session: sess, Profile: prof.Name, Service: svc.Config.Name,
 		Method: r.Method, URL: u, Header: header, Body: chain.NewBody(r.Body),
 	}
-	e := s.entry(sess, "http", svc.Config.Name, req.Describe())
+	e := s.entry(sess, svc.Config.Name, req.Describe())
 	defer func() {
 		e.DurationMS = time.Since(start).Milliseconds()
 		s.Audit.Write(e)
@@ -373,31 +373,31 @@ func (s *Server) intercept(w http.ResponseWriter, r *http.Request, sess *chain.S
 		err = chain.CheckMethodOverride(req)
 	}
 	if err != nil {
-		e.Decision, e.By, e.Reason, e.Status = "deny", "bouncer", err.Error(), 400
+		e.Decision, e.By, e.Reason, e.Status = audit.DecisionDeny, "bouncer", err.Error(), 400
 		writeDenial(w, &chain.Denial{By: "bouncer", Reason: err.Error(), Status: 400})
 		return
 	}
 	h := chain.Build(svc.Filters, s.forwarder(svc, r.ContentLength))
 	resp, _ := h(req)
 	if resp.Denial != nil {
-		e.Decision, e.By, e.Reason, e.Status = "deny", resp.Denial.By, resp.Denial.Reason, resp.Denial.Status
+		e.Decision, e.By, e.Reason, e.Status = audit.DecisionDeny, resp.Denial.By, resp.Denial.Reason, resp.Denial.Status
 		if result := pushRejection(req, resp.Denial); result != nil {
 			// Consume the pack so the client reads our response instead of
 			// failing mid-upload.
-			io.Copy(io.Discard, io.LimitReader(req.Body.Reader(), 1<<30))
+			_, _ = io.Copy(io.Discard, io.LimitReader(req.Body.Reader(), 1<<30))
 			w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.WriteHeader(http.StatusOK)
-			w.Write(result)
+			_, _ = w.Write(result)
 			return
 		}
 		writeDenial(w, resp.Denial)
 		if resp.Body != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		return
 	}
-	e.Decision, e.By, e.Status = "allow", req.AllowedBy, resp.Status
+	e.Decision, e.By, e.Status = audit.DecisionAllow, req.AllowedBy, resp.Status
 	s.writeResponse(w, resp)
 }
 
@@ -422,7 +422,7 @@ func writeDenial(w http.ResponseWriter, d *chain.Denial) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Bouncer-Denied-By", d.By)
 	w.WriteHeader(status)
-	fmt.Fprintf(w, "agent-bouncer: request denied by %s: %s\n", d.By, d.Reason)
+	_, _ = fmt.Fprintf(w, "agent-bouncer: request denied by %s: %s\n", d.By, d.Reason)
 }
 
 func (s *Server) writeResponse(w http.ResponseWriter, resp *chain.Response) {
@@ -433,14 +433,14 @@ func (s *Server) writeResponse(w http.ResponseWriter, resp *chain.Response) {
 	h := resp.Header
 	removeHopHeaders(h)
 	copyHeader(w.Header(), h)
-	var body io.ReadCloser = io.NopCloser(strings.NewReader(""))
+	body := io.NopCloser(strings.NewReader(""))
 	if resp.Body != nil {
 		body = resp.Body.Reader()
 		if n := resp.Body.Len(); n >= 0 {
 			w.Header().Set("Content-Length", fmt.Sprint(n))
 		}
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	w.WriteHeader(resp.Status)
 	copyFlush(w, body)
 }
@@ -448,15 +448,15 @@ func (s *Server) writeResponse(w http.ResponseWriter, resp *chain.Response) {
 func (s *Server) writeUpgrade(w http.ResponseWriter, resp *chain.Response) {
 	conn, buf, err := http.NewResponseController(w).Hijack()
 	if err != nil {
-		resp.Upgrade.Close()
+		_ = resp.Upgrade.Close()
 		return
 	}
-	fmt.Fprintf(buf, "HTTP/1.1 101 Switching Protocols\r\n")
-	resp.Header.Write(buf)
-	buf.WriteString("\r\n")
+	_, _ = fmt.Fprintf(buf, "HTTP/1.1 101 Switching Protocols\r\n")
+	_ = resp.Header.Write(buf)
+	_, _ = buf.WriteString("\r\n")
 	if err := buf.Flush(); err != nil {
-		conn.Close()
-		resp.Upgrade.Close()
+		_ = conn.Close()
+		_ = resp.Upgrade.Close()
 		return
 	}
 	splice(&bufferedConn{Conn: conn, r: buf.Reader}, resp.Upgrade)
@@ -480,7 +480,7 @@ func copyFlush(w http.ResponseWriter, r io.Reader) {
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				return
 			}
-			rc.Flush()
+			_ = rc.Flush()
 		}
 		if err != nil {
 			return
@@ -520,18 +520,18 @@ func splice(a io.ReadWriteCloser, b io.ReadWriteCloser) {
 	wg.Add(2)
 	cp := func(dst, src io.ReadWriteCloser) {
 		defer wg.Done()
-		io.Copy(dst, src)
+		_, _ = io.Copy(dst, src)
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
+			_ = cw.CloseWrite()
 		} else {
-			dst.Close()
+			_ = dst.Close()
 		}
 	}
 	go cp(a, b)
 	go cp(b, a)
 	wg.Wait()
-	a.Close()
-	b.Close()
+	_ = a.Close()
+	_ = b.Close()
 }
 
 // bufferedConn is a hijacked conn whose reads go through the server's buffer.
@@ -540,13 +540,13 @@ type bufferedConn struct {
 	r *bufio.Reader
 }
 
-func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) } //nolint:wrapcheck // io.Reader contract: io.EOF must be returned unwrapped
 
 func (c *bufferedConn) CloseWrite() error {
 	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
-		return cw.CloseWrite()
+		return cw.CloseWrite() //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
 	}
-	return c.Conn.Close()
+	return c.Close() //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
 }
 
 // oneConnListener hands a single connection to http.Server and then blocks
@@ -560,7 +560,7 @@ type oneConnListener struct {
 
 func newOneConnListener(c net.Conn) *oneConnListener {
 	l := &oneConnListener{closed: make(chan struct{})}
-	l.conn = &notifyCloseConn{Conn: c, onClose: func() { l.Close() }}
+	l.conn = &notifyCloseConn{Conn: c, onClose: func() { _ = l.Close() }}
 	return l
 }
 
@@ -590,5 +590,5 @@ type notifyCloseConn struct {
 func (c *notifyCloseConn) Close() error {
 	err := c.Conn.Close()
 	c.once.Do(c.onClose)
-	return err
+	return err //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
 }

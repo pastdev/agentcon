@@ -214,7 +214,7 @@ func (s *Store) Prepare(ctx context.Context, creds map[string]*config.Credential
 		if errors.Is(err, bitwarden.ErrNeedTerminal) {
 			return &NeedPasswordError{Accounts: accounts}
 		}
-		return err
+		return fmt.Errorf("bitwarden unlock: %w", err)
 	}
 	return nil
 }
@@ -349,10 +349,13 @@ func (s *Store) fetchPayload(ctx context.Context, credName string, src *config.V
 	case "keyring":
 		acct := src.KeyringAccount(credName)
 		v, err := keyring.Get(KeyringService, acct)
-		if err == keyring.ErrNotFound {
+		if errors.Is(err, keyring.ErrNotFound) {
 			return "", fmt.Errorf("not in keyring (account %s)", acct)
 		}
-		return v, err
+		if err != nil {
+			return "", fmt.Errorf("keyring: %w", err)
+		}
+		return v, nil
 	case "env":
 		v, ok := s.lookupEnv(src.Env)
 		if !ok {
@@ -362,7 +365,7 @@ func (s *Store) fetchPayload(ctx context.Context, credName string, src *config.V
 	case "file":
 		b, err := os.ReadFile(src.File)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("credential file: %w", err)
 		}
 		return strings.TrimRight(string(b), "\r\n"), nil
 	case "provided":
@@ -370,7 +373,7 @@ func (s *Store) fetchPayload(ctx context.Context, credName string, src *config.V
 	case "command":
 		ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, src.Command[0], src.Command[1:]...)
+		cmd := exec.CommandContext(ctx, src.Command[0], src.Command[1:]...) //nolint:gosec // command source runs what the operator configured
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
@@ -389,7 +392,7 @@ func (s *Store) fetchPayload(ctx context.Context, credName string, src *config.V
 			Folder:  src.Folder,
 		})
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("bitwarden item: %w", err)
 		}
 		return string(raw), nil
 	}
@@ -435,8 +438,8 @@ func agentSigners(name string, src *config.ValueSource) ([]ssh.Signer, error) {
 	// released when the process exits or the agent hangs up.
 	signers, err := agent.NewClient(conn).Signers()
 	if err != nil {
-		conn.Close()
-		return nil, err
+		_ = conn.Close()
+		return nil, fmt.Errorf("ssh-agent signers: %w", err)
 	}
 	if src.Fingerprint == "" {
 		return signers, nil
@@ -446,6 +449,6 @@ func agentSigners(name string, src *config.ValueSource) ([]ssh.Signer, error) {
 			return []ssh.Signer{sg}, nil
 		}
 	}
-	conn.Close()
+	_ = conn.Close()
 	return nil, fmt.Errorf("credential %q: no agent key with fingerprint %s", name, src.Fingerprint)
 }

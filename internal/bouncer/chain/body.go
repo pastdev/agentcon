@@ -106,7 +106,7 @@ func (b *Body) Set(data []byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.src != nil {
-		b.src.Close()
+		_ = b.src.Close()
 	}
 	b.src, b.buf, b.eof, b.err, b.consumed = nil, append([]byte(nil), data...), true, nil, false
 }
@@ -139,8 +139,8 @@ type replay struct {
 	c io.Closer
 }
 
-func (r *replay) Read(p []byte) (int, error) { return r.r.Read(p) }
-func (r *replay) Close() error               { return r.c.Close() }
+func (r *replay) Read(p []byte) (int, error) { return r.r.Read(p) } //nolint:wrapcheck // io.Reader contract: io.EOF must be returned unwrapped
+func (r *replay) Close() error               { return r.c.Close() } //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
 
 // PeekReader returns a sequential reader over the body that does not consume
 // it: everything it reads stays buffered for forwarding.
@@ -170,7 +170,7 @@ func (b *Body) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.src != nil {
-		return b.src.Close()
+		return b.src.Close() //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
 	}
 	return nil
 }

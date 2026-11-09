@@ -30,7 +30,7 @@ func Check(cfg *config.Config) (CheckResult, error) {
 	}
 	set, err := policy.Compile(cfg, &chain.Env{}, nil)
 	if err != nil {
-		return CheckResult{}, err
+		return CheckResult{}, fmt.Errorf("compile policy: %w", err)
 	}
 	names := make([]string, 0, len(set.Profiles))
 	for name := range set.Profiles {

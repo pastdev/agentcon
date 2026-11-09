@@ -269,6 +269,7 @@ How to write TypeScript filters is in [docs/bouncer-filters.md](docs/bouncer-fil
 
 Agent `tunnel` hosts are unioned onto root bouncer profiles.
 Unknown hosts follow `unmatched`.
+[Choosing `unmatched`](docs/bouncer.md#choosing-unmatched) covers when to use `tunnel` or `deny`.
 Leftover paths on an intercepted host do not get the credential.
 
 The host prompts for Bitwarden unlock when that source is used.

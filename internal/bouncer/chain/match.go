@@ -85,7 +85,7 @@ func rawSegments(raw string) ([]string, error) {
 	for i, p := range parts {
 		d, err := url.PathUnescape(p)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("path segment %q: %w", p, err)
 		}
 		parts[i] = d
 	}

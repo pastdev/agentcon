@@ -55,7 +55,11 @@ func (o Options) loadConfig() (*config.Config, error) {
 	if o.ConfigPath == "" {
 		return nil, fmt.Errorf("bouncer policy is required")
 	}
-	return config.Load(o.ConfigPath)
+	cfg, err := config.Load(o.ConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("load policy: %w", err)
+	}
+	return cfg, nil
 }
 
 // Daemon is a running bouncer.
@@ -131,12 +135,12 @@ func New(opts Options) (*Daemon, error) {
 		opts.Logf = func(string, ...any) {}
 	}
 	if err := os.MkdirAll(opts.StateDir, 0o700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("state dir: %w", err)
 	}
 	d := &Daemon{opts: opts, sessions: map[string]*SessionRecord{}, transport: proxy.NewTransport()}
 	var err error
 	if d.CA, err = ca.LoadOrCreate(opts.StateDir); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ca: %w", err)
 	}
 	if err := d.CA.WriteBundle(); err != nil {
 		opts.Logf("warning: writing CA bundle: %v", err)
@@ -145,10 +149,10 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 	if d.kv, err = kv.Open(filepath.Join(opts.StateDir, "kv.json")); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("kv store: %w", err)
 	}
 	if d.audit, err = audit.Open(filepath.Join(opts.StateDir, "audit.jsonl"), opts.Decision); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("audit log: %w", err)
 	}
 	cfg, err := opts.loadConfig()
 	if err != nil {
@@ -173,7 +177,7 @@ func New(opts Options) (*Daemon, error) {
 	d.env.Credential = func(ctx context.Context, name string) (string, error) {
 		sec, err := d.creds.Get(ctx, name)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("credential %s: %w", name, err)
 		}
 		return sec.HTTP(), nil
 	}
@@ -247,7 +251,7 @@ func (d *Daemon) apply(cfg *config.Config) error {
 	}
 	set, err := policy.Compile(cfg, d.env, d.kv)
 	if err != nil {
-		return err
+		return fmt.Errorf("compile policy: %w", err)
 	}
 	// Unlock Bitwarden vaults before swapping the credential set in, so a
 	// bad master password leaves the previous config running.
@@ -255,7 +259,7 @@ func (d *Daemon) apply(cfg *config.Config) error {
 	if err != nil {
 		var need *creds.NeedPasswordError
 		if !errors.As(err, &need) {
-			return err
+			return fmt.Errorf("prepare credentials: %w", err)
 		}
 		pending := make([]string, 0, len(need.Accounts))
 		for _, a := range need.Accounts {
@@ -481,8 +485,12 @@ func (d *Daemon) saveSessions() {
 	d.mu.RUnlock()
 	b, _ := json.MarshalIndent(recs, "", "  ")
 	tmp := d.sessionsFile() + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		os.Rename(tmp, d.sessionsFile())
+	err := os.WriteFile(tmp, b, 0o600)
+	if err == nil {
+		err = os.Rename(tmp, d.sessionsFile())
+	}
+	if err != nil {
+		d.opts.Logf("warning: saving sessions: %v", err)
 	}
 }
 
@@ -510,12 +518,12 @@ func (d *Daemon) resolveGitLabProject(ctx context.Context, service, host, projec
 	u, _ := url.Parse("https://" + host + "/api/v4/projects/" + url.PathEscape(project))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("gitlab request: %w", err)
 	}
 	if svc.Credential != "" {
 		secret, err := d.creds.Get(ctx, svc.Credential)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("credential %s: %w", svc.Credential, err)
 		}
 		spec := svc.Inject
 		if spec == nil {
@@ -525,9 +533,9 @@ func (d *Daemon) resolveGitLabProject(ctx context.Context, service, host, projec
 	}
 	resp, err := d.transport.RoundTrip(req)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("gitlab project %s: %w", project, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("GET %s: %s", u, resp.Status)
 	}
@@ -535,7 +543,7 @@ func (d *Daemon) resolveGitLabProject(ctx context.Context, service, host, projec
 		ID int64 `json:"id"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("decode gitlab project %s: %w", project, err)
 	}
 	d.resolved.Store(key, resolvedID{id: body.ID, expires: time.Now().Add(time.Hour)})
 	return body.ID, nil
@@ -555,15 +563,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	sshL, err := net.Listen("tcp", plan.ssh)
 	if err != nil {
-		httpL.Close()
+		_ = httpL.Close()
 		return fmt.Errorf("ssh listen: %w", err)
 	}
 	var mgmtL net.Listener
 	if plan.split {
 		mgmtL, err = net.Listen("tcp", plan.mgmt)
 		if err != nil {
-			httpL.Close()
-			sshL.Close()
+			_ = httpL.Close()
+			_ = sshL.Close()
 			return fmt.Errorf("management listen: %w", err)
 		}
 	}
@@ -599,7 +607,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := os.WriteFile(RuntimePath(d.opts.StateDir), rt, 0o600); err != nil {
 		d.opts.Logf("warning: writing runtime file: %v", err)
 	}
-	defer os.Remove(RuntimePath(d.opts.StateDir))
+	defer func() { _ = os.Remove(RuntimePath(d.opts.StateDir)) }()
 	if plan.split {
 		d.opts.Logf("proxy listening on %s, ssh on %s, management on %s", httpL.Addr(), sshL.Addr(), mgmtL.Addr())
 	} else {
@@ -609,17 +617,23 @@ func (d *Daemon) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	case err = <-errc:
 	}
-	httpL.Close()
-	sshL.Close()
+	_ = httpL.Close()
+	_ = sshL.Close()
 	if mgmtL != nil {
-		mgmtL.Close()
+		_ = mgmtL.Close()
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	httpSrv.Shutdown(shutdownCtx)
-	mgmtSrv.Shutdown(shutdownCtx)
-	d.kv.Close()
-	d.audit.Close()
+	_ = httpSrv.Shutdown(shutdownCtx)
+	_ = mgmtSrv.Shutdown(shutdownCtx)
+	kvErr := d.kv.Close()
+	if kvErr != nil {
+		d.opts.Logf("warning: saving kv store: %v", kvErr)
+	}
+	auditErr := d.audit.Close()
+	if auditErr != nil {
+		d.opts.Logf("warning: closing audit log: %v", auditErr)
+	}
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		err = nil
 	}
@@ -638,16 +652,20 @@ func AdminTokenPath(stateDir string) string { return filepath.Join(stateDir, "ad
 // LoadOrCreateAdminToken returns the control API token, creating it if needed.
 func LoadOrCreateAdminToken(stateDir string) (string, error) {
 	p := AdminTokenPath(stateDir)
-	if b, err := os.ReadFile(p); err == nil {
+	if b, err := os.ReadFile(p); err == nil { //nolint:gosec // path from operator config or the state dir, not the agent
 		if t := strings.TrimSpace(string(b)); t != "" {
 			return t, nil
 		}
 	}
 	t := NewAdminToken()
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return "", err
+		return "", fmt.Errorf("state dir: %w", err)
 	}
-	return t, os.WriteFile(p, []byte(t+"\n"), 0o600)
+	err := os.WriteFile(p, []byte(t+"\n"), 0o600)
+	if err != nil {
+		return "", fmt.Errorf("write admin token: %w", err)
+	}
+	return t, nil
 }
 
 // NewAdminToken returns a random control API token.

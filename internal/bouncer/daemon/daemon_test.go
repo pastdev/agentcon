@@ -16,7 +16,7 @@ func newTestDaemon(t *testing.T) *Daemon {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.yaml")
-	err := os.WriteFile(cfg, []byte("default_profile: p\nprofiles:\n  p: {}\n"), 0o644)
+	err := os.WriteFile(cfg, []byte("default_profile: p\nprofiles:\n  p: {}\n"), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}

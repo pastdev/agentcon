@@ -29,6 +29,7 @@ Create a local `ad_hoc/issue-<num>/` folder only when needed.
 That folder may hold `<use_case>.plan.md` and notes or prototypes from the work.
 Choose a short `<use_case>` that names the feature or bug fix.
 Use `notes.md` for context that does not belong in the README.
+Go files under `ad_hoc/issue-<num>/` start with `//go:build issue<num>` so `go build ./...`, `go test ./...`, lint, and CI skip them.
 
 Continue discussion until the design and process for the change are settled.
 For significant work, use `<use_case>.plan.md` to capture clear guidance.

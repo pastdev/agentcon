@@ -5,6 +5,7 @@ package testrunner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -96,7 +97,7 @@ func Find(paths []string) ([]string, error) {
 	for _, p := range paths {
 		st, err := os.Stat(p)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("test path: %w", err)
 		}
 		if !st.IsDir() {
 			out = append(out, p)
@@ -115,7 +116,7 @@ func Find(paths []string) ([]string, error) {
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("walk %s: %w", p, err)
 		}
 	}
 	sort.Strings(out)
@@ -124,10 +125,13 @@ func Find(paths []string) ([]string, error) {
 
 // RunFile runs every case in a spec file. Cases share one KV store, so
 // stateful filters (rate limits) can be tested as a sequence.
+// harnessName names the session and service the test harness supplies.
+const harnessName = "test"
+
 func RunFile(path string) ([]Result, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path from operator config or the state dir, not the agent
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read test file: %w", err)
 	}
 	var spec Spec
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -137,7 +141,7 @@ func RunFile(path string) ([]Result, error) {
 	}
 	dir := filepath.Dir(path)
 	store, _ := kv.Open("")
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	approver := &scriptedApprover{}
 	logs := &bytes.Buffer{}
 	env := &chain.Env{
@@ -156,18 +160,18 @@ func RunFile(path string) ([]Result, error) {
 	case spec.Filter != "":
 		f, err := jsfilter.Load(jsfilter.Options{Path: filepath.Join(dir, spec.Filter), Config: spec.FilterConfig, Env: env, KV: store})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("load filter: %w", err)
 		}
-		one := func(string) ([]chain.Filter, string, error) { return []chain.Filter{f}, "test", nil }
+		one := func(string) ([]chain.Filter, string, error) { return []chain.Filter{f}, harnessName, nil }
 		httpChain, sshChain = one, one
 	case spec.Config != "":
 		cfg, err := config.Load(filepath.Join(dir, spec.Config))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("load config: %w", err)
 		}
 		set, err := policy.Compile(cfg, env, store)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("compile policy: %w", err)
 		}
 		prof, ok := set.Profiles[spec.Profile]
 		if !ok {
@@ -188,7 +192,7 @@ func RunFile(path string) ([]Result, error) {
 			return svc.Filters, svc.Config.Name, nil
 		}
 	default:
-		return nil, fmt.Errorf("%s: spec needs filter: or config:", path)
+		return nil, fmt.Errorf("%s: spec needs a filter or config key", path)
 	}
 
 	var results []Result
@@ -212,7 +216,7 @@ func RunFile(path string) ([]Result, error) {
 }
 
 func runCase(c *Case, httpChain, sshChain func(string) ([]chain.Filter, string, error), profile string, ap *scriptedApprover) (string, error) {
-	sess := &chain.Session{ID: "test", Label: "test", Profile: profile}
+	sess := &chain.Session{ID: harnessName, Label: harnessName, Profile: profile}
 	var req *chain.Request
 	var filters []chain.Filter
 	var upstreamHeader http.Header
@@ -306,7 +310,7 @@ func runCase(c *Case, httpChain, sshChain func(string) ([]chain.Filter, string, 
 			req.Body = chain.BytesBody(buildPush(c.SSH.GitPush))
 		}
 	default:
-		return "", fmt.Errorf("case needs request: or ssh:")
+		return "", errors.New("case needs a request or ssh key")
 	}
 
 	resp, _ := chain.Build(filters, terminal)(req)

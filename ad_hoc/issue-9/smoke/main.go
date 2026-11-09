@@ -1,3 +1,5 @@
+//go:build issue9
+
 // Smoke demos bouncer.
 //
 // Default (no flags): one process on loopback. Secret service, bouncer, agent client.

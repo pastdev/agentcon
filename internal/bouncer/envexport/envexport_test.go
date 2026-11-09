@@ -35,7 +35,7 @@ func TestBuild(t *testing.T) {
 				SSHCommand:   `"/usr/bin/ssh" -F "/s/ssh/config"`,
 				Placeholders: map[string]string{"GITLAB_TOKEN": "bouncer-placeholder-gitlab"},
 			},
-			want: map[string]string{
+			want: map[string]string{ //nolint:gosec // fake credentials in a test fixture
 				"HTTPS_PROXY":         "http://bouncer:t0k%27x@127.0.0.1:8228",
 				"SSL_CERT_FILE":       "/s/ca-bundle.pem",
 				"NODE_EXTRA_CA_CERTS": "/s/ca.pem",

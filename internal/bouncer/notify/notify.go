@@ -23,7 +23,7 @@ func Send(title, body string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("/usr/bin/osascript",
+		cmd = exec.Command("/usr/bin/osascript", //nolint:gosec // fixed binary; arguments are passed, not interpreted by a shell
 			"-e", "on run argv",
 			"-e", `display notification (item 2 of argv) with title (item 1 of argv) sound name "Ping"`,
 			"-e", "end run", title, body)
@@ -35,7 +35,7 @@ func Send(title, body string) {
 		if err != nil {
 			return
 		}
-		cmd = exec.Command(path, "--app-name=agent-bouncer", title, body)
+		cmd = exec.Command(path, "--app-name=agent-bouncer", title, body) //nolint:gosec // binary found by LookPath; arguments are passed, not interpreted by a shell
 	}
 	_ = cmd.Run()
 }

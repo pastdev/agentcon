@@ -135,12 +135,19 @@ func cleanRepo(p string) string {
 	return strings.Trim(p, "/")
 }
 
-// ReadPkt reads one pkt-line. It returns special="flush"/"delim"/"response-end"
-// for the special packets, otherwise the payload.
+// Special pkt-line packets reported by ReadPkt.
+const (
+	PktFlush       = "flush"
+	PktDelim       = "delim"
+	PktResponseEnd = "response-end"
+)
+
+// ReadPkt reads one pkt-line. It returns special set to one of the Pkt*
+// constants for the special packets, otherwise the payload.
 func ReadPkt(r io.Reader) (payload []byte, special string, err error) {
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("pkt-line header: %w", err)
 	}
 	n, err := strconv.ParseUint(string(hdr[:]), 16, 16)
 	if err != nil {
@@ -148,17 +155,17 @@ func ReadPkt(r io.Reader) (payload []byte, special string, err error) {
 	}
 	switch n {
 	case 0:
-		return nil, "flush", nil
+		return nil, PktFlush, nil
 	case 1:
-		return nil, "delim", nil
+		return nil, PktDelim, nil
 	case 2:
-		return nil, "response-end", nil
+		return nil, PktResponseEnd, nil
 	case 3:
 		return nil, "", errors.New("invalid pkt-line length 3")
 	}
 	buf := make([]byte, n-4)
 	if _, err := io.ReadFull(r, buf); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("pkt-line payload: %w", err)
 	}
 	return buf, "", nil
 }
@@ -181,14 +188,14 @@ func ParsePush(r io.Reader) (*Push, error) {
 			if lr.N <= 0 {
 				return nil, errors.New("push command list exceeds size limit")
 			}
-			if err == io.EOF && empty {
+			if errors.Is(err, io.EOF) && empty {
 				// Empty body (e.g. a ref advertisement probe).
 				return p, nil
 			}
 			return nil, fmt.Errorf("reading push commands: %w", err)
 		}
 		empty = false
-		if special == "flush" {
+		if special == PktFlush {
 			break
 		}
 		if special != "" {
@@ -239,7 +246,7 @@ func ParsePush(r io.Reader) (*Push, error) {
 			if err != nil {
 				return nil, fmt.Errorf("reading push options: %w", err)
 			}
-			if special == "flush" {
+			if special == PktFlush {
 				break
 			}
 			p.PushOptions = append(p.PushOptions, strings.TrimSuffix(string(payload), "\n"))
@@ -328,7 +335,7 @@ func BuildPush(updates []RefUpdate, caps []string, pushOptions []string) []byte 
 // the reason as a "remote:" line. It returns nil if the client didn't ask
 // for status reports, in which case the caller should fail the request.
 func RejectPush(p *Push, reason string) []byte {
-	if p == nil || len(p.Updates) == 0 || !(p.HasCapability("report-status") || p.HasCapability("report-status-v2")) {
+	if p == nil || len(p.Updates) == 0 || (!p.HasCapability("report-status") && !p.HasCapability("report-status-v2")) {
 		return nil
 	}
 	reason = strings.Join(strings.Fields(reason), " ")

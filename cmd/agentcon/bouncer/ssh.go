@@ -17,7 +17,7 @@ func sshConnectCmd() *cobra.Command {
 		Short:  "ssh ProxyCommand that tunnels to the bouncer SSH listener",
 		Hidden: true,
 		Args:   cobra.ExactArgs(3),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			token := os.Getenv("BOUNCER_SESSION")
 			addr := os.Getenv("BOUNCER_SSH_ADDR")
 			if token == "" || addr == "" {

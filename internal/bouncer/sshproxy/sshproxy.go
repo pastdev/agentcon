@@ -38,13 +38,13 @@ const preamblePrefix = "BOUNCER-SSH/1 "
 // maxPreamble bounds the preamble line.
 const maxPreamble = 8 << 10
 
-// readLine reads up to and including '\n', failing past max bytes.
-func readLine(br *bufio.Reader, max int) (string, error) {
+// readLine reads up to and including '\n', failing past limit bytes.
+func readLine(br *bufio.Reader, limit int) (string, error) {
 	var b strings.Builder
-	for b.Len() < max {
+	for b.Len() < limit {
 		c, err := br.ReadByte()
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("read preamble: %w", err)
 		}
 		b.WriteByte(c)
 		if c == '\n' {
@@ -90,7 +90,7 @@ func (s *Server) Serve(l net.Listener) error {
 	for {
 		c, err := l.Accept()
 		if err != nil {
-			return err
+			return fmt.Errorf("accept: %w", err)
 		}
 		go s.handle(c)
 	}
@@ -118,35 +118,35 @@ func (cn *conn) valid() bool {
 }
 
 func (s *Server) handle(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	br := bufio.NewReader(c)
-	c.SetDeadline(time.Now().Add(60 * time.Second))
+	_ = c.SetDeadline(time.Now().Add(60 * time.Second))
 	line, err := readLine(br, maxPreamble)
 	if err != nil || !strings.HasPrefix(line, preamblePrefix) {
 		return
 	}
 	var p Preamble
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(line, preamblePrefix)), &p); err != nil {
-		fmt.Fprintf(c, "ERR malformed preamble\n")
+		_, _ = fmt.Fprintf(c, "ERR malformed preamble\n")
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cn, err := s.prepare(ctx, &p)
 	if err != nil {
-		e := audit.Entry{Transport: "ssh", Request: fmt.Sprintf("ssh %s@%s connect", p.User, p.Host), Decision: "deny", Reason: err.Error()}
+		e := audit.Entry{Transport: "ssh", Request: fmt.Sprintf("ssh %s@%s connect", p.User, p.Host), Decision: audit.DecisionDeny, Reason: err.Error()}
 		if cn != nil && cn.sess != nil {
 			e.Session, e.Label, e.Profile = cn.sess.ID, cn.sess.Label, cn.sess.Profile
 		}
 		s.Audit.Write(e)
-		fmt.Fprintf(c, "ERR %s\n", strings.ReplaceAll(err.Error(), "\n", " "))
+		_, _ = fmt.Fprintf(c, "ERR %s\n", strings.ReplaceAll(err.Error(), "\n", " "))
 		return
 	}
-	defer cn.upstream.Close()
+	defer func() { _ = cn.upstream.Close() }()
 	if _, err := fmt.Fprintf(c, "OK\n"); err != nil {
 		return
 	}
-	c.SetDeadline(time.Time{})
+	_ = c.SetDeadline(time.Time{})
 
 	signer, err := s.CA.SSHHostSigner(cn.host)
 	if err != nil {
@@ -160,12 +160,12 @@ func (s *Server) handle(c net.Conn) {
 		s.logf("ssh handshake with agent for %s failed (is it using the bouncer known_hosts?): %v", cn.host, err)
 		return
 	}
-	defer sc.Close()
+	defer func() { _ = sc.Close() }()
 	go cn.globalRequests(reqs)
 	for nc := range chans {
 		if !cn.valid() {
-			nc.Reject(ssh.Prohibited, "agent-bouncer: session is no longer valid")
-			sc.Close()
+			_ = nc.Reject(ssh.Prohibited, "agent-bouncer: session is no longer valid")
+			_ = sc.Close()
 			continue
 		}
 		switch nc.ChannelType() {
@@ -174,7 +174,7 @@ func (s *Server) handle(c net.Conn) {
 		case "direct-tcpip":
 			go cn.directTCPIP(nc)
 		default:
-			nc.Reject(ssh.UnknownChannelType, "agent-bouncer: channel type not supported")
+			_ = nc.Reject(ssh.UnknownChannelType, "agent-bouncer: channel type not supported")
 		}
 	}
 }
@@ -216,7 +216,7 @@ func (s *Server) prepare(ctx context.Context, p *Preamble) (*conn, error) {
 
 	signers, err := s.Creds.SSHSigners(ctx, svc.Config.Credential)
 	if err != nil {
-		return cn, err
+		return cn, fmt.Errorf("ssh signers: %w", err)
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	hkcb, algos, err := hostKeyCallback(svc.Config, addr)
@@ -239,7 +239,7 @@ func (s *Server) prepare(ctx context.Context, p *Preamble) (*conn, error) {
 		Timeout:           30 * time.Second,
 	})
 	if err != nil {
-		raw.Close()
+		_ = raw.Close()
 		return cn, fmt.Errorf("upstream ssh to %s: %w", addr, err)
 	}
 	cn.upstream = ssh.NewClient(cc, chans, reqs)
@@ -261,7 +261,7 @@ func hostKeyCallback(svc *config.SSHService, addr string) (ssh.HostKeyCallback, 
 	if len(files) == 0 {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("home dir: %w", err)
 		}
 		files = []string{filepath.Join(home, ".ssh", "known_hosts")}
 	}
@@ -276,7 +276,7 @@ func hostKeyCallback(svc *config.SSHService, addr string) (ssh.HostKeyCallback, 
 	}
 	cb, err := knownhosts.New(existing...)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("known_hosts: %w", err)
 	}
 	// Probe with a throwaway key to learn which key types are on file.
 	var algos []string
@@ -321,9 +321,9 @@ func (cn *conn) decide(req *chain.Request) *chain.Response {
 	e := cn.entry(req)
 	e.DurationMS = time.Since(start).Milliseconds()
 	if resp.Denial != nil {
-		e.Decision, e.By, e.Reason = "deny", resp.Denial.By, resp.Denial.Reason
+		e.Decision, e.By, e.Reason = audit.DecisionDeny, resp.Denial.By, resp.Denial.Reason
 	} else {
-		e.Decision, e.By = "allow", req.AllowedBy
+		e.Decision, e.By = audit.DecisionAllow, req.AllowedBy
 	}
 	cn.s.Audit.Write(e)
 	return resp
@@ -340,11 +340,11 @@ func (cn *conn) globalRequests(reqs <-chan *ssh.Request) {
 			req := cn.request(config.SSHKindForward)
 			req.SSH.Target = "remote listen"
 			e := cn.entry(req)
-			e.Decision, e.By, e.Reason = "deny", "bouncer", "remote port forwarding is not supported"
+			e.Decision, e.By, e.Reason = audit.DecisionDeny, "bouncer", "remote port forwarding is not supported"
 			cn.s.Audit.Write(e)
 		}
 		if r.WantReply {
-			r.Reply(false, nil)
+			_ = r.Reply(false, nil)
 		}
 	}
 }
@@ -357,32 +357,32 @@ func (cn *conn) directTCPIP(nc ssh.NewChannel) {
 		OriginPort uint32
 	}
 	if err := ssh.Unmarshal(nc.ExtraData(), &p); err != nil {
-		nc.Reject(ssh.ConnectionFailed, "bad direct-tcpip request")
+		_ = nc.Reject(ssh.ConnectionFailed, "bad direct-tcpip request")
 		return
 	}
 	req := cn.request(config.SSHKindForward)
 	req.SSH.Target = net.JoinHostPort(p.Host, strconv.Itoa(int(p.Port)))
 	if resp := cn.decide(req); resp.Denial != nil {
-		nc.Reject(ssh.Prohibited, "agent-bouncer: "+resp.Denial.Reason)
+		_ = nc.Reject(ssh.Prohibited, "agent-bouncer: "+resp.Denial.Reason)
 		return
 	}
 	up, err := cn.upstream.Dial("tcp", req.SSH.Target)
 	if err != nil {
-		nc.Reject(ssh.ConnectionFailed, err.Error())
+		_ = nc.Reject(ssh.ConnectionFailed, err.Error())
 		return
 	}
 	ch, reqs, err := nc.Accept()
 	if err != nil {
-		up.Close()
+		_ = up.Close()
 		return
 	}
 	go ssh.DiscardRequests(reqs)
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); io.Copy(up, ch); up.Close() }()
-	go func() { defer wg.Done(); io.Copy(ch, up); ch.CloseWrite() }()
+	go func() { defer wg.Done(); _, _ = io.Copy(up, ch); _ = up.Close() }()
+	go func() { defer wg.Done(); _, _ = io.Copy(ch, up); _ = ch.CloseWrite() }()
 	wg.Wait()
-	ch.Close()
+	_ = ch.Close()
 }
 
 // session handles one session channel: buffer setup requests (pty, env)
@@ -392,7 +392,7 @@ func (cn *conn) session(nc ssh.NewChannel) {
 	if err != nil {
 		return
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 	var setup []*ssh.Request
 	env := map[string]string{}
 	var up ssh.Channel
@@ -402,7 +402,7 @@ func (cn *conn) session(nc ssh.NewChannel) {
 		case "pty-req":
 			setup = append(setup, r)
 			if r.WantReply {
-				r.Reply(true, nil)
+				_ = r.Reply(true, nil)
 			}
 		case "env":
 			// Only allowlisted variables reach upstream; an arbitrary env
@@ -414,11 +414,11 @@ func (cn *conn) session(nc ssh.NewChannel) {
 				env[e.Name] = e.Value
 			}
 			if r.WantReply {
-				r.Reply(ok, nil)
+				_ = r.Reply(ok, nil)
 			}
 		case "exec", "shell", "subsystem":
 			if started {
-				r.Reply(false, nil)
+				_ = r.Reply(false, nil)
 				continue
 			}
 			started = true
@@ -426,21 +426,21 @@ func (cn *conn) session(nc ssh.NewChannel) {
 			if up == nil {
 				return
 			}
-			defer up.Close()
+			defer func() { _ = up.Close() }()
 		case "window-change", "signal", "break":
 			if up != nil {
 				ok, _ := up.SendRequest(r.Type, r.WantReply, r.Payload)
 				if r.WantReply {
-					r.Reply(ok, nil)
+					_ = r.Reply(ok, nil)
 				}
 			} else if r.WantReply {
-				r.Reply(false, nil)
+				_ = r.Reply(false, nil)
 			}
 		default:
 			// auth-agent-req@openssh.com, x11-req, and anything unknown are
 			// refused: agent forwarding would hand the remote host our keys.
 			if r.WantReply {
-				r.Reply(false, nil)
+				_ = r.Reply(false, nil)
 			}
 		}
 	}
@@ -453,22 +453,35 @@ func (cn *conn) start(ch ssh.Channel, r *ssh.Request, setup []*ssh.Request, env 
 	if len(env) > 0 {
 		req.SSH.Env = env
 	}
+	// Upstream gets a payload re-marshaled from what the filters judged, and
+	// a payload that does not parse is refused rather than judged as empty.
+	payload := r.Payload
 	switch r.Type {
 	case "shell":
 		req.SSH.Kind = config.SSHKindShell
 	case "exec":
-		var p struct{ Command string }
-		ssh.Unmarshal(r.Payload, &p)
-		req.SSH.Command = p.Command
 		req.SSH.Kind = config.SSHKindExec
+		var p struct{ Command string }
+		err := ssh.Unmarshal(r.Payload, &p)
+		if err != nil {
+			cn.malformed(r, req)
+			return nil
+		}
+		payload = ssh.Marshal(p)
+		req.SSH.Command = p.Command
 		if req.Git() != nil {
 			req.SSH.Kind = config.SSHKindGit
 		}
 	case "subsystem":
+		req.SSH.Kind = config.SSHKindSubsystem
 		var p struct{ Name string }
-		ssh.Unmarshal(r.Payload, &p)
+		err := ssh.Unmarshal(r.Payload, &p)
+		if err != nil {
+			cn.malformed(r, req)
+			return nil
+		}
+		payload = ssh.Marshal(p)
 		req.SSH.Subsystem = p.Name
-		req.SSH.Kind = "subsystem"
 		if p.Name == "sftp" {
 			req.SSH.Kind = config.SSHKindSFTP
 		}
@@ -480,7 +493,7 @@ func (cn *conn) start(ch ssh.Channel, r *ssh.Request, setup []*ssh.Request, env 
 	isPush := req.Git() != nil && req.Git().Service == gitproto.ServiceReceivePack
 	if !isPush {
 		if resp := cn.decide(req); resp.Denial != nil {
-			r.Reply(true, nil)
+			_ = r.Reply(true, nil)
 			refuse(ch, resp.Denial)
 			return nil
 		}
@@ -488,33 +501,33 @@ func (cn *conn) start(ch ssh.Channel, r *ssh.Request, setup []*ssh.Request, env 
 
 	up, upReqs, err := cn.upstream.OpenChannel("session", nil)
 	if err != nil {
-		r.Reply(false, nil)
-		fmt.Fprintf(ch.Stderr(), "agent-bouncer: upstream session: %v\r\n", err)
+		_ = r.Reply(false, nil)
+		_, _ = fmt.Fprintf(ch.Stderr(), "agent-bouncer: upstream session: %v\r\n", err)
 		return nil
 	}
 	for _, s := range setup {
-		up.SendRequest(s.Type, false, s.Payload)
+		_, _ = up.SendRequest(s.Type, false, s.Payload)
 	}
-	ok, err := up.SendRequest(r.Type, true, r.Payload)
+	ok, err := up.SendRequest(r.Type, true, payload)
 	if err != nil || !ok {
-		r.Reply(false, nil)
-		up.Close()
+		_ = r.Reply(false, nil)
+		_ = up.Close()
 		return nil
 	}
-	r.Reply(true, nil)
+	_ = r.Reply(true, nil)
 
 	// The client channel closes once upstream output is drained and its
 	// request stream (carrying exit-status) has ended.
 	var upstreamDone sync.WaitGroup
 	upstreamDone.Add(3)
-	go func() { defer upstreamDone.Done(); io.Copy(ch, up) }()
-	go func() { defer upstreamDone.Done(); io.Copy(ch.Stderr(), up.Stderr()) }()
+	go func() { defer upstreamDone.Done(); _, _ = io.Copy(ch, up) }()
+	go func() { defer upstreamDone.Done(); _, _ = io.Copy(ch.Stderr(), up.Stderr()) }()
 	go func() {
 		defer upstreamDone.Done()
 		for ur := range upReqs {
 			ok, _ := ch.SendRequest(ur.Type, ur.WantReply, ur.Payload)
 			if ur.WantReply {
-				ur.Reply(ok, nil)
+				_ = ur.Reply(ok, nil)
 			}
 		}
 	}()
@@ -524,13 +537,13 @@ func (cn *conn) start(ch ssh.Channel, r *ssh.Request, setup []*ssh.Request, env 
 		req.Body = chain.NewBody(io.NopCloser(ch))
 		if resp := cn.decide(req); resp.Denial != nil {
 			// Upstream never sees the commands, so no ref is touched.
-			up.Close()
+			_ = up.Close()
 			push, _ := req.Push()
 			if result := gitproto.RejectPush(push, fmt.Sprintf("denied by %s: %s", resp.Denial.By, resp.Denial.Reason)); result != nil {
-				ch.Write(result)
-				ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
-				ch.CloseWrite()
-				ch.Close()
+				_, _ = ch.Write(result)
+				_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+				_ = ch.CloseWrite()
+				_ = ch.Close()
 				return nil
 			}
 			refuse(ch, resp.Denial)
@@ -539,22 +552,30 @@ func (cn *conn) start(ch ssh.Channel, r *ssh.Request, setup []*ssh.Request, env 
 		stdin = req.Body.Reader()
 	}
 	go func() {
-		io.Copy(up, stdin)
-		up.CloseWrite()
+		_, _ = io.Copy(up, stdin)
+		_ = up.CloseWrite()
 	}()
 	go func() {
 		upstreamDone.Wait()
-		ch.CloseWrite()
-		ch.Close()
+		_ = ch.CloseWrite()
+		_ = ch.Close()
 	}()
 	return up
 }
 
+// malformed audits and refuses a channel request whose payload does not parse.
+func (cn *conn) malformed(r *ssh.Request, req *chain.Request) {
+	e := cn.entry(req)
+	e.Decision, e.By, e.Reason = audit.DecisionDeny, "bouncer", "malformed "+r.Type+" request"
+	cn.s.Audit.Write(e)
+	_ = r.Reply(false, nil)
+}
+
 func refuse(ch ssh.Channel, d *chain.Denial) {
-	fmt.Fprintf(ch.Stderr(), "agent-bouncer: denied by %s: %s\r\n", d.By, d.Reason)
-	ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{1}))
-	ch.CloseWrite()
-	ch.Close()
+	_, _ = fmt.Fprintf(ch.Stderr(), "agent-bouncer: denied by %s: %s\r\n", d.By, d.Reason)
+	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{1}))
+	_ = ch.CloseWrite()
+	_ = ch.Close()
 }
 
 type bufConn struct {
@@ -562,4 +583,4 @@ type bufConn struct {
 	r *bufio.Reader
 }
 
-func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) } //nolint:wrapcheck // io.Reader contract: io.EOF must be returned unwrapped

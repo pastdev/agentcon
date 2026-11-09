@@ -22,7 +22,7 @@ var nameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 func ParseProvided(r io.Reader) (map[string]string, error) {
 	data, err := io.ReadAll(io.LimitReader(r, 4<<20))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read provided: %w", err)
 	}
 	// A generator that forgets "\n" glues lines together; refusing an
 	// unterminated last line catches that instead of yielding a wrong secret.
@@ -60,7 +60,7 @@ func ParseProvided(r io.Reader) (map[string]string, error) {
 		out[name] = value
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scan provided: %w", err)
 	}
 	return out, nil
 }

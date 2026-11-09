@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // Bitwarden mandates RSA-OAEP with SHA-1
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -65,7 +65,7 @@ func (s *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/accounts/prelogin"):
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"Kdf":0,"KdfIterations":1000,"KdfMemory":null,"KdfParallelism":null}`)
+		_, _ = io.WriteString(w, `{"Kdf":0,"KdfIterations":1000,"KdfMemory":null,"KdfParallelism":null}`)
 	case strings.HasSuffix(r.URL.Path, "/connect/token"):
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, err.Error(), 400)
@@ -111,7 +111,7 @@ func (s *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if s.requireSecond && r.Form.Get("twoFactorToken") == "" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(400)
-			io.WriteString(w, `{"error":"invalid_grant","error_description":"Two factor required.","TwoFactorProviders":[0]}`)
+			_, _ = io.WriteString(w, `{"error":"invalid_grant","error_description":"Two factor required.","TwoFactorProviders":[0]}`)
 			return
 		}
 		if s.requireSecond && r.Form.Get("twoFactorToken") != "123456" {
@@ -124,12 +124,12 @@ func (s *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"access_token": "access-1", "refresh_token": s.refreshToken})
 	case strings.HasSuffix(r.URL.Path, "/sync"):
 		if r.Header.Get("Authorization") == "" || r.Header.Get("Bitwarden-Client-Version") == "" {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		s.syncs++
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(s.syncBody)
+		_, _ = w.Write(s.syncBody)
 	default:
 		http.NotFound(w, r)
 	}
@@ -138,7 +138,7 @@ func (s *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func buildVault(t *testing.T, id identity) []byte {
@@ -170,7 +170,7 @@ func buildVault(t *testing.T, id identity) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rsaCT, err := rsa.EncryptOAEP(sha1.New(), rand.Reader, &priv.PublicKey, orgMaterial, nil)
+	rsaCT, err := rsa.EncryptOAEP(sha1.New(), rand.Reader, &priv.PublicKey, orgMaterial, nil) //nolint:gosec // Bitwarden mandates RSA-OAEP with SHA-1
 	if err != nil {
 		t.Fatal(err)
 	}

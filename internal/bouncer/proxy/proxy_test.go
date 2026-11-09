@@ -52,19 +52,19 @@ func setup(t *testing.T, profileYAML string) *env {
 	e.upstream = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/upgrade" {
 			conn, buf, _ := http.NewResponseController(w).Hijack()
-			buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: echo\r\nConnection: Upgrade\r\n\r\n")
-			buf.Flush()
-			io.Copy(conn, buf)
-			conn.Close()
+			_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: echo\r\nConnection: Upgrade\r\n\r\n")
+			_ = buf.Flush()
+			_, _ = io.Copy(conn, buf)
+			_ = conn.Close()
 			return
 		}
 		if r.URL.Path == "/redirect" {
 			// Echo the URL (query included) back to the client.
-			http.Redirect(w, r, "/new?"+r.URL.RawQuery, http.StatusMovedPermanently)
+			http.Redirect(w, r, "/new?"+r.URL.RawQuery, http.StatusMovedPermanently) //nolint:gosec // test upstream echoes the request on purpose
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
-		fmt.Fprintf(w, "widget=%s auth=%s private=%s path=%s query=%s body=%s", r.Header.Get("X-Widget-Key"), r.Header.Get("Authorization"), r.Header.Get("Private-Token"), r.URL.EscapedPath(), r.URL.RawQuery, body)
+		_, _ = fmt.Fprintf(w, "widget=%s auth=%s private=%s path=%s query=%s body=%s", r.Header.Get("X-Widget-Key"), r.Header.Get("Authorization"), r.Header.Get("Private-Token"), r.URL.EscapedPath(), r.URL.RawQuery, body) //nolint:gosec // test upstream echoes the request on purpose
 	}))
 	t.Cleanup(e.upstream.Close)
 	_, e.port, _ = net.SplitHostPort(e.upstream.Listener.Addr().String())
@@ -89,7 +89,7 @@ profiles:
 		t.Fatal(err)
 	}
 	tr := NewTransport()
-	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test upstream uses a self-signed certificate
 	log, err := audit.Open("", func(en audit.Entry) { e.audit = append(e.audit, en) })
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func (e *env) get(t *testing.T, method, rawURL string, hdr map[string]string) (i
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, rawURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,6 @@ func TestIntercept(t *testing.T) {
 		notContains  []string
 		wantCount    map[string]int
 		clientGetErr string
-		plainGet     bool
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
@@ -333,7 +332,7 @@ func TestIntercept(t *testing.T) {
 	})
 	t.Run("refuses plain http forwarding to loopback", func(t *testing.T) {
 		e := setup(t, scopedProfile)
-		plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "reached") }))
+		plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "reached") }))
 		t.Cleanup(plain.Close)
 		tester(t, testCase{
 			e:           e,
@@ -357,7 +356,7 @@ func TestIntercept(t *testing.T) {
 	})
 	t.Run("does not inject credentials over plain http unless insecure", func(t *testing.T) {
 		var gotAuth []string
-		plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plain := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			gotAuth = append(gotAuth, r.Header.Get("Authorization"))
 		}))
 		t.Cleanup(plain.Close)
@@ -391,7 +390,7 @@ func TestIntercept(t *testing.T) {
 	t.Run("hides credential error details from the agent", func(t *testing.T) {
 		e := setup(t, scopedProfile)
 		t.Setenv("BOUNCER_TEST_TOKEN", "")
-		os.Unsetenv("BOUNCER_TEST_TOKEN")
+		_ = os.Unsetenv("BOUNCER_TEST_TOKEN")
 		_, body := e.get(t, "GET", "https://localhost:"+e.port+"/api/v4/projects/group%2Fproj", nil)
 		if !strings.Contains(body, "unavailable; see the bouncer log") || strings.Contains(body, "BOUNCER_TEST_TOKEN") {
 			t.Fatalf("agent saw credential error details: %s", body)
@@ -407,7 +406,7 @@ func TestIntercept(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != 200 || !strings.Contains(string(b), "auth=Bearer real-secret") || !strings.Contains(string(b), "path=/api/v4/projects/group%2Fproj") {
 			t.Fatalf("%d %s", resp.StatusCode, b)
 		}
@@ -483,7 +482,7 @@ func TestIntercept(t *testing.T) {
 		if string(buf) != "ping" {
 			t.Fatalf("echo: %q", buf)
 		}
-		rwc.Close()
+		_ = rwc.Close()
 	})
 	t.Run("preserves a malformed query and scrubs secrets from redirects", func(t *testing.T) {
 		e := setup(t, `
@@ -507,7 +506,7 @@ func TestIntercept(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if loc := resp.Header.Get("Location"); strings.Contains(loc, "real-secret") {
 			t.Fatalf("secret leaked in Location: %q", loc)
 		}
@@ -631,6 +630,36 @@ func TestNonPublic(t *testing.T) {
 	})
 	t.Run("flags unspecified ipv4", func(t *testing.T) {
 		tester(t, testCase{ip: "0.0.0.0", want: true})
+	})
+	t.Run("flags a this-network address", func(t *testing.T) {
+		tester(t, testCase{ip: "0.1.2.3", want: true})
+	})
+	t.Run("flags an ietf protocol assignment", func(t *testing.T) {
+		tester(t, testCase{ip: "192.0.0.170", want: true})
+	})
+	t.Run("flags a benchmarking address", func(t *testing.T) {
+		tester(t, testCase{ip: "198.19.0.1", want: true})
+	})
+	t.Run("flags a reserved class e address", func(t *testing.T) {
+		tester(t, testCase{ip: "240.0.0.1", want: true})
+	})
+	t.Run("flags limited broadcast", func(t *testing.T) {
+		tester(t, testCase{ip: "255.255.255.255", want: true})
+	})
+	t.Run("flags nat64 of a metadata endpoint", func(t *testing.T) {
+		tester(t, testCase{ip: "64:ff9b::a9fe:a9fe", want: true})
+	})
+	t.Run("flags nat64 of loopback", func(t *testing.T) {
+		tester(t, testCase{ip: "64:ff9b::7f00:1", want: true})
+	})
+	t.Run("accepts nat64 of a public address", func(t *testing.T) {
+		tester(t, testCase{ip: "64:ff9b::808:808", want: false})
+	})
+	t.Run("flags local-use nat64", func(t *testing.T) {
+		tester(t, testCase{ip: "64:ff9b:1::808:808", want: true})
+	})
+	t.Run("accepts a public ipv6 address", func(t *testing.T) {
+		tester(t, testCase{ip: "2001:4860:4860::8888", want: false})
 	})
 	t.Run("accepts a public address", func(t *testing.T) {
 		tester(t, testCase{ip: "140.82.112.3", want: false})

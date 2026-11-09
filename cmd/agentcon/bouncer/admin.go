@@ -22,16 +22,16 @@ func approvalsCmd() *cobra.Command {
 			}
 			list, err := c.Approvals()
 			if err != nil {
-				return err
+				return fmt.Errorf("approvals: %w", err)
 			}
 			if len(list) == 0 {
 				fmt.Println("no pending approvals")
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tSESSION\tPROMPT\tREQUEST\tEXPIRES")
+			_, _ = fmt.Fprintln(w, "ID\tSESSION\tPROMPT\tREQUEST\tEXPIRES")
 			for _, p := range list {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.ID, p.SessionLabel, p.Prompt, p.Request, time.Until(p.Expires).Round(time.Second))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.ID, p.SessionLabel, p.Prompt, p.Request, time.Until(p.Expires).Round(time.Second))
 			}
 			return w.Flush()
 		},
@@ -72,12 +72,12 @@ func sessionsCmd() *cobra.Command {
 			}
 			list, err := c.Sessions()
 			if err != nil {
-				return err
+				return fmt.Errorf("sessions: %w", err)
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tLABEL\tPROFILE\tCREATED")
+			_, _ = fmt.Fprintln(w, "ID\tLABEL\tPROFILE\tCREATED")
 			for _, s := range list {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, s.Label, s.Profile, s.Created.Format(time.DateTime))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, s.Label, s.Profile, s.Created.Format(time.DateTime))
 			}
 			return w.Flush()
 		},
@@ -109,7 +109,7 @@ func checkCmd() *cobra.Command {
 			}
 			got, err := app.Check(svc)
 			if err != nil {
-				return err
+				return fmt.Errorf("check: %w", err)
 			}
 			for _, p := range got.Profiles {
 				fmt.Printf("profile %-14s %d http, %d ssh, unmatched=%s\n", p.Name, p.HTTP, p.SSH, p.Unmatched)

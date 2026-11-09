@@ -16,7 +16,7 @@ import (
 // the admin token from the state directory.
 func (d *Daemon) Control() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /_bouncer/status", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /_bouncer/status", func(w http.ResponseWriter, _ *http.Request) {
 		cfg := d.Config()
 		var profiles []string
 		for name := range cfg.Profiles {
@@ -82,7 +82,7 @@ func (d *Daemon) Control() http.Handler {
 		}
 		writeJSON(w, NewSession{SessionRecord: *rec, ProxyAddr: d.proxyAddr, SSHAddr: d.sshAddr, Placeholders: d.Placeholders(), SSHHosts: d.SSHHosts()})
 	})
-	mux.HandleFunc("GET /_bouncer/sessions", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /_bouncer/sessions", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, d.listSessions())
 	})
 	mux.HandleFunc("DELETE /_bouncer/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +92,7 @@ func (d *Daemon) Control() http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("GET /_bouncer/approvals", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /_bouncer/approvals", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, d.Approvals.List())
 	})
 	mux.HandleFunc("POST /_bouncer/approvals/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +111,7 @@ func (d *Daemon) Control() http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("GET /_bouncer/ca", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /_bouncer/ca", func(w http.ResponseWriter, _ *http.Request) {
 		bundle, err := d.CA.BundlePEM()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -123,7 +123,7 @@ func (d *Daemon) Control() http.Handler {
 			"ssh_known_hosts": d.CA.SSHKnownHostsLine(d.SSHHosts()),
 		})
 	})
-	mux.HandleFunc("POST /_bouncer/reload", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /_bouncer/reload", func(w http.ResponseWriter, _ *http.Request) {
 		if err := d.Reload(); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -173,5 +173,5 @@ func (d *Daemon) Control() http.Handler {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

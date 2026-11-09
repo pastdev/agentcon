@@ -3,11 +3,20 @@ package audit
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+)
+
+// Decisions recorded on an Entry.
+const (
+	DecisionAllow  = "allow"
+	DecisionDeny   = "deny"
+	DecisionTunnel = "tunnel"
+	DecisionError  = "error"
 )
 
 // Entry is one audit record.
@@ -19,7 +28,7 @@ type Entry struct {
 	Transport  string    `json:"transport"`
 	Service    string    `json:"service,omitempty"`
 	Request    string    `json:"request"`
-	Decision   string    `json:"decision"` // allow, deny, tunnel, error
+	Decision   string    `json:"decision"` // one of the Decision* constants
 	By         string    `json:"by,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
 	Status     int       `json:"status,omitempty"`
@@ -40,11 +49,11 @@ func Open(path string, mirror func(Entry)) (*Log, error) {
 		return l, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("audit dir: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // path from operator config or the state dir, not the agent
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("audit log: %w", err)
 	}
 	l.w = f
 	return l, nil
@@ -62,7 +71,8 @@ func (l *Log) Write(e Entry) {
 	}
 	b, _ := json.Marshal(e)
 	l.mu.Lock()
-	l.w.Write(append(b, '\n'))
+	// A failed audit write must not fail the request it describes.
+	_, _ = l.w.Write(append(b, '\n'))
 	l.mu.Unlock()
 }
 
@@ -70,5 +80,9 @@ func (l *Log) Close() error {
 	if l.w == nil {
 		return nil
 	}
-	return l.w.Close()
+	err := l.w.Close()
+	if err != nil {
+		return fmt.Errorf("audit log: %w", err)
+	}
+	return nil
 }

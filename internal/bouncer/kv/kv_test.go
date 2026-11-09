@@ -24,14 +24,14 @@ func TestOpen(t *testing.T) {
 		}
 		s.Set("f", "short", "x", time.Millisecond)
 		s.Set("other", "pushes", "separate namespace", 0)
-		s.Close()
+		_ = s.Close()
 		time.Sleep(5 * time.Millisecond)
 
 		s2, err := Open(tc.path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer s2.Close()
+		defer func() { _ = s2.Close() }()
 		if v, ok := s2.Get("f", "pushes"); !ok || v.(float64) != 2 {
 			t.Fatalf("got %v %v", v, ok)
 		}

@@ -5,6 +5,7 @@ package kv
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,14 +34,14 @@ type Store struct {
 func Open(path string) (*Store, error) {
 	s := &Store{path: path, data: map[string]entry{}, stop: make(chan struct{}), done: make(chan struct{})}
 	if path != "" {
-		b, err := os.ReadFile(path)
+		b, err := os.ReadFile(path) //nolint:gosec // path from operator config or the state dir, not the agent
 		switch {
 		case err == nil:
 			if err := json.Unmarshal(b, &s.data); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("parse kv store: %w", err)
 			}
 		case !errors.Is(err, os.ErrNotExist):
-			return nil, err
+			return nil, fmt.Errorf("read kv store: %w", err)
 		}
 	}
 	go s.loop()
@@ -122,9 +123,9 @@ func (s *Store) loop() {
 	for {
 		select {
 		case <-t.C:
-			s.Flush()
+			// A failed write leaves the store dirty, so the next tick retries.
+			_ = s.Flush()
 		case <-s.stop:
-			s.Flush()
 			return
 		}
 	}
@@ -146,22 +147,35 @@ func (s *Store) Flush() error {
 	b, err := json.Marshal(s.data)
 	s.dirty = false
 	s.mu.Unlock()
+	if err == nil {
+		err = s.write(b)
+	}
 	if err != nil {
-		return err
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
 	}
-	tmp := s.path + ".tmp"
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return err
-	}
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
+	return err
 }
 
-// Close flushes and stops the background writer.
+func (s *Store) write(b []byte) error {
+	tmp := s.path + ".tmp"
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return fmt.Errorf("kv dir: %w", err)
+	}
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return fmt.Errorf("write kv store: %w", err)
+	}
+	err := os.Rename(tmp, s.path)
+	if err != nil {
+		return fmt.Errorf("replace kv store: %w", err)
+	}
+	return nil
+}
+
+// Close stops the background writer and flushes.
 func (s *Store) Close() error {
 	close(s.stop)
 	<-s.done
-	return nil
+	return s.Flush()
 }
