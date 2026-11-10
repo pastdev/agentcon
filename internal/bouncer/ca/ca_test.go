@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -17,16 +19,10 @@ func TestLoadOrCreate(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		a, err := LoadOrCreate(tc.dir)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		b, err := LoadOrCreate(tc.dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !b.Cert().Equal(a.Cert()) {
-			t.Fatal("CA changed on reload")
-		}
+		require.NoError(t, err)
+		assert.True(t, b.Cert().Equal(a.Cert()), "CA changed on reload")
 	}
 
 	t.Run("reloads the same CA from disk", func(t *testing.T) {
@@ -42,35 +38,23 @@ func TestLeaf(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		a, err := LoadOrCreate(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if tc.fillCache {
 			for i := 0; i < maxLeaves+50; i++ {
 				_, err := a.Leaf(fmt.Sprintf("h%d.example.com", i))
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 			}
-			if n := len(a.leaves); n > maxLeaves {
-				t.Fatalf("leaf cache grew to %d", n)
-			}
+			assert.LessOrEqual(t, len(a.leaves), maxLeaves)
 			return
 		}
 		leaf, err := a.Leaf(tc.host)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		c, err := x509.ParseCertificate(leaf.Certificate[0])
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		pool := x509.NewCertPool()
 		pool.AddCert(a.Cert())
 		_, err = c.Verify(x509.VerifyOptions{DNSName: tc.host, Roots: pool})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	}
 
 	t.Run("verifies a leaf against the CA", func(t *testing.T) {
@@ -86,20 +70,12 @@ func TestWriteBundle(t *testing.T) {
 	tester := func(t *testing.T, _ testCase) {
 		t.Helper()
 		a, err := LoadOrCreate(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		err = a.WriteBundle()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		data, err := os.ReadFile(a.BundlePath())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(data) < 10000 {
-			t.Fatalf("bundle suspiciously small: %d bytes", len(data))
-		}
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, len(data), 10000, "bundle suspiciously small")
 	}
 
 	t.Run("writes a bundle large enough to include system roots", func(t *testing.T) {
@@ -116,27 +92,19 @@ func TestSSHHostSigner(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		a, err := LoadOrCreate(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		s, err := a.SSHHostSigner(tc.host)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		cert := s.PublicKey().(*ssh.Certificate)
 		checker := &ssh.CertChecker{IsHostAuthority: func(k ssh.PublicKey, _ string) bool {
 			return string(k.Marshal()) == string(a.sshCA.PublicKey().Marshal())
 		}}
 		err = checker.CheckHostKey(tc.check+":22", nil, cert)
 		if tc.wantErr {
-			if err == nil {
-				t.Fatal("cert should not be valid for another host")
-			}
+			require.Error(t, err, "cert should not be valid for another host")
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	}
 
 	t.Run("signs a host cert valid for that host", func(t *testing.T) {
@@ -156,19 +124,13 @@ func TestSSHKnownHostsLine(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		a, err := LoadOrCreate(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		line := a.SSHKnownHostsLine(tc.hosts)
 		if tc.wantEmpty {
-			if line != "" {
-				t.Fatal("no hosts should trust nothing")
-			}
+			assert.Empty(t, line, "no hosts should trust nothing")
 			return
 		}
-		if !strings.HasPrefix(line, tc.wantPrefix) {
-			t.Fatalf("%q", line)
-		}
+		assert.True(t, strings.HasPrefix(line, tc.wantPrefix), "%q", line)
 	}
 
 	t.Run("scopes cert-authority to the given hosts", func(t *testing.T) {

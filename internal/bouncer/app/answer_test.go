@@ -6,6 +6,9 @@ import (
 	"os"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 )
 
@@ -35,35 +38,20 @@ func TestAnswerAtTerminal(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		r, w, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		t.Cleanup(func() { _ = r.Close() })
 		_, err = w.WriteString(tc.input)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		_ = w.Close()
 		f := &fakeAnswerer{}
 		err = AnswerAtTerminal(context.Background(), f, r, io.Discard, prompt.Pending{ID: "a1", Kind: tc.kind, Source: "test", Message: "?"})
 		if tc.wantErr {
-			if err == nil {
-				t.Fatal("expected an error")
-			}
-			if f.answered != nil || f.declined {
-				t.Fatalf("sent %+v declined=%v after an error", f.answered, f.declined)
-			}
+			require.Error(t, err)
+			assert.Equal(t, &fakeAnswerer{}, f, "sent after an error")
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if f.declined != tc.wantDeclined {
-			t.Fatalf("declined=%v", f.declined)
-		}
-		if (f.answered == nil) != (tc.wantAnswer == nil) || (f.answered != nil && *f.answered != *tc.wantAnswer) {
-			t.Fatalf("answered %+v, want %+v", f.answered, tc.wantAnswer)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, &fakeAnswerer{answered: tc.wantAnswer, declined: tc.wantDeclined}, f)
 	}
 
 	t.Run("text", func(t *testing.T) {

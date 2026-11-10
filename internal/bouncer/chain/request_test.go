@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/pastdev/agentcon/internal/bouncer/gitproto"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestDescribe(t *testing.T) {
@@ -27,10 +28,7 @@ func TestDescribe(t *testing.T) {
 	}
 	tester := func(t *testing.T, req *Request, want string) {
 		t.Helper()
-		got := req.Describe()
-		if got != want {
-			t.Errorf("got %q want %q", got, want)
-		}
+		assert.Equal(t, want, req.Describe())
 	}
 
 	t.Run("describes an ssh git command without a push body", func(t *testing.T) {

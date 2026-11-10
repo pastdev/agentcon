@@ -12,14 +12,14 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/gitproto"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func httpReq(t *testing.T, method, rawURL string, body []byte) *Request {
 	t.Helper()
 	u, err := url.Parse(rawURL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return &Request{Ctx: context.Background(), Transport: TransportHTTP, Method: method, URL: u,
 		Header: http.Header{}, Body: BytesBody(body), Service: "gitlab"}
 }
@@ -37,9 +37,7 @@ profiles:
         hosts: [gitlab.com]
         credential: gl
 `+yml), "/tmp/c.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return cfg.Profiles["p"].HTTP[0]
 }
 
@@ -64,27 +62,20 @@ func TestBuild(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		resp, err := tc.h(tc.req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if tc.wantStatus != 0 {
-			if resp.Status != tc.wantStatus || resp.Denial != nil {
-				t.Fatalf("%+v", resp)
-			}
-		} else if got := resp.Denial == nil; got != tc.allow {
-			t.Errorf("allowed=%v want %v (%+v)", got, tc.allow, resp.Denial)
+			require.Equal(t, tc.wantStatus, resp.Status)
+			require.Nil(t, resp.Denial)
+		} else {
+			assert.Equal(t, tc.allow, resp.Denial == nil, "allowed (%+v)", resp.Denial)
 		}
-		if tc.wantDenial && resp.Denial == nil {
-			t.Fatal("expected denial")
+		if tc.wantDenial {
+			require.NotNil(t, resp.Denial)
 		}
 		if tc.intact != nil {
 			fwd, err := io.ReadAll(tc.req.Body.Reader())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(fwd, tc.intact) {
-				t.Errorf("body altered by inspection")
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.intact, fwd, "body altered by inspection")
 		}
 	}
 
@@ -366,22 +357,15 @@ func TestBuild(t *testing.T) {
 		var zb bytes.Buffer
 		zw := gzip.NewWriter(&zb)
 		_, err := zw.Write([]byte(`{"query":"mutation { deleteRepository(input:{}) { clientMutationId } }"}`))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		err = zw.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		req := httpReq(t, "POST", "https://api.github.com/graphql", zb.Bytes())
 		req.Header.Set("Content-Encoding", "gzip")
 		resp, err := graphqlH(t)(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial == nil || !strings.Contains(resp.Denial.Reason, "denied by") {
-			t.Errorf("gzip mutation not caught by the rule: %+v", resp.Denial)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, resp.Denial, "gzip mutation not caught by the rule")
+		assert.Contains(t, resp.Denial.Reason, "denied by")
 	})
 
 	githubRepo := func(t *testing.T) Handler {
@@ -479,36 +463,24 @@ func TestBuild(t *testing.T) {
 		})}, upstreamOK)
 		ran = nil
 		resp, err := h(httpReq(t, "GET", "https://gitlab.com/allowed", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial != nil || strings.Join(ran, ",") != "allowed" {
-			t.Fatalf("allowed: denial=%+v ran=%v", resp.Denial, ran)
-		}
+		require.NoError(t, err)
+		assert.Nil(t, resp.Denial)
+		assert.Equal(t, []string{"allowed"}, ran)
 		ran = nil
 		resp, err = h(httpReq(t, "GET", "https://gitlab.com/denied", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial == nil || len(ran) != 0 {
-			t.Fatalf("denied: denial=%+v ran=%v", resp.Denial, ran)
-		}
+		require.NoError(t, err)
+		assert.NotNil(t, resp.Denial)
+		assert.Empty(t, ran)
 		ran = nil
 		resp, err = h(httpReq(t, "GET", "https://gitlab.com/other", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial != nil || strings.Join(ran, ",") != "other" {
-			t.Fatalf("other: denial=%+v ran=%v", resp.Denial, ran)
-		}
+		require.NoError(t, err)
+		assert.Nil(t, resp.Denial)
+		assert.Equal(t, []string{"other"}, ran)
 		ran = nil
 		resp, err = h(httpReq(t, "GET", "https://gitlab.com/nope", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial == nil || len(ran) != 0 {
-			t.Fatalf("default: denial=%+v ran=%v", resp.Denial, ran)
-		}
+		require.NoError(t, err)
+		assert.NotNil(t, resp.Denial)
+		assert.Empty(t, ran)
 	})
 	t.Run("runs rule filters after ask yes and not after ask no", func(t *testing.T) {
 		svc := loadRules(t, `
@@ -525,20 +497,14 @@ func TestBuild(t *testing.T) {
 		env := &Env{Approver: approverFunc(func(AskRequest) bool { return answer })}
 		h := Build([]Filter{NewRules(svc, env).WithRuleFilters([][]Filter{{tag}})}, upstreamOK)
 		resp, err := h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial == nil || ran != 0 {
-			t.Fatalf("ask no: denial=%+v ran=%d", resp.Denial, ran)
-		}
+		require.NoError(t, err)
+		assert.NotNil(t, resp.Denial)
+		assert.Equal(t, 0, ran)
 		answer = true
 		resp, err = h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial != nil || ran != 1 {
-			t.Fatalf("ask yes: denial=%+v ran=%d", resp.Denial, ran)
-		}
+		require.NoError(t, err)
+		assert.Nil(t, resp.Denial)
+		assert.Equal(t, 1, ran)
 	})
 	t.Run("denies an ask rule after no and allows after yes", func(t *testing.T) {
 		svc := loadRules(t, `
@@ -552,27 +518,19 @@ func TestBuild(t *testing.T) {
 		env := &Env{Approver: approverFunc(func(a AskRequest) bool { asked = a.Prompt; return answer })}
 		h := Build([]Filter{NewRules(svc, env)}, upstreamOK)
 		resp, err := h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial == nil || asked != "merge?" {
-			t.Errorf("expected denial after no; asked=%q", asked)
-		}
+		require.NoError(t, err)
+		assert.NotNil(t, resp.Denial)
+		assert.Equal(t, "merge?", asked)
 		answer = true
 		resp, err = h(httpReq(t, "PUT", "https://gitlab.com/x", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial != nil {
-			t.Error("expected allow after yes")
-		}
+		require.NoError(t, err)
+		assert.Nil(t, resp.Denial)
 	})
 	t.Run("denies when a filter panics", func(t *testing.T) {
 		boom := filterFunc(func(*Request, Handler) (*Response, error) { panic("boom") })
 		resp, err := Build([]Filter{boom}, upstreamOK)(httpReq(t, "GET", "https://x/", nil))
-		if err != nil || resp.Denial == nil {
-			t.Fatalf("panic should deny: %+v %v", resp, err)
-		}
+		require.NoError(t, err)
+		assert.NotNil(t, resp.Denial)
 	})
 }
 
@@ -583,9 +541,7 @@ func TestCheckPath(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		if got := CheckPath(tc.path) == nil; got != tc.ok {
-			t.Errorf("CheckPath(%q) ok=%v want %v", tc.path, got, tc.ok)
-		}
+		assert.Equal(t, tc.ok, CheckPath(tc.path) == nil, "ok")
 	}
 
 	t.Run("accepts a decoded api path", func(t *testing.T) {
@@ -615,9 +571,7 @@ func TestCheckMethod(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		if got := CheckMethod(tc.method) == nil; got != tc.ok {
-			t.Errorf("CheckMethod(%q) ok=%v want %v", tc.method, got, tc.ok)
-		}
+		assert.Equal(t, tc.ok, CheckMethod(tc.method) == nil, "ok")
 	}
 
 	t.Run("accepts GET", func(t *testing.T) {
@@ -653,9 +607,7 @@ func TestCheckMethodOverride(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		if got := CheckMethodOverride(tc.req) == nil; got != tc.ok {
-			t.Errorf("ok=%v want %v", got, tc.ok)
-		}
+		assert.Equal(t, tc.ok, CheckMethodOverride(tc.req) == nil, "ok")
 	}
 
 	form := func(body string) *Request {
@@ -711,12 +663,8 @@ func TestCheckMethodOverride(t *testing.T) {
 		r := form("title=hello")
 		_ = CheckMethodOverride(r)
 		b, err := io.ReadAll(r.Body.Reader())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(b) != "title=hello" {
-			t.Fatalf("body consumed: %q", b)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "title=hello", string(b))
 	})
 }
 
@@ -728,9 +676,7 @@ func TestGlob(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		if got := Glob(tc.pat, tc.name); got != tc.want {
-			t.Errorf("Glob(%q, %q) = %v", tc.pat, tc.name, got)
-		}
+		assert.Equal(t, tc.want, Glob(tc.pat, tc.name))
 	}
 
 	t.Run("matches an exact path", func(t *testing.T) {

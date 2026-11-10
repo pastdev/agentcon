@@ -15,15 +15,15 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
 	"github.com/pastdev/agentcon/internal/bouncer/gitproto"
 	"github.com/pastdev/agentcon/internal/bouncer/kv"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func writeFilter(t *testing.T, dir, name, src string) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
 	err := os.WriteFile(p, []byte(src), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return p
 }
 
@@ -31,9 +31,7 @@ func load(t *testing.T, src string, opts Options) *Filter {
 	t.Helper()
 	opts.Path = writeFilter(t, t.TempDir(), "f.ts", src)
 	f, err := Load(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return f
 }
 
@@ -71,22 +69,16 @@ func TestLoad(t *testing.T) {
 		start := time.Now()
 		_, err := Load(tc.opts)
 		if tc.anyErr {
-			if err == nil {
-				t.Fatal("expected load error")
-			}
+			require.Error(t, err)
 			return
 		}
 		if tc.wantErr == "" {
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			return
 		}
-		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-			t.Fatalf("expected %q, got %v", tc.wantErr, err)
-		}
-		if tc.budget && time.Since(start) > 2*time.Second {
-			t.Fatal("top-level spin was not interrupted near the budget")
+		require.ErrorContains(t, err, tc.wantErr)
+		if tc.budget {
+			assert.LessOrEqual(t, time.Since(start), 2*time.Second, "top-level spin was not interrupted near the budget")
 		}
 	}
 
@@ -146,47 +138,35 @@ func TestHandle(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		resp, err := tc.h(tc.req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if tc.wantDenial != "" {
-			if resp.Denial == nil || resp.Denial.Reason != tc.wantDenial {
-				t.Fatalf("expected denial, got %+v", resp.Denial)
-			}
-			if tc.wantBy != "" && resp.Denial.By != tc.wantBy {
-				t.Fatalf("expected denial, got %+v", resp.Denial)
+			require.NotNil(t, resp.Denial)
+			assert.Equal(t, tc.wantDenial, resp.Denial.Reason)
+			if tc.wantBy != "" {
+				assert.Equal(t, tc.wantBy, resp.Denial.By)
 			}
 			return
 		}
 		if tc.wantReasonIn != "" {
-			if resp.Denial == nil || !strings.Contains(resp.Denial.Reason, tc.wantReasonIn) {
-				t.Fatalf("expected denial, got %+v", resp.Denial)
-			}
+			require.NotNil(t, resp.Denial)
+			assert.Contains(t, resp.Denial.Reason, tc.wantReasonIn)
 			return
 		}
 		if tc.allow != nil {
-			if got := resp.Denial == nil; got != *tc.allow {
-				t.Errorf("allowed=%v want %v (%+v)", got, *tc.allow, resp.Denial)
-			}
+			assert.Equal(t, *tc.allow, resp.Denial == nil, "allowed (%+v)", resp.Denial)
 			return
 		}
-		if resp.Denial != nil {
-			t.Fatalf("%+v %v", resp, err)
-		}
-		if tc.wantStatus != 0 && resp.Status != tc.wantStatus {
-			t.Fatalf("status=%d", resp.Status)
+		require.Nil(t, resp.Denial)
+		if tc.wantStatus != 0 {
+			assert.Equal(t, tc.wantStatus, resp.Status)
 		}
 		if tc.wantBody != "" {
 			b, err := io.ReadAll(resp.Body.Reader())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(b) != tc.wantBody {
-				t.Fatalf("status=%d body=%q", resp.Status, b)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantBody, string(b))
 		}
-		if tc.headerKey != "" && resp.Header.Get(tc.headerKey) != tc.wantHeader {
-			t.Fatalf("status=%d headers=%v", resp.Status, resp.Header)
+		if tc.headerKey != "" {
+			assert.Equal(t, tc.wantHeader, resp.Header.Get(tc.headerKey))
 		}
 	}
 
@@ -288,12 +268,9 @@ export default defineFilter({
 });`, Options{})
 		h := chain.Build([]chain.Filter{f}, upstream("fine"))
 		resp, err := h(req(t, "GET", "https://x/", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial != nil || resp.Status != 200 {
-			t.Fatalf("unexpected %+v", resp)
-		}
+		require.NoError(t, err)
+		assert.Nil(t, resp.Denial)
+		assert.Equal(t, 200, resp.Status)
 	})
 	t.Run("responds with a credential value", func(t *testing.T) {
 		env := &chain.Env{Credential: func(_ context.Context, name string) (string, error) {
@@ -339,9 +316,7 @@ export default defineFilter({
 	})
 	t.Run("uses kv and ask across requests", func(t *testing.T) {
 		store, err := kv.Open("")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = store.Close() }()
 		var prompts []string
 		env := &chain.Env{Approver: approver(func(a chain.AskRequest) bool { prompts = append(prompts, a.Prompt); return a.Prompt == "push #2?" })}
@@ -357,30 +332,19 @@ export default defineFilter({
 		h := chain.Build([]chain.Filter{f}, upstream("ok"))
 		for i, want := range []bool{true, true, false} {
 			resp, err := h(req(t, "GET", "https://x/", nil))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := resp.Denial == nil; got != want {
-				t.Errorf("call %d: allowed=%v want %v (%+v)", i+1, got, want, resp.Denial)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, want, resp.Denial == nil, "call %d allowed (%+v)", i+1, resp.Denial)
 		}
-		if len(prompts) != 2 {
-			t.Errorf("prompts: %v", prompts)
-		}
+		assert.Len(t, prompts, 2)
 	})
 	t.Run("fails closed on a cpu budget timeout", func(t *testing.T) {
 		spin := load(t, `export default { onRequest() { for (;;) {} } };`, Options{Timeout: 50 * time.Millisecond})
 		start := time.Now()
 		resp, err := chain.Build([]chain.Filter{spin}, upstream("ok"))(req(t, "GET", "https://x/", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial == nil || !strings.Contains(resp.Denial.Reason, "CPU budget") {
-			t.Fatalf("expected timeout denial, got %+v", resp.Denial)
-		}
-		if time.Since(start) > 2*time.Second {
-			t.Fatal("timeout did not interrupt")
-		}
+		require.NoError(t, err)
+		require.NotNil(t, resp.Denial)
+		assert.Contains(t, resp.Denial.Reason, "CPU budget")
+		assert.LessOrEqual(t, time.Since(start), 2*time.Second, "timeout did not interrupt")
 	})
 	t.Run("excludes blocked upstream time from the budget", func(t *testing.T) {
 		pass := load(t, `export default { async onRequest(req, next) { return next(req); } };`, Options{Timeout: 20 * time.Millisecond})
@@ -389,12 +353,8 @@ export default defineFilter({
 			return &chain.Response{Status: 200}, nil
 		}
 		resp, err := chain.Build([]chain.Filter{pass}, slow)(req(t, "GET", "https://x/", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial != nil {
-			t.Fatalf("blocked time counted against budget: %+v", resp.Denial)
-		}
+		require.NoError(t, err)
+		assert.Nil(t, resp.Denial, "blocked time counted against budget")
 	})
 	t.Run("returns empty arrays from getAll", func(t *testing.T) {
 		f := load(t, `import { deny } from "bouncer";
@@ -404,26 +364,17 @@ export default { onRequest(req, next) {
   return next(req);
 } };`, Options{})
 		resp, err := chain.Build([]chain.Filter{f}, upstream("ok"))(req(t, "GET", "https://x/", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial != nil {
-			t.Fatal(resp.Denial.Reason)
-		}
+		require.NoError(t, err)
+		assert.Nil(t, resp.Denial)
 	})
 	t.Run("counts in-memory host calls against the budget", func(t *testing.T) {
 		f := load(t, `export default { async onRequest(req, next) { for (;;) { await req.body.peek(1); } } };`, Options{Timeout: 100 * time.Millisecond})
 		start := time.Now()
 		resp, err := chain.Build([]chain.Filter{f}, upstream("ok"))(req(t, "POST", "https://x/", []byte("abc")))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial == nil || !strings.Contains(resp.Denial.Reason, "CPU budget") {
-			t.Fatalf("expected budget denial, got %+v", resp.Denial)
-		}
-		if elapsed := time.Since(start); elapsed > time.Second {
-			t.Fatalf("100ms budget took %v: in-memory host calls aren't being counted", elapsed)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, resp.Denial)
+		assert.Contains(t, resp.Denial.Reason, "CPU budget")
+		assert.LessOrEqual(t, time.Since(start), time.Second, "in-memory host calls aren't being counted")
 	})
 	t.Run("fails closed with a typescript source location", func(t *testing.T) {
 		f := load(t, `
@@ -436,25 +387,17 @@ export default defineFilter({
   },
 });`, Options{})
 		resp, err := chain.Build([]chain.Filter{f}, upstream("ok"))(req(t, "GET", "https://x/", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial == nil || !strings.Contains(resp.Denial.Reason, "kaboom 1") {
-			t.Fatalf("%+v", resp.Denial)
-		}
-		if !strings.Contains(resp.Denial.Reason, "f.ts:7") {
-			t.Errorf("stack should point at the TS source line: %s", resp.Denial.Reason)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, resp.Denial)
+		require.Contains(t, resp.Denial.Reason, "kaboom 1")
+		assert.Contains(t, resp.Denial.Reason, "f.ts:7", "stack should point at the TS source line")
 	})
 	t.Run("fails closed when onRequest returns nothing", func(t *testing.T) {
 		noReturn := load(t, `export default { onRequest(req, next) { next(req); } };`, Options{})
 		resp, err := chain.Build([]chain.Filter{noReturn}, upstream("ok"))(req(t, "GET", "https://x/", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial == nil || !strings.Contains(resp.Denial.Reason, "returned nothing") {
-			t.Fatalf("%+v", resp.Denial)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, resp.Denial)
+		assert.Contains(t, resp.Denial.Reason, "returned nothing")
 	})
 	t.Run("resolves relative imports and graphql fields", func(t *testing.T) {
 		dir := t.TempDir()
@@ -470,9 +413,7 @@ export default defineFilter({
   },
 });`)
 		f, err := Load(Options{Path: p})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		h := chain.Build([]chain.Filter{f}, upstream("ok"))
 		tester(t, testCase{
 			h:          h,
@@ -494,9 +435,7 @@ export default defineFilter({
 			}()
 		}
 		for i := 0; i < 20; i++ {
-			if !<-done {
-				t.Fatal("concurrent request denied")
-			}
+			assert.True(t, <-done, "concurrent request denied")
 		}
 	})
 	t.Run("does not leak module state across sessions", func(t *testing.T) {
@@ -505,28 +444,18 @@ export default { onRequest(req) { const p = last; last = req.session.id; return 
 		h := chain.Build([]chain.Filter{f}, upstream("ok"))
 		for i := 0; i < 5; i++ {
 			resp, err := h(sessReq(t, "session-A"))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			b, err := io.ReadAll(resp.Body.Reader())
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			if string(b) == "session-A" {
 				continue
 			}
 		}
 		resp, err := h(sessReq(t, "session-B"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		b, err := io.ReadAll(resp.Body.Reader())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(b) == "session-A" {
-			t.Fatalf("session B saw session A's state: %q", b)
-		}
+		require.NoError(t, err)
+		assert.NotEqual(t, "session-A", string(b), "session B saw session A's state")
 	})
 	t.Run("rejects a stale next callback", func(t *testing.T) {
 		var forwarded int
@@ -543,15 +472,10 @@ export default { async onRequest(req, next) {
 		h := chain.Build([]chain.Filter{f}, term)
 		_, _ = h(sessReq(t, "s1"))
 		resp, err := h(sessReq(t, "s1"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if forwarded != 0 {
-			t.Fatalf("stale next() forwarded %d requests upstream", forwarded)
-		}
-		if resp.Denial == nil || !strings.Contains(resp.Denial.Reason, "stale") {
-			t.Fatalf("expected stale-next denial, got %+v", resp.Denial)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, 0, forwarded, "stale next() forwarded requests upstream")
+		require.NotNil(t, resp.Denial)
+		assert.Contains(t, resp.Denial.Reason, "stale")
 	})
 	t.Run("hits the budget on a fast ask loop", func(t *testing.T) {
 		env := &chain.Env{Approver: approver(func(chain.AskRequest) bool { return true })}
@@ -563,14 +487,8 @@ export default { async onRequest(req, next) {
 } };`, Options{Timeout: 50 * time.Millisecond, Env: env})
 		start := time.Now()
 		resp, err := chain.Build([]chain.Filter{f}, upstream("ok"))(req(t, "GET", "https://x/", nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Denial == nil {
-			t.Fatal("fast ask() loop was allowed")
-		}
-		if time.Since(start) > 2*time.Second {
-			t.Fatalf("ask() loop ran %v past a 50ms budget", time.Since(start))
-		}
+		require.NoError(t, err)
+		assert.NotNil(t, resp.Denial, "fast ask() loop was allowed")
+		assert.LessOrEqual(t, time.Since(start), 2*time.Second, "ask() loop ran past a 50ms budget")
 	})
 }

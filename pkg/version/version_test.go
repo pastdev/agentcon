@@ -2,14 +2,14 @@ package version
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestVersion(t *testing.T) {
 	tester := func(t *testing.T) {
 		t.Helper()
-		if Version() == "" {
-			t.Fatal("expected version")
-		}
+		assert.NotEmpty(t, Version())
 	}
 
 	t.Run("returns a non-empty value", func(t *testing.T) {

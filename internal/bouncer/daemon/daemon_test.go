@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 )
 
@@ -21,13 +23,9 @@ func newTestDaemon(t *testing.T) *Daemon {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(cfg, []byte("default_profile: p\nprofiles:\n  p: {}\n"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	d, err := New(Options{ConfigPath: cfg, StateDir: filepath.Join(dir, "state")})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return d
 }
 
@@ -40,14 +38,10 @@ func TestNew(t *testing.T) {
 		t.Helper()
 		_, err := New(tc.opts)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("got %v", err)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	}
 
 	t.Run("allows a provided source when provided opts are nil", func(t *testing.T) {
@@ -62,9 +56,7 @@ credentials:
 profiles:
   p: {}
 `), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{opts: Options{ConfigPath: cfg, StateDir: filepath.Join(dir, "state")}})
 	})
 	t.Run("rejects a missing provided value when provided opts are set", func(t *testing.T) {
@@ -79,9 +71,7 @@ credentials:
 profiles:
   p: {}
 `), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{
 			opts: Options{
 				ConfigPath: cfg,
@@ -106,45 +96,30 @@ func TestCreateSession(t *testing.T) {
 		t.Helper()
 		rec, err := tc.d.CreateSession(tc.id, "", tc.label, tc.ttl)
 		if tc.wantErr {
-			if err == nil {
-				t.Fatal("expected error")
-			}
+			require.Error(t, err)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if tc.wantID != "" && rec.ID != tc.wantID {
-			t.Fatalf("id %q", rec.ID)
+		require.NoError(t, err)
+		if tc.wantID != "" {
+			assert.Equal(t, tc.wantID, rec.ID)
 		}
 	}
 
 	t.Run("expires a short ttl and keeps a forever session", func(t *testing.T) {
 		d := newTestDaemon(t)
 		short, err := d.CreateSession("", "", "short", 30*time.Millisecond)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		forever, err := d.CreateSession("", "", "forever", 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(short.ID) != 8 {
-			t.Errorf("session ID %q should be 32 bits", short.ID)
-		}
-		if _, ok := d.Session(short.Token); !ok {
-			t.Fatal("fresh session rejected")
-		}
+		require.NoError(t, err)
+		assert.Len(t, short.ID, 8, "session ID should be 32 bits")
+		_, ok := d.Session(short.Token)
+		require.True(t, ok, "fresh session rejected")
 		time.Sleep(50 * time.Millisecond)
-		if _, ok := d.Session(short.Token); ok {
-			t.Fatal("expired session accepted")
-		}
-		if _, ok := d.Session(forever.Token); !ok {
-			t.Fatal("session without ttl expired")
-		}
-		if n := len(d.listSessions()); n != 1 {
-			t.Fatalf("expired session listed; got %d sessions", n)
-		}
+		_, ok = d.Session(short.Token)
+		require.False(t, ok, "expired session accepted")
+		_, ok = d.Session(forever.Token)
+		require.True(t, ok, "session without ttl expired")
+		assert.Len(t, d.listSessions(), 1, "expired session listed")
 	})
 	t.Run("uses a supplied session id", func(t *testing.T) {
 		tester(t, testCase{d: newTestDaemon(t), id: "deadbeef", label: "agentcon", wantID: "deadbeef"})
@@ -172,20 +147,14 @@ func TestControl(t *testing.T) {
 		srv := httptest.NewServer(tc.d.Control())
 		t.Cleanup(srv.Close)
 		req, err := http.NewRequest(http.MethodPut, srv.URL+tc.path, strings.NewReader(tc.body))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(tc.token))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != tc.wantStatus {
-			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("status %d %s", resp.StatusCode, body)
-		}
+		body, _ := io.ReadAll(resp.Body)
+		require.Equal(t, tc.wantStatus, resp.StatusCode, string(body))
 	}
 
 	t.Run("overlays env credentials from put", func(t *testing.T) {
@@ -201,23 +170,16 @@ credentials:
 profiles:
   p: {}
 `), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		state := filepath.Join(dir, "state")
 		d, err := New(Options{ConfigPath: cfg, StateDir: state})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		t.Setenv("SMOKE_TOKEN", "from-os")
 		v, err := d.creds.Get(context.Background(), "tok")
-		if err != nil || v.Token != "from-os" {
-			t.Fatalf("got %+v, %v", v, err)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "from-os", v.Token)
 		token, err := os.ReadFile(AdminTokenPath(state))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{
 			d:          d,
 			token:      string(token),
@@ -226,18 +188,15 @@ profiles:
 			wantStatus: http.StatusNoContent,
 		})
 		v, err = d.creds.Get(context.Background(), "tok")
-		if err != nil || v.Token != "from-put" {
-			t.Fatalf("overlay got %+v, %v", v, err)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "from-put", v.Token)
 	})
 	t.Run("overlays provided credentials from put", func(t *testing.T) {
 		dir := t.TempDir()
 		cfg := filepath.Join(dir, "config.yaml")
 		secret := filepath.Join(dir, "secret")
 		err := os.WriteFile(secret, []byte("from-file"), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		err = os.WriteFile(cfg, []byte(`
 default_profile: p
 credentials:
@@ -251,22 +210,15 @@ credentials:
 profiles:
   p: {}
 `), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		state := filepath.Join(dir, "state")
 		d, err := New(Options{ConfigPath: cfg, StateDir: state})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		v, err := d.creds.Get(context.Background(), "tok")
-		if err != nil || v.Token != "from-file" {
-			t.Fatalf("got %+v, %v", v, err)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "from-file", v.Token)
 		token, err := os.ReadFile(AdminTokenPath(state))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{
 			d:          d,
 			token:      string(token),
@@ -275,13 +227,11 @@ profiles:
 			wantStatus: http.StatusNoContent,
 		})
 		v, err = d.creds.Get(context.Background(), "tok")
-		if err != nil || v.Token != "from-put" {
-			t.Fatalf("overlay got %+v, %v", v, err)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "from-put", v.Token)
 		v, err = d.creds.Get(context.Background(), "extra")
-		if err != nil || v.Token != "provided-put" {
-			t.Fatalf("provided got %+v, %v", v, err)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "provided-put", v.Token)
 	})
 }
 
@@ -300,18 +250,12 @@ func TestPromptsAPI(t *testing.T) {
 		dir := t.TempDir()
 		cfg := filepath.Join(dir, "config.yaml")
 		err := os.WriteFile(cfg, []byte("default_profile: p\nprofiles:\n  p: {}\n"+tc.config), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		state := filepath.Join(dir, "state")
 		d, err := New(Options{ConfigPath: cfg, StateDir: state})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		token, err := os.ReadFile(AdminTokenPath(state))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		srv := httptest.NewServer(d.Control())
 		t.Cleanup(srv.Close)
 
@@ -321,32 +265,20 @@ func TestPromptsAPI(t *testing.T) {
 			id = "nope"
 		}
 		req, err := http.NewRequest(tc.method, srv.URL+"/_bouncer/prompts/"+id, strings.NewReader(tc.body))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
 		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != tc.wantStatus {
-			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("status %d %s", resp.StatusCode, body)
-		}
+		body, _ := io.ReadAll(resp.Body)
+		require.Equal(t, tc.wantStatus, resp.StatusCode, string(body))
 		if tc.wantStatus != http.StatusNoContent {
-			if len(d.Prompts.List()) != 1 {
-				t.Fatal("rejected request settled the prompt")
-			}
+			assert.Len(t, d.Prompts.List(), 1, "rejected request settled the prompt")
 			return
 		}
 		got, err := ticket.Wait(context.Background())
-		if !errors.Is(err, tc.wantErr) {
-			t.Fatalf("err=%v, want %v", err, tc.wantErr)
-		}
-		if got != tc.wantAnswer {
-			t.Fatalf("got %+v", got)
-		}
+		require.ErrorIs(t, err, tc.wantErr)
+		assert.Equal(t, tc.wantAnswer, got)
 	}
 
 	t.Run("answers a secret", func(t *testing.T) {
@@ -407,37 +339,25 @@ func TestStartupStatus(t *testing.T) {
 		}
 		cfg := filepath.Join(dir, "config.yaml")
 		err := os.WriteFile(cfg, []byte(config), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		state := filepath.Join(dir, "state")
 		d, err := New(Options{ConfigPath: cfg, StateDir: state, Logf: func(string, ...any) {}})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		token, err := os.ReadFile(AdminTokenPath(state))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		srv := httptest.NewServer(d.Control())
 		t.Cleanup(srv.Close)
 		get := func() status {
 			t.Helper()
 			req, err := http.NewRequest(http.MethodGet, srv.URL+"/_bouncer/status", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
 			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer func() { _ = resp.Body.Close() }()
 			var st status
 			err = json.NewDecoder(resp.Body).Decode(&st)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			return st
 		}
 		waitFor := func(what string, ok func(status) bool) status {
@@ -457,17 +377,17 @@ func TestStartupStatus(t *testing.T) {
 
 		if tc.decline {
 			st := waitFor("a pending prompt", func(st status) bool { return st.PendingPrompts == 1 })
-			if st.Ready || st.Error != "" {
-				t.Fatalf("ready before the prompt was answered: %+v", st)
-			}
+			require.False(t, st.Ready, "ready before the prompt was answered")
+			require.Empty(t, st.Error, "ready before the prompt was answered")
 			err = d.Prompts.Decline(d.Prompts.List()[0].ID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 		}
 		st := waitFor("startup to finish", func(st status) bool { return st.Ready || st.Error != "" })
-		if st.Ready != tc.wantReady || !strings.Contains(st.Error, tc.wantError) || (tc.wantError == "") != (st.Error == "") {
-			t.Fatalf("status %+v, want ready=%v error containing %q", st, tc.wantReady, tc.wantError)
+		assert.Equal(t, tc.wantReady, st.Ready, "ready")
+		if tc.wantError == "" {
+			assert.Empty(t, st.Error)
+		} else {
+			assert.Contains(t, st.Error, tc.wantError)
 		}
 	}
 

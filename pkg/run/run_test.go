@@ -10,6 +10,8 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/container"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var errUnused = errors.New("unused")
@@ -95,9 +97,7 @@ func TestRun(t *testing.T) {
 			tc.setup(t, &tc.req)
 		}
 		err := Run(context.Background(), tc.req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tc.check(t, rt)
 	}
 
@@ -106,9 +106,7 @@ func TestRun(t *testing.T) {
 		cwd := filepath.Join(root, "github.com", "example", "agentcon")
 		home := t.TempDir()
 		err := os.MkdirAll(cwd, 0o700)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		cursorMount := filepath.Join(home, ".cursor")
 		tester(t, testCase{
 			req: Request{
@@ -126,36 +124,18 @@ func TestRun(t *testing.T) {
 			},
 			check: func(t *testing.T, rt *captureRuntime) {
 				t.Helper()
-				if rt.spec.Image != testImage {
-					t.Fatalf("image %q", rt.spec.Image)
-				}
-				if rt.spec.Name != "agentcon-github-com-example-agentcon-deadbeef-agent" {
-					t.Fatalf("name %q", rt.spec.Name)
-				}
-				if rt.spec.Labels[labelSlug] != testSlug || rt.spec.Labels[labelProject] != "github.com/example/agentcon" {
-					t.Fatalf("labels %v", rt.spec.Labels)
-				}
-				if rt.spec.WorkDir != "/workspace/github.com/example/agentcon" {
-					t.Fatalf("workdir %q", rt.spec.WorkDir)
-				}
-				if len(rt.spec.Env) != 1 || rt.spec.Env[0] != hostRootEnv+"="+root {
-					t.Fatalf("env %v", rt.spec.Env)
-				}
-				if len(rt.spec.Mounts) != 2 {
-					t.Fatalf("mounts %v", rt.spec.Mounts)
-				}
-				if rt.spec.Mounts[0].Source != root || rt.spec.Mounts[0].Target != workspaceMountPoint {
-					t.Fatalf("workspace mount %v", rt.spec.Mounts[0])
-				}
-				if rt.spec.Mounts[1].Source != cursorMount || rt.spec.Mounts[1].Target != "/agent/cursor" {
-					t.Fatalf("cursor mount %v", rt.spec.Mounts[1])
-				}
-				if _, statErr := os.Stat(cursorMount); statErr != nil {
-					t.Fatalf("cursor dir: %v", statErr)
-				}
-				if len(rt.spec.Args) != 1 || rt.spec.Args[0] != "--help" {
-					t.Fatalf("args %v", rt.spec.Args)
-				}
+				assert.Equal(t, testImage, rt.spec.Image)
+				assert.Equal(t, "agentcon-github-com-example-agentcon-deadbeef-agent", rt.spec.Name)
+				assert.Equal(t, testSlug, rt.spec.Labels[labelSlug])
+				assert.Equal(t, "github.com/example/agentcon", rt.spec.Labels[labelProject])
+				assert.Equal(t, "/workspace/github.com/example/agentcon", rt.spec.WorkDir)
+				assert.Equal(t, []string{hostRootEnv + "=" + root}, rt.spec.Env)
+				assert.Equal(t, []container.Mount{
+					{Source: root, Target: workspaceMountPoint},
+					{Source: cursorMount, Target: "/agent/cursor"},
+				}, rt.spec.Mounts)
+				assert.DirExists(t, cursorMount)
+				assert.Equal(t, []string{"--help"}, rt.spec.Args)
 			},
 		})
 	})
@@ -172,16 +152,7 @@ func TestRun(t *testing.T) {
 			},
 			check: func(t *testing.T, rt *captureRuntime) {
 				t.Helper()
-				found := false
-				for _, e := range rt.spec.Env {
-					if e == xtraceEnv+"=1" {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Fatalf("env %v", rt.spec.Env)
-				}
+				assert.Contains(t, rt.spec.Env, xtraceEnv+"=1")
 			},
 		})
 	})
@@ -202,18 +173,12 @@ func TestRun(t *testing.T) {
 			},
 			check: func(t *testing.T, rt *captureRuntime) {
 				t.Helper()
-				if rt.build.Context != root || rt.build.Dockerfile != "Dockerfile" {
-					t.Fatalf("build %+v", rt.build)
-				}
-				if len(rt.build.Tags) != 1 || rt.build.Tags[0] != testImage {
-					t.Fatalf("tags %v", rt.build.Tags)
-				}
-				if rt.spec.Image != testImage {
-					t.Fatalf("image %q", rt.spec.Image)
-				}
-				if rt.build.PullParent || len(rt.pulled) != 0 {
-					t.Fatalf("pulled for a build: parent=%v pulled=%v", rt.build.PullParent, rt.pulled)
-				}
+				assert.Equal(t, root, rt.build.Context)
+				assert.Equal(t, "Dockerfile", rt.build.Dockerfile)
+				assert.Equal(t, []string{testImage}, rt.build.Tags)
+				assert.Equal(t, testImage, rt.spec.Image)
+				assert.False(t, rt.build.PullParent, "PullParent")
+				assert.Empty(t, rt.pulled)
 			},
 		})
 	})
@@ -231,9 +196,8 @@ func TestRun(t *testing.T) {
 			},
 			check: func(t *testing.T, rt *captureRuntime) {
 				t.Helper()
-				if !rt.build.PullParent || len(rt.pulled) != 0 {
-					t.Fatalf("parent=%v pulled=%v", rt.build.PullParent, rt.pulled)
-				}
+				assert.True(t, rt.build.PullParent, "PullParent")
+				assert.Empty(t, rt.pulled)
 			},
 		})
 	})
@@ -250,12 +214,8 @@ func TestRun(t *testing.T) {
 			missing: true,
 			check: func(t *testing.T, rt *captureRuntime) {
 				t.Helper()
-				if len(rt.pulled) != 1 || rt.pulled[0] != testImage {
-					t.Fatalf("pulled %v", rt.pulled)
-				}
-				if rt.spec.Image != testImage {
-					t.Fatalf("image %q", rt.spec.Image)
-				}
+				assert.Equal(t, []string{testImage}, rt.pulled)
+				assert.Equal(t, testImage, rt.spec.Image)
 			},
 		})
 	})
@@ -282,9 +242,7 @@ func TestRun(t *testing.T) {
 					{Source: root, Target: "/workspace", Volume: "dev-root"},
 					{Source: cursor, Target: "/agent/cursor", Volume: "dev-home", Subpath: ".cursor"},
 				}
-				if len(rt.spec.Mounts) != 2 || rt.spec.Mounts[0] != want[0] || rt.spec.Mounts[1] != want[1] {
-					t.Fatalf("mounts %+v", rt.spec.Mounts)
-				}
+				assert.Equal(t, want, rt.spec.Mounts)
 			},
 		})
 	})
@@ -303,15 +261,9 @@ func TestRun(t *testing.T) {
 			},
 			check: func(t *testing.T, rt *captureRuntime) {
 				t.Helper()
-				if len(rt.spec.Mounts) != 1 {
-					t.Fatalf("mounts %v", rt.spec.Mounts)
-				}
-				if len(rt.spec.Entrypoint) != 1 || rt.spec.Entrypoint[0] != "/workspace/agent" {
-					t.Fatalf("entrypoint %v", rt.spec.Entrypoint)
-				}
-				if len(rt.spec.ExtraHosts) != 1 {
-					t.Fatalf("extra hosts %v", rt.spec.ExtraHosts)
-				}
+				assert.Len(t, rt.spec.Mounts, 1)
+				assert.Equal(t, []string{"/workspace/agent"}, rt.spec.Entrypoint)
+				assert.Len(t, rt.spec.ExtraHosts, 1)
 			},
 		})
 	})
@@ -327,9 +279,7 @@ func TestRun(t *testing.T) {
 			},
 			check: func(t *testing.T, rt *captureRuntime) {
 				t.Helper()
-				if rt.spec.WorkDir != workspaceMountPoint {
-					t.Fatalf("workdir %q", rt.spec.WorkDir)
-				}
+				assert.Equal(t, workspaceMountPoint, rt.spec.WorkDir)
 			},
 		})
 	})
@@ -346,14 +296,10 @@ func TestFillSessionIdentity(t *testing.T) {
 		req := tc.req
 		err := fillSessionIdentity(&req)
 		if tc.wantErr {
-			if err == nil {
-				t.Fatal("expected error")
-			}
+			require.Error(t, err)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tc.check(t, req)
 	}
 
@@ -364,12 +310,8 @@ func TestFillSessionIdentity(t *testing.T) {
 			req: Request{Root: root, Cwd: cwd},
 			check: func(t *testing.T, req Request) {
 				t.Helper()
-				if !running.ValidSlug(req.Slug) {
-					t.Fatalf("slug %q", req.Slug)
-				}
-				if req.Project != "github.com/pastdev/agentcon" {
-					t.Fatalf("project %q", req.Project)
-				}
+				assert.True(t, running.ValidSlug(req.Slug), "slug %q", req.Slug)
+				assert.Equal(t, "github.com/pastdev/agentcon", req.Project)
 			},
 		})
 	})
@@ -380,12 +322,8 @@ func TestFillSessionIdentity(t *testing.T) {
 			req: Request{Root: root, Cwd: cwd, Slug: "DEADBEEF", Project: "other/path"},
 			check: func(t *testing.T, req Request) {
 				t.Helper()
-				if req.Slug != "deadbeef" {
-					t.Fatalf("slug %q", req.Slug)
-				}
-				if req.Project != "other/path" {
-					t.Fatalf("project %q", req.Project)
-				}
+				assert.Equal(t, "deadbeef", req.Slug)
+				assert.Equal(t, "other/path", req.Project)
 			},
 		})
 	})
@@ -406,9 +344,8 @@ func TestParseContainerUser(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		uid, gid := parseContainerUser(tc.user)
-		if uid != tc.wantUID || gid != tc.wantGID {
-			t.Fatalf("got %d:%d", uid, gid)
-		}
+		assert.Equal(t, tc.wantUID, uid, "uid")
+		assert.Equal(t, tc.wantGID, gid, "gid")
 	}
 
 	t.Run("parses uid and gid", func(t *testing.T) {

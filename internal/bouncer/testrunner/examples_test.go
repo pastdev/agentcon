@@ -1,6 +1,11 @@
 package testrunner
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 // TestRunFile runs every spec under examples/, so `go test ./...` keeps
 // the shipped filters and config honest.
@@ -11,23 +16,16 @@ func TestRunFile(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		files, err := Find(tc.roots)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(files) < 10 {
-			t.Fatalf("found only %d spec files", len(files))
-		}
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, len(files), 10, "spec files")
 		for _, f := range files {
-			results, err := RunFile(f)
-			if err != nil {
-				t.Errorf("%s: %v", f, err)
-				continue
-			}
-			for _, r := range results {
-				if !r.Passed {
-					t.Errorf("%s: %s: %s", f, r.Name, r.Message)
+			t.Run(f, func(t *testing.T) {
+				results, err := RunFile(f)
+				require.NoError(t, err)
+				for _, r := range results {
+					assert.True(t, r.Passed, "%s: %s", r.Name, r.Message)
 				}
-			}
+			})
 		}
 	}
 

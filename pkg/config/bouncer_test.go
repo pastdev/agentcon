@@ -3,11 +3,12 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
 	"github.com/pastdev/agentcon/pkg/run"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,39 +29,25 @@ func TestMaterializeBouncer(t *testing.T) {
 		t.Helper()
 		setup, err := tc.cfg.MaterializeBouncer(tc.name, tc.bouncer, tc.agent)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("got %v, want %q", err, tc.wantErr)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatalf("materialize: %v", err)
-		}
+		require.NoError(t, err)
 		if tc.wantNil {
-			if setup != nil {
-				t.Fatal("expected no bouncer setup")
-			}
+			assert.Nil(t, setup)
 			return
 		}
-		if setup == nil {
-			t.Fatal("expected setup")
-		}
-		if tc.wantListen != "" && !strings.Contains(string(setup.PolicyYAML), tc.wantListen) {
-			t.Fatalf("policy %s", setup.PolicyYAML)
+		require.NotNil(t, setup)
+		if tc.wantListen != "" {
+			assert.Contains(t, string(setup.PolicyYAML), tc.wantListen)
 		}
 		if tc.wantTS != "" {
-			if _, ok := setup.TSFiles[tc.wantTS]; !ok {
-				t.Fatalf("ts files %v, want %s", setup.TSFiles, tc.wantTS)
-			}
-			if strings.Contains(string(setup.PolicyYAML), tc.cfg.OverlayDirs[0]) {
-				t.Fatalf("host overlay leaked: %s", setup.PolicyYAML)
-			}
+			assert.Contains(t, setup.TSFiles, tc.wantTS)
+			assert.NotContains(t, string(setup.PolicyYAML), tc.cfg.OverlayDirs[0], "host overlay leaked")
 		}
 		if tc.home != "" {
-			_, statErr := os.Stat(filepath.Join(tc.home, ".local", "state", "agentcon"))
-			if !os.IsNotExist(statErr) {
-				t.Fatalf("materialize should not write host state: %v", statErr)
-			}
+			_, err := os.Stat(filepath.Join(tc.home, ".local", "state", "agentcon"))
+			require.ErrorIs(t, err, os.ErrNotExist, "materialize should not write host state")
 		}
 		if tc.check != nil {
 			tc.check(t, setup, tc.cfg)
@@ -69,14 +56,10 @@ func TestMaterializeBouncer(t *testing.T) {
 
 	overlay := t.TempDir()
 	err := os.MkdirAll(filepath.Join(overlay, bouncercfg.TSDir, "filters"), 0o700)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	filter := filepath.Join(overlay, bouncercfg.TSDir, "filters", "deny.ts")
 	err = os.WriteFile(filter, []byte("export {}\n"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	home := t.TempDir()
 
 	t.Run("without section", func(t *testing.T) {
@@ -190,19 +173,10 @@ func TestMaterializeBouncer(t *testing.T) {
 				t.Helper()
 				var policy bouncercfg.Config
 				err := yaml.Unmarshal(setup.PolicyYAML, &policy)
-				if err != nil {
-					t.Fatal(err)
-				}
-				got := policy.Profiles["default"].Tunnel
-				if !containsHost(got, "cursor.com") || !containsHost(got, "*.cursor.sh") || !containsHost(got, "extra.example.com") {
-					t.Fatalf("root tunnel %v", got)
-				}
-				if containsHost(policy.Profiles["locked-down"].Tunnel, "cursor.com") {
-					t.Fatalf("child should inherit, not copy: %v", policy.Profiles["locked-down"].Tunnel)
-				}
-				if !equalHosts(doc.Profiles["default"].Tunnel, orig) {
-					t.Fatal("materialize mutated source tunnel")
-				}
+				require.NoError(t, err)
+				assert.Subset(t, policy.Profiles["default"].Tunnel, []string{"cursor.com", "*.cursor.sh", "extra.example.com"})
+				assert.NotContains(t, policy.Profiles["locked-down"].Tunnel, "cursor.com", "child should inherit, not copy")
+				assert.Equal(t, orig, doc.Profiles["default"].Tunnel, "materialize mutated source tunnel")
 			},
 		})
 	})
@@ -237,16 +211,10 @@ func TestMaterializeBouncer(t *testing.T) {
 				t.Helper()
 				var policy bouncercfg.Config
 				err := yaml.Unmarshal(setup.PolicyYAML, &policy)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				got := policy.Profiles["default"].Tunnel
-				if containsHost(got, "cursor.com") {
-					t.Fatalf("cursor hosts on claude agent: %v", got)
-				}
-				if !containsHost(got, "api.anthropic.com") {
-					t.Fatalf("missing claude tunnel %v", got)
-				}
+				assert.NotContains(t, got, "cursor.com")
+				assert.Contains(t, got, "api.anthropic.com")
 			},
 		})
 	})
@@ -266,50 +234,30 @@ func TestWriteBouncer(t *testing.T) {
 		dir := t.TempDir()
 		got, err := tc.cfg.WriteBouncer(tc.name, dir)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("got %v, want %q", err, tc.wantErr)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatalf("write: %v", err)
-		}
+		require.NoError(t, err)
 		if tc.wantEmpty {
-			if got != "" {
-				t.Fatalf("got %q, want empty", got)
-			}
+			assert.Empty(t, got)
 			return
 		}
-		want := filepath.Join(dir, bouncercfg.FileName)
-		if got != want {
-			t.Fatalf("path %q, want %q", got, want)
-		}
+		require.Equal(t, filepath.Join(dir, bouncercfg.FileName), got)
 		//nolint:gosec // test fixture written to TempDir
 		data, err := os.ReadFile(got)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(data), tc.wantListen) {
-			t.Fatalf("policy %s", data)
-		}
+		require.NoError(t, err)
+		assert.Contains(t, string(data), tc.wantListen)
 		if tc.wantTS == "" {
 			return
 		}
-		_, err = os.Stat(filepath.Join(dir, bouncercfg.TSDir, tc.wantTS))
-		if err != nil {
-			t.Fatal(err)
-		}
+		assert.FileExists(t, filepath.Join(dir, bouncercfg.TSDir, tc.wantTS))
 	}
 
 	overlay := t.TempDir()
 	err := os.MkdirAll(filepath.Join(overlay, bouncercfg.TSDir, "filters"), 0o700)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	err = os.WriteFile(filepath.Join(overlay, bouncercfg.TSDir, "filters", "deny.ts"), []byte("export {}\n"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	t.Run("writes layout", func(t *testing.T) {
 		tester(t, testCase{
@@ -356,26 +304,18 @@ func TestLoadBouncerService(t *testing.T) {
 		t.Helper()
 		got, err := LoadBouncerService(tc.path)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("got %v, want %q", err, tc.wantErr)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatalf("load: %v", err)
-		}
-		if got.Listen != tc.wantListen {
-			t.Fatalf("listen %q, want %q", got.Listen, tc.wantListen)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantListen, got.Listen)
 	}
 
 	t.Run("loads file", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "policy.yaml")
 		err := os.WriteFile(path, []byte("listen: 127.0.0.1:8228\n"), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{
 			path:       path,
 			wantListen: "127.0.0.1:8228",
@@ -384,9 +324,7 @@ func TestLoadBouncerService(t *testing.T) {
 	t.Run("loads directory", func(t *testing.T) {
 		dir := t.TempDir()
 		err := os.WriteFile(filepath.Join(dir, bouncercfg.FileName), []byte("listen: 127.0.0.1:8228\n"), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{
 			path:       dir,
 			wantListen: "127.0.0.1:8228",
@@ -396,35 +334,12 @@ func TestLoadBouncerService(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "policy.yaml")
 		err := os.WriteFile(path, []byte("credentials:\n  gl:\n    token:\n      source: command\n"), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{
 			path:    path,
 			wantErr: "source command requires command",
 		})
 	})
-}
-
-func equalHosts(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func containsHost(hosts []string, want string) bool {
-	for _, h := range hosts {
-		if h == want {
-			return true
-		}
-	}
-	return false
 }
 
 func TestBouncerLayoutDir(t *testing.T) {
@@ -436,9 +351,7 @@ func TestBouncerLayoutDir(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		got := BouncerLayoutDir(tc.home, tc.name)
-		if got != tc.want {
-			t.Fatalf("got %q, want %q", got, tc.want)
-		}
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("joins state under home", func(t *testing.T) {

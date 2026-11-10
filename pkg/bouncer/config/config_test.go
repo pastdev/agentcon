@@ -3,6 +3,9 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHostMatches(t *testing.T) {
@@ -14,9 +17,7 @@ func TestHostMatches(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		got := HostMatches(tc.pats, tc.host)
-		if got != tc.want {
-			t.Fatalf("HostMatches(%v, %q) = %v, want %v", tc.pats, tc.host, got, tc.want)
-		}
+		assert.Equal(t, tc.want, got, "HostMatches(%v, %q)", tc.pats, tc.host)
 	}
 
 	t.Run("matches gitlab.com", func(t *testing.T) {
@@ -79,14 +80,10 @@ func TestParse(t *testing.T) {
 		t.Helper()
 		cfg, err := Parse([]byte(tc.yaml), tc.path)
 		if tc.wantErr {
-			if err == nil {
-				t.Fatal("expected error")
-			}
+			require.Error(t, err)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if tc.check != nil {
 			tc.check(t, cfg)
 		}
@@ -123,24 +120,15 @@ profiles:
 			check: func(t *testing.T, cfg *Config) {
 				t.Helper()
 				p, err := cfg.ResolvedProfile("child")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if p.UnmatchedMode() != UnmatchedDeny {
-					t.Fatalf("unmatched not inherited: %q", p.Unmatched)
-				}
-				if len(p.Filters) != 2 || p.Filters[0].Path != "/tmp/cfg/a.ts" || p.Filters[1].Config["x"] != 1 {
-					t.Fatalf("filters: %+v", p.Filters)
-				}
-				if len(p.HTTP) != 1 || len(p.HTTP[0].Rules) != 0 {
-					t.Fatalf("child http should override parent: %+v", p.HTTP)
-				}
-				if got := cfg.Profiles["base"].HTTP[0].Rules[0].GitLabProject.Path; got != "group/proj" {
-					t.Fatalf("project path not normalized: %q", got)
-				}
-				if cfg.Profiles["base"].HTTP[0].DefaultAction() != ActionDeny {
-					t.Fatal("service with rules should default to deny")
-				}
+				require.NoError(t, err)
+				assert.Equal(t, UnmatchedDeny, p.UnmatchedMode(), "unmatched not inherited")
+				require.Len(t, p.Filters, 2)
+				assert.Equal(t, "/tmp/cfg/a.ts", p.Filters[0].Path)
+				assert.Equal(t, 1, p.Filters[1].Config["x"])
+				require.Len(t, p.HTTP, 1)
+				assert.Empty(t, p.HTTP[0].Rules, "child http should override parent")
+				assert.Equal(t, "group/proj", cfg.Profiles["base"].HTTP[0].Rules[0].GitLabProject.Path)
+				assert.Equal(t, ActionDeny, cfg.Profiles["base"].HTTP[0].DefaultAction())
 			},
 		})
 	})
@@ -173,9 +161,10 @@ credentials:
 			check: func(t *testing.T, cfg *Config) {
 				t.Helper()
 				src := cfg.Credentials["gl"].Token
-				if src == nil || src.Item != "GitLab" || src.Email != "User@Example.com" || src.Path != "$.login.password" {
-					t.Fatalf("%+v", src)
-				}
+				require.NotNil(t, src)
+				assert.Equal(t, "GitLab", src.Item)
+				assert.Equal(t, "User@Example.com", src.Email)
+				assert.Equal(t, "$.login.password", src.Path)
 			},
 		})
 	})
@@ -216,12 +205,9 @@ credentials:
 `,
 			check: func(t *testing.T, cfg *Config) {
 				t.Helper()
-				if cfg.Credentials["deploy"].PrivateKey == nil || !strings.HasSuffix(cfg.Credentials["deploy"].PrivateKey.File, "id") {
-					t.Fatalf("file %v", cfg.Credentials["deploy"].PrivateKey)
-				}
-				if got := cfg.Credentials["gl"].Password.Path; got != "$.login.password" {
-					t.Fatalf("path %q", got)
-				}
+				require.NotNil(t, cfg.Credentials["deploy"].PrivateKey)
+				assert.True(t, strings.HasSuffix(cfg.Credentials["deploy"].PrivateKey.File, "id"), "file %v", cfg.Credentials["deploy"].PrivateKey.File)
+				assert.Equal(t, "$.login.password", cfg.Credentials["gl"].Password.Path)
 			},
 		})
 	})
@@ -262,9 +248,9 @@ profiles:
 			check: func(t *testing.T, cfg *Config) {
 				t.Helper()
 				got := cfg.Profiles["p"].HTTP[0].Rules[0].Filters
-				if len(got) != 1 || got[0].Path != "/tmp/cfg/protect.ts" || got[0].Config["branches"].([]any)[0] != "main" {
-					t.Fatalf("filters %+v", got)
-				}
+				require.Len(t, got, 1)
+				assert.Equal(t, "/tmp/cfg/protect.ts", got[0].Path)
+				assert.Equal(t, []any{"main"}, got[0].Config["branches"])
 			},
 		})
 	})
@@ -310,12 +296,8 @@ profiles:
 			check: func(t *testing.T, cfg *Config) {
 				t.Helper()
 				r := cfg.Profiles["p"].HTTP[0].Rules[0]
-				if len(r.GitHubRepo) != 1 || r.GitHubRepo[0] != "octo/hello" {
-					t.Fatalf("repo %v", r.GitHubRepo)
-				}
-				if len(r.GitHubSubpaths) != 1 || r.GitHubSubpaths[0] != "pulls/**" {
-					t.Fatalf("subpaths %v", r.GitHubSubpaths)
-				}
+				assert.Equal(t, []string{"octo/hello"}, r.GitHubRepo)
+				assert.Equal(t, []string{"pulls/**"}, r.GitHubSubpaths)
 			},
 		})
 	})

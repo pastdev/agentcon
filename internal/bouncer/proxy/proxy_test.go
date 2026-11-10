@@ -20,6 +20,8 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/creds"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeBackend struct {
@@ -77,23 +79,15 @@ credentials:
   tok: {token: {source: env, env: BOUNCER_TEST_TOKEN}}
 profiles:
 `+profileYAML), t.TempDir()+"/config.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	set, err := policy.Compile(cfg, &chain.Env{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	authority, err := ca.LoadOrCreate(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	tr := NewTransport()
 	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test upstream uses a self-signed certificate
 	log, err := audit.Open("", func(en audit.Entry) { e.audit = append(e.audit, en) })
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	e.backend = &fakeBackend{set: set, sessions: map[string]*chain.Session{"tok123": {ID: "s1", Profile: "p"}}}
 	srv := &Server{
 		Backend:   e.backend,
@@ -110,9 +104,7 @@ profiles:
 	roots.AddCert(authority.Cert())
 	roots.AddCert(e.upstream.Certificate())
 	proxyURL, err := url.Parse(e.proxy.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	proxyURL.User = url.UserPassword("bouncer", "tok123")
 	e.client = &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: roots}}}
 	return e
@@ -121,21 +113,15 @@ profiles:
 func (e *env) get(t *testing.T, method, rawURL string, hdr map[string]string) (int, string) {
 	t.Helper()
 	req, err := http.NewRequest(method, rawURL, strings.NewReader("payload"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}
 	resp, err := e.client.Do(req)
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, rawURL, err)
-	}
+	require.NoError(t, err, "%s %s", method, rawURL)
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return resp.StatusCode, string(b)
 }
 
@@ -168,29 +154,21 @@ func TestIntercept(t *testing.T) {
 		t.Helper()
 		if tc.clientGetErr != "" {
 			_, err := tc.e.client.Get(tc.rawURL)
-			if err == nil || !strings.Contains(err.Error(), tc.clientGetErr) {
-				t.Fatalf("expected %s, got %v", tc.clientGetErr, err)
-			}
+			require.ErrorContains(t, err, tc.clientGetErr)
 			return
 		}
 		status, body := tc.e.get(t, tc.method, tc.rawURL, tc.hdr)
-		if tc.wantStatus != 0 && status != tc.wantStatus {
-			t.Fatalf("%d %s", status, body)
+		if tc.wantStatus != 0 {
+			require.Equal(t, tc.wantStatus, status, body)
 		}
 		for _, s := range tc.contains {
-			if !strings.Contains(body, s) {
-				t.Fatalf("%d %s", status, body)
-			}
+			assert.Contains(t, body, s)
 		}
 		for _, s := range tc.notContains {
-			if strings.Contains(body, s) {
-				t.Fatalf("%d %s", status, body)
-			}
+			assert.NotContains(t, body, s)
 		}
 		for s, n := range tc.wantCount {
-			if strings.Count(body, s) != n {
-				t.Fatalf("%s", body)
-			}
+			assert.Equal(t, n, strings.Count(body, s), "count of %q in %s", s, body)
 		}
 	}
 
@@ -198,24 +176,21 @@ func TestIntercept(t *testing.T) {
 		e := setup(t, scopedProfile)
 		base := "https://localhost:" + e.port
 		status, body := e.get(t, "POST", base+"/api/v4/projects/group%2Fproj/issues?x=1", nil)
-		if status != 200 || !strings.Contains(body, "auth=Bearer real-secret") || !strings.Contains(body, "path=/api/v4/projects/group%2Fproj/issues") || !strings.Contains(body, "body=payload") {
-			t.Fatalf("allowed request: %d %s", status, body)
-		}
+		assert.Equal(t, 200, status, body)
+		assert.Contains(t, body, "auth=Bearer real-secret")
+		assert.Contains(t, body, "path=/api/v4/projects/group%2Fproj/issues")
+		assert.Contains(t, body, "body=payload")
 		status, body = e.get(t, "GET", base+"/api/v4/projects/group%2Fother", nil)
-		if status != 200 || strings.Contains(body, "real-secret") || !strings.Contains(body, "auth= ") {
-			t.Fatalf("unmatched path should forward without credential: %d %s", status, body)
-		}
+		assert.Equal(t, 200, status, body)
+		assert.NotContains(t, body, "real-secret")
+		assert.Contains(t, body, "auth= ")
 		status, _ = e.get(t, "GET", base+"/api/v4/projects/group%2Fproj/../../other", nil)
-		if status != 400 {
-			t.Fatalf("dot-segment path: %d", status)
-		}
+		assert.Equal(t, 400, status, "dot-segment path")
 		var decisions []string
 		for _, a := range e.audit {
 			decisions = append(decisions, a.Decision)
 		}
-		if strings.Join(decisions, ",") != "allow,allow,deny" {
-			t.Errorf("audit decisions: %v", decisions)
-		}
+		assert.Equal(t, []string{"allow", "allow", "deny"}, decisions)
 	})
 	t.Run("strips placeholders on an unmatched path", func(t *testing.T) {
 		e := setup(t, scopedProfile)
@@ -345,14 +320,10 @@ func TestIntercept(t *testing.T) {
 	t.Run("requires a session token", func(t *testing.T) {
 		e := setup(t, scopedProfile)
 		proxyURL, err := url.Parse(e.proxy.URL)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
 		_, err = c.Get("https://localhost:" + e.port + "/")
-		if err == nil || !strings.Contains(err.Error(), "Proxy Authentication Required") {
-			t.Fatalf("expected 407, got %v", err)
-		}
+		require.ErrorContains(t, err, "Proxy Authentication Required")
 	})
 	t.Run("does not inject credentials over plain http unless insecure", func(t *testing.T) {
 		var gotAuth []string
@@ -361,9 +332,7 @@ func TestIntercept(t *testing.T) {
 		}))
 		t.Cleanup(plain.Close)
 		_, port, err := net.SplitHostPort(plain.Listener.Addr().String())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		e := setup(t, `
   p:
     allow_private: true
@@ -379,44 +348,31 @@ func TestIntercept(t *testing.T) {
         inject: {bearer: true}
 `)
 		status, _ := e.get(t, "GET", plain.URL+"/x", nil)
-		if status != 403 {
-			t.Fatalf("plain HTTP to a credentialed service: %d", status)
-		}
+		require.Equal(t, 403, status, "plain HTTP to a credentialed service")
 		e.get(t, "GET", "http://localhost:"+port+"/x", nil)
-		if len(gotAuth) != 1 || gotAuth[0] != "Bearer real-secret" {
-			t.Fatalf("insecure: true should allow injection; upstream saw %q", gotAuth)
-		}
+		assert.Equal(t, []string{"Bearer real-secret"}, gotAuth)
 	})
 	t.Run("hides credential error details from the agent", func(t *testing.T) {
 		e := setup(t, scopedProfile)
 		t.Setenv("BOUNCER_TEST_TOKEN", "")
 		_ = os.Unsetenv("BOUNCER_TEST_TOKEN")
 		_, body := e.get(t, "GET", "https://localhost:"+e.port+"/api/v4/projects/group%2Fproj", nil)
-		if !strings.Contains(body, "unavailable; see the bouncer log") || strings.Contains(body, "BOUNCER_TEST_TOKEN") {
-			t.Fatalf("agent saw credential error details: %s", body)
-		}
+		assert.Contains(t, body, "unavailable; see the bouncer log")
+		assert.NotContains(t, body, "BOUNCER_TEST_TOKEN")
 	})
 	t.Run("serves reverse mode with a session token", func(t *testing.T) {
 		e := setup(t, scopedProfile)
 		resp, err := http.Get(e.proxy.URL + "/s/tok123/localhost:" + e.port + "/api/v4/projects/group%2Fproj")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		_ = resp.Body.Close()
-		if resp.StatusCode != 200 || !strings.Contains(string(b), "auth=Bearer real-secret") || !strings.Contains(string(b), "path=/api/v4/projects/group%2Fproj") {
-			t.Fatalf("%d %s", resp.StatusCode, b)
-		}
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.Contains(t, string(b), "auth=Bearer real-secret")
+		assert.Contains(t, string(b), "path=/api/v4/projects/group%2Fproj")
 		resp, err = http.Get(e.proxy.URL + "/s/wrong/localhost:" + e.port + "/x")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.StatusCode != 401 {
-			t.Fatalf("bad token: %d", resp.StatusCode)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, 401, resp.StatusCode, "bad token")
 	})
 	t.Run("refuses upgrade on a credentialed service", func(t *testing.T) {
 		e := setup(t, `
@@ -445,9 +401,7 @@ func TestIntercept(t *testing.T) {
         allow_upgrade: true
 `)
 		status, _ := e.get(t, "GET", "https://localhost:"+e.port+"/upgrade", nil)
-		if status == http.StatusSwitchingProtocols {
-			t.Fatalf("spliced an unrequested upgrade: %d", status)
-		}
+		assert.NotEqual(t, http.StatusSwitchingProtocols, status, "spliced an unrequested upgrade")
 	})
 	t.Run("passes an upgrade through an uncredentialed service", func(t *testing.T) {
 		e := setup(t, `
@@ -457,31 +411,19 @@ func TestIntercept(t *testing.T) {
         hosts: [localhost]
 `)
 		req, err := http.NewRequest("GET", "https://localhost:"+e.port+"/upgrade", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		req.Header.Set("Connection", "Upgrade")
 		req.Header.Set("Upgrade", "echo")
 		resp, err := e.client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.StatusCode != 101 {
-			t.Fatalf("status %d", resp.StatusCode)
-		}
+		require.NoError(t, err)
+		require.Equal(t, 101, resp.StatusCode)
 		rwc := resp.Body.(io.ReadWriteCloser)
 		_, err = rwc.Write([]byte("ping"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		buf := make([]byte, 4)
 		_, err = io.ReadFull(rwc, buf)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(buf) != "ping" {
-			t.Fatalf("echo: %q", buf)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "ping", string(buf))
 		_ = rwc.Close()
 	})
 	t.Run("preserves a malformed query and scrubs secrets from redirects", func(t *testing.T) {
@@ -494,33 +436,23 @@ func TestIntercept(t *testing.T) {
         inject: {query: api_key}
 `)
 		_, body := e.get(t, "GET", "https://localhost:"+e.port+"/x?a=1;b=2&q=%2B", nil)
-		if !strings.Contains(body, "query=a=1;b=2&q=%2B&api_key=real-secret") {
-			t.Fatalf("query mangled: %s", body)
-		}
+		assert.Contains(t, body, "query=a=1;b=2&q=%2B&api_key=real-secret")
 		req, err := http.NewRequest("GET", "https://localhost:"+e.port+"/redirect?a=1", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		e.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		resp, err := e.client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		_ = resp.Body.Close()
-		if loc := resp.Header.Get("Location"); strings.Contains(loc, "real-secret") {
-			t.Fatalf("secret leaked in Location: %q", loc)
-		}
+		assert.NotContains(t, resp.Header.Get("Location"), "real-secret")
 	})
 	t.Run("stops a live tunnel after session revocation", func(t *testing.T) {
 		e := setup(t, scopedProfile)
 		base := "https://localhost:" + e.port
-		if status, _ := e.get(t, "GET", base+"/api/v4/projects/group%2Fproj", nil); status != 200 {
-			t.Fatalf("first request: %d", status)
-		}
+		status, _ := e.get(t, "GET", base+"/api/v4/projects/group%2Fproj", nil)
+		require.Equal(t, 200, status, "first request")
 		delete(e.backend.sessions, "tok123")
-		if status, _ := e.get(t, "GET", base+"/api/v4/projects/group%2Fproj", nil); status != http.StatusProxyAuthRequired {
-			t.Fatalf("after revocation the tunnel still served: %d", status)
-		}
+		status, _ = e.get(t, "GET", base+"/api/v4/projects/group%2Fproj", nil)
+		assert.Equal(t, http.StatusProxyAuthRequired, status, "after revocation")
 	})
 }
 
@@ -534,13 +466,9 @@ func TestInject(t *testing.T) {
 		t.Helper()
 		h := http.Header{}
 		u, err := url.Parse("https://example.com/")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		Inject(h, u, "login", tc.spec, tc.secret)
-		if got := h.Get("Authorization"); got != tc.want {
-			t.Fatalf("got %q want %q", got, tc.want)
-		}
+		assert.Equal(t, tc.want, h.Get("Authorization"))
 	}
 
 	t.Run("uses the username slot for basic auth", func(t *testing.T) {
@@ -571,19 +499,13 @@ func TestStripPlaceholder(t *testing.T) {
 		basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("oauth2:"+ph))
 		h.Add("Authorization", basic)
 		u, err := url.Parse("https://example.com/x?api_key=" + ph + "&ok=1")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		stripPlaceholder(h, u, "tok", &config.Inject{Query: "api_key"})
-		if h.Get("Authorization") != "" || h.Get("Private-Token") != "" {
-			t.Fatalf("headers %v", h)
-		}
-		if h.Get("X-Other") != "keep" {
-			t.Fatalf("stripped unrelated header")
-		}
-		if u.Query().Get("api_key") != "" || u.Query().Get("ok") != "1" {
-			t.Fatalf("query %q", u.RawQuery)
-		}
+		assert.Empty(t, h.Get("Authorization"))
+		assert.Empty(t, h.Get("Private-Token"))
+		assert.Equal(t, "keep", h.Get("X-Other"))
+		assert.Empty(t, u.Query().Get("api_key"))
+		assert.Equal(t, "1", u.Query().Get("ok"))
 	}
 
 	t.Run("strips placeholders from auth headers and the inject query", func(t *testing.T) {
@@ -598,13 +520,7 @@ func TestNonPublic(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		if nonPublic(net.ParseIP(tc.ip)) != tc.want {
-			if tc.want {
-				t.Errorf("%s should be non-public", tc.ip)
-			} else {
-				t.Error("public address flagged")
-			}
-		}
+		assert.Equal(t, tc.want, nonPublic(net.ParseIP(tc.ip)), "non-public")
 	}
 
 	t.Run("flags loopback ipv4", func(t *testing.T) {

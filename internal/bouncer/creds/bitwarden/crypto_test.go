@@ -5,9 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -24,33 +25,23 @@ func TestDeriveIdentity(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		id, err := deriveIdentity(tc.email, tc.password, tc.params)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if tc.wantHash != "" {
-			if got := base64.StdEncoding.EncodeToString(id.passwordHash); got != tc.wantHash {
-				t.Fatalf("password hash %s", got)
-			}
+			assert.Equal(t, tc.wantHash, base64.StdEncoding.EncodeToString(id.passwordHash))
 		}
-		if tc.wantEnc != "" && hex.EncodeToString(id.keys.enc) != tc.wantEnc {
-			t.Fatalf("enc key %x", id.keys.enc)
+		if tc.wantEnc != "" {
+			assert.Equal(t, tc.wantEnc, hex.EncodeToString(id.keys.enc))
 		}
-		if tc.wantMac != "" && hex.EncodeToString(id.keys.mac) != tc.wantMac {
-			t.Fatalf("mac key %x", id.keys.mac)
+		if tc.wantMac != "" {
+			assert.Equal(t, tc.wantMac, hex.EncodeToString(id.keys.mac))
 		}
 		if tc.argonCheck {
 			sum := sha256.Sum256([]byte(tc.email))
 			master := argon2.IDKey([]byte(tc.password), sum[:], 1, 8*1024, 1, 32)
-			if hex.EncodeToString(master) != "957117176630530b004986b6971e959b78da576af89d4c4eebae54a7df001d3f" {
-				t.Fatalf("argon2 vector drifted: %x", master)
-			}
+			require.Equal(t, "957117176630530b004986b6971e959b78da576af89d4c4eebae54a7df001d3f", hex.EncodeToString(master), "argon2 vector drifted")
 			k, err := keysFromMaterial(master)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(id.keys.enc, k.enc) || !bytes.Equal(id.keys.mac, k.mac) {
-				t.Fatal("argon2 identity was not stretched with HKDF")
-			}
+			require.NoError(t, err)
+			assert.Equal(t, k, id.keys, "argon2 identity was not stretched with HKDF")
 		}
 	}
 
@@ -85,34 +76,24 @@ func TestDecryptString(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		k, err := keysFromMaterial(tc.material)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if tc.wantSplit {
-			if len(k.enc) != 32 || !bytes.Equal(k.mac, tc.material[32:]) {
-				t.Fatalf("split: %x %v", k.mac, err)
-			}
+			assert.Len(t, k.enc, 32)
+			assert.Equal(t, tc.material[32:], k.mac)
 			return
 		}
 		enc, err := encryptSymmetric(k, []byte(tc.plain))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if tc.wantBadMAC {
 			other, err := keysFromMaterial(tc.wrongKey)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			_, err = decryptString(other, enc)
-			if !errors.Is(err, errBadMAC) {
-				t.Fatalf("err = %v", err)
-			}
+			require.ErrorIs(t, err, errBadMAC)
 			return
 		}
 		got, err := decryptString(k, enc)
-		if err != nil || got != tc.plain {
-			t.Fatalf("got %q, %v", got, err)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.plain, got)
 	}
 
 	t.Run("round-trips a secret", func(t *testing.T) {
@@ -142,14 +123,12 @@ func TestEndpoints(t *testing.T) {
 		t.Helper()
 		api, id, err := endpoints(tc.server)
 		if tc.wantErr {
-			if err == nil {
-				t.Fatal("expected userinfo to be rejected")
-			}
+			require.Error(t, err)
 			return
 		}
-		if err != nil || api != tc.wantAPI || id != tc.wantID {
-			t.Fatalf("%s %s %v", api, id, err)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantAPI, api)
+		assert.Equal(t, tc.wantID, id)
 	}
 
 	t.Run("uses the default cloud endpoints", func(t *testing.T) {
@@ -174,12 +153,8 @@ func TestDecodeBW(t *testing.T) {
 		t.Helper()
 		var res preloginResponse
 		err := decodeBW(tc.body, &res)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if res.KDF != 1 || res.KDFIterations != 3 || res.KDFMemory != 0 || res.KDFParallel != 4 {
-			t.Fatalf("%+v", res)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, preloginResponse{KDF: 1, KDFIterations: 3, KDFParallel: 4}, res)
 	}
 
 	t.Run("decodes pascal-case prelogin json", func(t *testing.T) {

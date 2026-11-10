@@ -3,8 +3,10 @@ package app
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/pastdev/agentcon/internal/bouncer/audit"
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
@@ -19,15 +21,10 @@ func TestCheck(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		got, err := Check(tc.cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.Path != tc.wantPath {
-			t.Fatalf("path %q", got.Path)
-		}
-		if len(got.Profiles) != 1 || got.Profiles[0].Name != tc.wantProfile {
-			t.Fatalf("%+v", got.Profiles)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantPath, got.Path)
+		require.Len(t, got.Profiles, 1)
+		assert.Equal(t, tc.wantProfile, got.Profiles[0].Name)
 	}
 
 	t.Run("compiles a minimal tunnel policy", func(t *testing.T) {
@@ -39,13 +36,9 @@ profiles:
   default:
     unmatched: tunnel
 `), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		cfg, err := bouncercfg.Load(path)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{cfg: cfg, wantPath: cfg.Path, wantProfile: "default"})
 	})
 }
@@ -57,9 +50,8 @@ func TestFormatDecision(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		got := FormatDecision(tc.entry)
-		if !strings.Contains(got, "DENY") || !strings.Contains(got, "blocked") {
-			t.Fatalf("%q", got)
-		}
+		assert.Contains(t, got, "DENY")
+		assert.Contains(t, got, "blocked")
 	}
 
 	t.Run("includes the decision and reason", func(t *testing.T) {

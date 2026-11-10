@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
 	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCheckPromptable(t *testing.T) {
@@ -24,14 +25,10 @@ func TestCheckPromptable(t *testing.T) {
 		t.Helper()
 		err := checkPromptable([]byte(tc.policy))
 		if tc.wantErr == "" {
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			return
 		}
-		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-			t.Fatalf("err = %v", err)
-		}
+		require.ErrorContains(t, err, tc.wantErr)
 	}
 	bitwarden := func(extra string) string {
 		return `credentials:
@@ -97,15 +94,11 @@ func TestWaitReady(t *testing.T) {
 		var stderr bytes.Buffer
 		err := waitReady(context.Background(), mgmt.New(srv.URL, "t"), nil, &stderr, tc.timeout)
 		if tc.wantErr == "" {
-			if err != nil {
-				t.Fatal(err)
-			}
-		} else if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-			t.Fatalf("err = %v", err)
+			require.NoError(t, err)
+		} else {
+			require.ErrorContains(t, err, tc.wantErr)
 		}
-		if stderr.String() != tc.wantStderr {
-			t.Fatalf("stderr %q, want %q", stderr.String(), tc.wantStderr)
-		}
+		assert.Equal(t, tc.wantStderr, stderr.String())
 	}
 	pending := mgmt.Status{PendingPrompts: 1}
 	secret := []prompt.Pending{{ID: "a1", Kind: prompt.KindSecret, Message: "Bitwarden master password"}}

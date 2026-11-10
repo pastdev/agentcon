@@ -3,11 +3,12 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
 	"github.com/pastdev/agentcon/pkg/run"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func agentCfg(root string) Config {
@@ -55,14 +56,10 @@ func TestNewRunRequest(t *testing.T) {
 		t.Helper()
 		got, err := NewRunRequest(&tc.cfg, tc.flags, tc.cwd, tc.home)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("got %v, want %q", err, tc.wantErr)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if tc.check != nil {
 			tc.check(t, got)
 		}
@@ -72,9 +69,7 @@ func TestNewRunRequest(t *testing.T) {
 		root := t.TempDir()
 		cwd := filepath.Join(root, "github.com", "pastdev", "agentcon")
 		err := os.MkdirAll(cwd, 0o700)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		cfg := agentCfg(root)
 		cfg.Contexts["other"] = ContextSpec{Agent: "claude", Root: t.TempDir()}
 		tester(t, testCase{
@@ -83,18 +78,10 @@ func TestNewRunRequest(t *testing.T) {
 			home: t.TempDir(),
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
-				if req.Image != "pastdev:latest" {
-					t.Fatalf("got image %q", req.Image)
-				}
-				if req.Root != root {
-					t.Fatalf("got root %q, want %q", req.Root, root)
-				}
-				if req.Cwd != cwd {
-					t.Fatalf("got cwd %q, want %q", req.Cwd, cwd)
-				}
-				if req.Agent != "cursor" {
-					t.Fatalf("got agent %q", req.Agent)
-				}
+				assert.Equal(t, "pastdev:latest", req.Image)
+				assert.Equal(t, root, req.Root)
+				assert.Equal(t, cwd, req.Cwd)
+				assert.Equal(t, "cursor", req.Agent)
 			},
 		})
 	})
@@ -106,12 +93,8 @@ func TestNewRunRequest(t *testing.T) {
 			home: t.TempDir(),
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
-				if req.Root != root {
-					t.Fatalf("got root %q, want %q", req.Root, root)
-				}
-				if req.Cwd != root {
-					t.Fatalf("got cwd %q, want %q", req.Cwd, root)
-				}
+				assert.Equal(t, root, req.Root)
+				assert.Equal(t, root, req.Cwd)
 			},
 		})
 	})
@@ -157,9 +140,7 @@ func TestNewRunRequest(t *testing.T) {
 		root := t.TempDir()
 		nested := filepath.Join(root, "nested")
 		err := os.MkdirAll(nested, 0o700)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		cfg := agentCfg(root)
 		cfg.DefaultContext = "other"
 		cfg.Contexts["other"] = ContextSpec{Agent: "claude", Root: nested}
@@ -170,12 +151,8 @@ func TestNewRunRequest(t *testing.T) {
 			home:  t.TempDir(),
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
-				if req.Root != root {
-					t.Fatalf("got root %q, want %q", req.Root, root)
-				}
-				if req.Cwd != nested {
-					t.Fatalf("got cwd %q, want %q", req.Cwd, nested)
-				}
+				assert.Equal(t, root, req.Root)
+				assert.Equal(t, nested, req.Cwd)
 			},
 		})
 	})
@@ -189,12 +166,8 @@ func TestNewRunRequest(t *testing.T) {
 			home: t.TempDir(),
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
-				if req.Agent != "claude" {
-					t.Fatalf("got agent %q", req.Agent)
-				}
-				if req.Image != "other:latest" {
-					t.Fatalf("got image %q", req.Image)
-				}
+				assert.Equal(t, "claude", req.Agent)
+				assert.Equal(t, "other:latest", req.Image)
 			},
 		})
 	})
@@ -209,12 +182,8 @@ func TestNewRunRequest(t *testing.T) {
 			home:  t.TempDir(),
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
-				if req.Agent != "cursor" {
-					t.Fatalf("got agent %q", req.Agent)
-				}
-				if req.Image != "pastdev:latest" {
-					t.Fatalf("got image %q", req.Image)
-				}
+				assert.Equal(t, "cursor", req.Agent)
+				assert.Equal(t, "pastdev:latest", req.Image)
 			},
 		})
 	})
@@ -242,9 +211,7 @@ func TestNewRunRequest(t *testing.T) {
 		root := t.TempDir()
 		cwd := filepath.Join(root, "proj")
 		err := os.MkdirAll(cwd, 0o700)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		cfg := agentCfg(root)
 		cfg.Agents["cursor"] = AgentSpec{Image: "img:latest"}
 		tester(t, testCase{
@@ -255,12 +222,8 @@ func TestNewRunRequest(t *testing.T) {
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
 				want, err := filepath.Abs(root)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if req.Root != want {
-					t.Fatalf("got %q, want %q", req.Root, want)
-				}
+				require.NoError(t, err)
+				assert.Equal(t, want, req.Root)
 			},
 		})
 	})
@@ -281,15 +244,9 @@ func TestNewRunRequest(t *testing.T) {
 			home: home,
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
-				if len(req.Mounts) != 2 {
-					t.Fatalf("mounts %v", req.Mounts)
-				}
-				if req.Mounts[0].Source != filepath.Join(home, ".cursor") {
-					t.Fatalf("home mount %q", req.Mounts[0].Source)
-				}
-				if req.Mounts[1].Source != filepath.Join(home, ".config", "cursor") {
-					t.Fatalf("relative mount %q", req.Mounts[1].Source)
-				}
+				require.Len(t, req.Mounts, 2)
+				assert.Equal(t, filepath.Join(home, ".cursor"), req.Mounts[0].Source)
+				assert.Equal(t, filepath.Join(home, ".config", "cursor"), req.Mounts[1].Source)
 			},
 		})
 	})
@@ -298,13 +255,9 @@ func TestNewRunRequest(t *testing.T) {
 		overlay := t.TempDir()
 		contextDir := filepath.Join(overlay, "image")
 		err := os.MkdirAll(contextDir, 0o700)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		err = os.WriteFile(filepath.Join(contextDir, defaultDockerfile), []byte("FROM scratch\n"), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		cfg := agentCfg(root)
 		cfg.OverlayDirs = []string{overlay}
 		cfg.Agents["cursor"] = AgentSpec{
@@ -317,21 +270,11 @@ func TestNewRunRequest(t *testing.T) {
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
 				wantImage := agentImagePrefix + "cursor"
-				if req.Image != wantImage {
-					t.Fatalf("image %q", req.Image)
-				}
-				if req.Build == nil {
-					t.Fatal("expected build")
-				}
-				if req.Build.Context != contextDir {
-					t.Fatalf("context %q", req.Build.Context)
-				}
-				if req.Build.Dockerfile != defaultDockerfile {
-					t.Fatalf("dockerfile %q", req.Build.Dockerfile)
-				}
-				if len(req.Build.Tags) != 1 || req.Build.Tags[0] != wantImage {
-					t.Fatalf("tags %v", req.Build.Tags)
-				}
+				assert.Equal(t, wantImage, req.Image)
+				require.NotNil(t, req.Build)
+				assert.Equal(t, contextDir, req.Build.Context)
+				assert.Equal(t, defaultDockerfile, req.Build.Dockerfile)
+				assert.Equal(t, []string{wantImage}, req.Build.Tags)
 			},
 		})
 	})
@@ -340,13 +283,9 @@ func TestNewRunRequest(t *testing.T) {
 		overlay := t.TempDir()
 		contextDir := filepath.Join(overlay, "image")
 		err := os.MkdirAll(contextDir, 0o700)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		err = os.WriteFile(filepath.Join(contextDir, "Containerfile"), []byte("FROM scratch\n"), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		cfg := agentCfg(root)
 		cfg.OverlayDirs = []string{overlay}
 		cfg.Agents["cursor"] = AgentSpec{
@@ -359,12 +298,9 @@ func TestNewRunRequest(t *testing.T) {
 			home: t.TempDir(),
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
-				if req.Image != "pastdev:latest" {
-					t.Fatalf("image %q", req.Image)
-				}
-				if req.Build == nil || req.Build.Dockerfile != "Containerfile" {
-					t.Fatalf("build %+v", req.Build)
-				}
+				assert.Equal(t, "pastdev:latest", req.Image)
+				require.NotNil(t, req.Build)
+				assert.Equal(t, "Containerfile", req.Build.Dockerfile)
 			},
 		})
 	})
@@ -387,9 +323,7 @@ func TestNewRunRequest(t *testing.T) {
 			home: t.TempDir(),
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
-				if req.Bouncer == nil {
-					t.Fatal("expected bouncer")
-				}
+				assert.NotNil(t, req.Bouncer)
 			},
 		})
 	})
@@ -402,9 +336,7 @@ func TestNewRunRequest(t *testing.T) {
 			home:  t.TempDir(),
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
-				if req.Bouncer != nil {
-					t.Fatal("expected no bouncer")
-				}
+				assert.Nil(t, req.Bouncer)
 			},
 		})
 	})
@@ -424,9 +356,7 @@ func TestNewRunRequest(t *testing.T) {
 			home:  t.TempDir(),
 			check: func(t *testing.T, req run.Request) {
 				t.Helper()
-				if req.Bouncer == nil {
-					t.Fatal("expected bouncer")
-				}
+				assert.NotNil(t, req.Bouncer)
 			},
 		})
 	})
@@ -461,17 +391,12 @@ func TestRunRequestPullPolicy(t *testing.T) {
 		cfg.Sidecar.PullPolicy = tc.sidecarPolicy
 		req, err := NewRunRequest(&cfg, RunFlags{Pull: tc.flag}, root, t.TempDir())
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v", err)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if req.PullPolicy != tc.wantAgent || req.SidecarPullPolicy != tc.wantSidecar {
-			t.Fatalf("agent %q sidecar %q, want %q %q", req.PullPolicy, req.SidecarPullPolicy, tc.wantAgent, tc.wantSidecar)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantAgent, req.PullPolicy, "agent")
+		assert.Equal(t, tc.wantSidecar, req.SidecarPullPolicy, "sidecar")
 	}
 
 	t.Run("defaults both to missing", func(t *testing.T) {
@@ -511,41 +436,26 @@ func TestRunRequestSidecarImage(t *testing.T) {
 		overlay := t.TempDir()
 		contextDir := filepath.Join(overlay, "sidecar")
 		err := os.MkdirAll(contextDir, 0o700)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		err = os.WriteFile(filepath.Join(contextDir, defaultDockerfile), []byte("FROM scratch\n"), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		cfg := bouncerCfg(root, t)
 		cfg.OverlayDirs = []string{overlay}
 		cfg.Sidecar = tc.sidecar
 		req, err := NewRunRequest(&cfg, RunFlags{NoBouncer: tc.noBouncer}, root, t.TempDir())
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v", err)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if req.SidecarImage != tc.wantImage {
-			t.Fatalf("image %q, want %q", req.SidecarImage, tc.wantImage)
-		}
-		if tc.wantBuild != (req.SidecarBuild != nil) {
-			t.Fatalf("build %+v", req.SidecarBuild)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantImage, req.SidecarImage)
+		require.Equal(t, tc.wantBuild, req.SidecarBuild != nil, "build %+v", req.SidecarBuild)
 		if req.SidecarBuild == nil {
 			return
 		}
-		if req.SidecarBuild.Context != contextDir || req.SidecarBuild.Dockerfile != defaultDockerfile {
-			t.Fatalf("build %+v", req.SidecarBuild)
-		}
-		if len(req.SidecarBuild.Tags) != 1 || req.SidecarBuild.Tags[0] != tc.wantImage {
-			t.Fatalf("tags %v", req.SidecarBuild.Tags)
-		}
+		assert.Equal(t, contextDir, req.SidecarBuild.Context)
+		assert.Equal(t, defaultDockerfile, req.SidecarBuild.Dockerfile)
+		assert.Equal(t, []string{tc.wantImage}, req.SidecarBuild.Tags)
 	}
 
 	t.Run("leaves the stock image by default", func(t *testing.T) {

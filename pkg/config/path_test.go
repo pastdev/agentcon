@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExpandHomePath(t *testing.T) {
@@ -15,9 +18,7 @@ func TestExpandHomePath(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		got := expandHomePath(tc.path, tc.home)
-		if got != tc.want {
-			t.Fatalf("got %q, want %q", got, tc.want)
-		}
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("joins a path under home", func(t *testing.T) {
@@ -52,9 +53,7 @@ func TestResolveMountSource(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		got := resolveMountSource(tc.source, tc.home)
-		if got != tc.want {
-			t.Fatalf("got %q, want %q", got, tc.want)
-		}
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("joins a relative source under home", func(t *testing.T) {
@@ -77,12 +76,8 @@ func TestResolveConfigDir(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		got, err := resolveConfigDir(tc.rel, tc.home, tc.overlay)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != tc.want {
-			t.Fatalf("got %q, want %q", got, tc.want)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("lets the last overlay win", func(t *testing.T) {
@@ -90,13 +85,9 @@ func TestResolveConfigDir(t *testing.T) {
 		first := t.TempDir()
 		second := t.TempDir()
 		err := os.MkdirAll(filepath.Join(first, "image"), 0o700)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		err = os.MkdirAll(filepath.Join(second, "image"), 0o700)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{
 			rel:     "image",
 			home:    home,

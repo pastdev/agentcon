@@ -3,11 +3,11 @@ package run
 import (
 	"context"
 	"errors"
-	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/pastdev/agentcon/pkg/container"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseDooD(t *testing.T) {
@@ -20,17 +20,11 @@ func TestParseDooD(t *testing.T) {
 		t.Helper()
 		got, err := ParseDooD(tc.environ)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v", err)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(got, tc.want) {
-			t.Fatalf("got %+v, want %+v", got, tc.want)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("nil without the variables", func(t *testing.T) {
@@ -86,17 +80,11 @@ func TestTranslateMounts(t *testing.T) {
 		t.Helper()
 		got, err := translateMounts(tc.in, tc.dood)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v", err)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(got, tc.want) {
-			t.Fatalf("got %+v, want %+v", got, tc.want)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
 	}
 	binds := []container.Mount{{Source: "/home/me/git", Target: "/workspace"}}
 
@@ -156,17 +144,11 @@ func TestDooDNetwork(t *testing.T) {
 		rt := &captureRuntime{network: tc.network, netErr: tc.netErr}
 		got, err := doodNetwork(context.Background(), rt, "dev", "agentcon-x-deadbeef-bouncer")
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v", err)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != tc.want {
-			t.Fatalf("got %+v, want %+v", got, tc.want)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("reaches the sidecar by name with no published port", func(t *testing.T) {
@@ -192,17 +174,7 @@ func TestDooDNetwork(t *testing.T) {
 func TestBouncerSidecarSpecOnDooDNetwork(t *testing.T) {
 	ext := externalNet{name: "dev", subnet: "172.30.0.0/16", controlAddr: "agentcon-x-deadbeef-bouncer:8228"}
 	spec := bouncerSidecarSpec(Request{User: testUser}, sidecarImage, nil, ext, "agent-net", "10.1.0.0/16")
-	if len(spec.Networks) != 2 || spec.Networks[0] != "dev" || spec.Networks[1] != "agent-net" {
-		t.Fatalf("networks %v", spec.Networks)
-	}
-	if len(spec.Ports) != 0 {
-		t.Fatalf("published ports %+v", spec.Ports)
-	}
-	found := false
-	for _, e := range spec.Env {
-		found = found || e == "MANAGEMENT_NETWORK=172.30.0.0/16"
-	}
-	if !found {
-		t.Fatalf("env %v", spec.Env)
-	}
+	assert.Equal(t, []string{"dev", "agent-net"}, spec.Networks)
+	assert.Empty(t, spec.Ports)
+	assert.Contains(t, spec.Env, "MANAGEMENT_NETWORK=172.30.0.0/16")
 }

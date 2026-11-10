@@ -1,11 +1,13 @@
 package config
 
 import (
-	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWriteLayoutAndLoadDir(t *testing.T) {
@@ -19,35 +21,23 @@ func TestWriteLayoutAndLoadDir(t *testing.T) {
 		t.Helper()
 		dir := t.TempDir()
 		err := WriteLayout(DirFS(dir), tc.policy, tc.tsFiles)
-		if err != nil {
-			t.Fatalf("write: %v", err)
-		}
+		require.NoError(t, err)
 		got, err := LoadDir(dir)
-		if err != nil {
-			t.Fatalf("load: %v", err)
-		}
-		if got.Listen != tc.wantListen {
-			t.Fatalf("listen %q, want %q", got.Listen, tc.wantListen)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantListen, got.Listen)
 		if tc.wantTS == "" {
 			return
 		}
 		//nolint:gosec // test fixture under TempDir
 		data, err := os.ReadFile(filepath.Join(dir, TSDir, tc.wantTS))
-		if err != nil {
-			t.Fatalf("read ts: %v", err)
-		}
-		if string(data) != "export {}\n" {
-			t.Fatalf("ts %q", data)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "export {}\n", string(data))
 	}
 
 	srcDir := t.TempDir()
 	src := filepath.Join(srcDir, "deny.ts")
 	err := os.WriteFile(src, []byte("export {}\n"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	t.Run("loads written layout", func(t *testing.T) {
 		tester(t, testCase{
@@ -70,12 +60,8 @@ func TestRewriteTSPaths(t *testing.T) {
 		t.Helper()
 		ts := filepath.Join(tc.overlay, TSDir, "filters", "a.ts")
 		got := RewriteTSPaths([]byte(tc.text(ts)), []string{tc.overlay})
-		if bytes.Contains(got, []byte(tc.leak)) {
-			t.Fatalf("host path leaked: %s", got)
-		}
-		if !strings.Contains(string(got), tc.want) {
-			t.Fatalf("got %s, want %q", got, tc.want)
-		}
+		assert.NotContains(t, string(got), tc.leak, "host path leaked")
+		assert.Contains(t, string(got), tc.want)
 	}
 
 	overlay := t.TempDir()
@@ -100,41 +86,25 @@ func TestCollectTSFiles(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		got, err := CollectTSFiles(tc.overlays)
-		if err != nil {
-			t.Fatalf("collect: %v", err)
-		}
-		abs, ok := got[tc.wantRel]
-		if !ok {
-			t.Fatalf("missing %s, have %v", tc.wantRel, got)
-		}
+		require.NoError(t, err)
+		require.Contains(t, got, tc.wantRel)
+		abs := got[tc.wantRel]
 		//nolint:gosec // test fixture collected from TempDir
 		data, err := os.ReadFile(abs)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(data) != tc.wantData {
-			t.Fatalf("data %q, want %q", data, tc.wantData)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantData, string(data))
 	}
 
 	first := t.TempDir()
 	second := t.TempDir()
 	err := os.MkdirAll(filepath.Join(first, TSDir, "filters"), 0o700)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	err = os.MkdirAll(filepath.Join(second, TSDir, "filters"), 0o700)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	err = os.WriteFile(filepath.Join(first, TSDir, "filters", "a.ts"), []byte("first"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	err = os.WriteFile(filepath.Join(second, TSDir, "filters", "a.ts"), []byte("second"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	t.Run("later overlay wins", func(t *testing.T) {
 		tester(t, testCase{
@@ -149,17 +119,10 @@ func TestDirFS(t *testing.T) {
 	tester := func(t *testing.T, dir string) {
 		t.Helper()
 		err := DirFS(dir).WriteFile("../escape.yaml", []byte("x"), 0o644)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		_, err = os.Stat(filepath.Join(filepath.Dir(dir), "escape.yaml"))
-		if err == nil {
-			t.Fatal("wrote outside layout root")
-		}
-		_, err = os.Stat(filepath.Join(dir, "escape.yaml"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.ErrorIs(t, err, fs.ErrNotExist, "wrote outside layout root")
+		assert.FileExists(t, filepath.Join(dir, "escape.yaml"))
 	}
 
 	t.Run("cleans parent refs", func(t *testing.T) {
@@ -171,13 +134,8 @@ func TestPrefix(t *testing.T) {
 	tester := func(t *testing.T, dir string) {
 		t.Helper()
 		err := WriteLayout(Prefix(DirFS(dir), "bouncer"), []byte("listen: 127.0.0.1:8228\n"), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = os.Stat(filepath.Join(dir, "bouncer", FileName))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+		assert.FileExists(t, filepath.Join(dir, "bouncer", FileName))
 	}
 
 	t.Run("writes under the prefix", func(t *testing.T) {
