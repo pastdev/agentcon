@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/config/urlfile"
 	cobracfg "github.com/pastdev/configloader/pkg/cobra"
 	cfgldr "github.com/pastdev/configloader/pkg/config"
 	"github.com/pastdev/configloader/pkg/xdg"
@@ -26,6 +27,16 @@ func userConfigDir() string {
 		return ""
 	}
 	return filepath.Join(dir, "agentcon.d")
+}
+
+// urlCacheDir is where urlFile keeps downloads. It is empty when the cache
+// home cannot be determined, and urlFile then refuses.
+func urlCacheDir() string {
+	dir, err := xdg.CacheHome()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "agentcon", "url")
 }
 
 func resolveOverlayDir(path string) string {
@@ -131,7 +142,9 @@ func (l *Loader) Config() (*Config, error) {
 }
 
 func valueTemplateUnmarshal() cfgldr.UnmarshalFunc {
-	return cfgldr.YamlValueTemplateUnmarshal(cfgldr.NewTemplate(cfgldr.DefaultFuncMap()))
+	funcs := cfgldr.DefaultFuncMap()
+	urlfile.New(urlCacheDir()).AddFuncs(funcs)
+	return cfgldr.YamlValueTemplateUnmarshal(cfgldr.NewTemplate(funcs))
 }
 
 func NewLoader() *Loader {
