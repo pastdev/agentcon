@@ -43,10 +43,10 @@ type Options struct {
 	// Load returns the service config. When nil, ConfigPath is read with config.Load.
 	Load func() (*config.Config, error)
 	// Log receives operational messages. Each component logs through a
-	// child that names it. Decision receives audit entries for display
-	// (they are always written to the audit log too).
-	Log      zerolog.Logger
-	Decision func(audit.Entry)
+	// child that names it.
+	Log zerolog.Logger
+	// Audit receives one event per decision.
+	Audit zerolog.Logger
 	// Provided are secrets supplied at daemon start. They override
 	// configured sources and are held only in memory.
 	Provided map[string]string
@@ -161,9 +161,7 @@ func New(opts Options) (*Daemon, error) {
 	if d.kv, err = kv.Open(filepath.Join(opts.StateDir, "kv.json")); err != nil {
 		return nil, fmt.Errorf("kv store: %w", err)
 	}
-	if d.audit, err = audit.Open(filepath.Join(opts.StateDir, "audit.jsonl"), opts.Decision); err != nil {
-		return nil, fmt.Errorf("audit log: %w", err)
-	}
+	d.audit = audit.New(opts.Audit)
 	cfg, err := opts.loadConfig()
 	if err != nil {
 		return nil, err
@@ -642,10 +640,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 	kvErr := d.kv.Close()
 	if kvErr != nil {
 		d.log.Error().Err(kvErr).Msg("save kv store")
-	}
-	auditErr := d.audit.Close()
-	if auditErr != nil {
-		d.log.Error().Err(auditErr).Msg("close audit log")
 	}
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		err = nil

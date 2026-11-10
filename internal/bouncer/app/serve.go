@@ -11,7 +11,6 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/pastdev/agentcon/internal/bouncer/audit"
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
@@ -28,9 +27,8 @@ type ServeOptions struct {
 	Slug        string
 	Cwd         string
 	Provided    map[string]string
-	Quiet       bool
-	ShowTunnels bool
 	Log         zerolog.Logger
+	Audit       zerolog.Logger
 	Stdin       io.Reader
 	Stderr      io.Writer
 	Interactive bool
@@ -48,12 +46,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		StateDir:   opts.StateDir,
 		Load:       opts.Load,
 		Log:        opts.Log,
-		Decision: func(e audit.Entry) {
-			if opts.Quiet || (e.Decision == audit.DecisionTunnel && !opts.ShowTunnels) {
-				return
-			}
-			opts.Log.Info().Msg(FormatDecision(e))
-		},
+		Audit:      opts.Audit,
 	})
 	if err != nil {
 		return fmt.Errorf("daemon setup: %w", err)
@@ -116,25 +109,6 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		return fmt.Errorf("daemon: %w", err)
 	}
 	return nil
-}
-
-// FormatDecision is the one-line serve log for an audit entry.
-func FormatDecision(e audit.Entry) string {
-	who := e.Label
-	if who == "" {
-		who = e.Session
-	}
-	s := fmt.Sprintf("%-6s [%s] %s", strings.ToUpper(e.Decision), who, e.Request)
-	if e.Status != 0 && e.Decision == audit.DecisionAllow {
-		s += fmt.Sprintf(" -> %d", e.Status)
-	}
-	switch {
-	case e.Decision == audit.DecisionDeny || e.Decision == audit.DecisionError:
-		s += fmt.Sprintf("  (%s: %s)", e.By, e.Reason)
-	case e.By != "":
-		s += fmt.Sprintf("  (%s)", e.By)
-	}
-	return s
 }
 
 // terminalFor returns the terminal behind in, or a plain reader that never

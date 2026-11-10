@@ -258,7 +258,6 @@ func bouncerSidecarSpec(
 			roleBouncer, "serve",
 			"--file", sidecarConfigPath,
 			"--state-dir", sidecarStatePath,
-			"--quiet",
 		},
 		Env: []string{
 			"AGENT_NETWORK=" + agentSubnet,
