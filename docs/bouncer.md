@@ -632,4 +632,4 @@ bouncers:
           - extra.vendor.example
 ```
 
-A Cursor example list is in [cursor.md](cursor.md).
+Example lists are in [cursor.md](cursor.md) and [claude.md](claude.md).
