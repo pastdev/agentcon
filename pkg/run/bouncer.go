@@ -248,17 +248,27 @@ func bouncerSidecarSpec(
 	ext externalNet,
 	agentNetName, agentSubnet string,
 ) container.Spec {
+	args := []string{
+		roleBouncer, "serve",
+		"--file", sidecarConfigPath,
+		"--state-dir", sidecarStatePath,
+	}
+	if req.SidecarLog.Bouncer != "" {
+		args = append(args, "--log", "bouncer="+req.SidecarLog.Bouncer)
+	}
+	if req.SidecarLog.Audit != "" {
+		args = append(args, "--log", "audit="+req.SidecarLog.Audit)
+	}
+	if req.SidecarLog.Format != "" {
+		args = append(args, "--log-format", req.SidecarLog.Format)
+	}
 	spec := container.Spec{
 		Name:       running.ResourceName(req.Project, req.Slug, roleBouncer),
 		Image:      image,
 		User:       req.User,
 		GroupAdd:   []string{groupRoot},
 		Entrypoint: []string{sidecarBinPath},
-		Args: []string{
-			roleBouncer, "serve",
-			"--file", sidecarConfigPath,
-			"--state-dir", sidecarStatePath,
-		},
+		Args:       args,
 		Env: []string{
 			"AGENT_NETWORK=" + agentSubnet,
 			"MANAGEMENT_NETWORK=" + ext.subnet,

@@ -30,6 +30,7 @@ func TestBuildLevels(t *testing.T) {
 		assert.Equal(t, tc.wantCLI, l.cli.GetLevel(), "cli")
 		assert.Equal(t, tc.wantBouncer, l.bouncer.GetLevel(), "bouncer")
 		assert.Equal(t, tc.wantAudit, l.audit.GetLevel(), "audit")
+		assert.Equal(t, Settings{Bouncer: tc.wantBouncer.String(), Audit: tc.wantAudit.String(), Format: "json"}, l.settings)
 	}
 
 	t.Run("defaults to info", func(t *testing.T) {

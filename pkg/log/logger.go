@@ -41,10 +41,28 @@ var levels = map[string]zerolog.Level{
 	"disabled": zerolog.Disabled,
 }
 
+// Settings are the bouncer and audit levels and the format Configure
+// applied, in the form --log and --log-format take. They are empty before
+// Configure runs.
+type Settings struct {
+	Bouncer string
+	Audit   string
+	Format  string
+}
+
+var settings Settings
+
+// Current returns the settings Configure applied, so a process can start
+// a bouncer that logs the same way.
+func Current() Settings {
+	return settings
+}
+
 type loggers struct {
-	cli     zerolog.Logger
-	bouncer zerolog.Logger
-	audit   zerolog.Logger
+	cli      zerolog.Logger
+	bouncer  zerolog.Logger
+	audit    zerolog.Logger
+	settings Settings
 }
 
 // Configure builds every logger on stderr in format, pretty or json. Each
@@ -59,13 +77,14 @@ func Configure(levelArgs []string, format string) error {
 	// Levels are set per logger. Lower zerolog's process-wide floor, which
 	// defaults to debug, so --log trace is not filtered out by it.
 	zerolog.SetGlobalLevel(zerolog.TraceLevel)
-	Logger, Bouncer, Audit = l.cli, l.bouncer, l.audit
+	Logger, Bouncer, Audit, settings = l.cli, l.bouncer, l.audit, l.settings
 	return nil
 }
 
 func build(w io.Writer, color bool, levelArgs []string, format string) (loggers, error) {
 	var out io.Writer
-	switch strings.ToLower(format) {
+	format = strings.ToLower(format)
+	switch format {
 	case "json":
 		out = w
 	case "pretty":
@@ -89,11 +108,14 @@ func build(w io.Writer, color bool, levelArgs []string, format string) (loggers,
 		set[name] = level
 	}
 	cli := levelOr(set, LogCLI, zerolog.InfoLevel)
+	bouncer := levelOr(set, LogBouncer, cli)
+	audit := levelOr(set, LogAudit, zerolog.InfoLevel)
 	base := zerolog.New(out).With().Timestamp().Logger()
 	return loggers{
-		cli:     base.With().Str("log", LogCLI).Logger().Level(cli),
-		bouncer: base.With().Str("log", LogBouncer).Logger().Level(levelOr(set, LogBouncer, cli)),
-		audit:   base.With().Str("log", LogAudit).Logger().Level(levelOr(set, LogAudit, zerolog.InfoLevel)),
+		cli:      base.With().Str("log", LogCLI).Logger().Level(cli),
+		bouncer:  base.With().Str("log", LogBouncer).Logger().Level(bouncer),
+		audit:    base.With().Str("log", LogAudit).Logger().Level(audit),
+		settings: Settings{Bouncer: bouncer.String(), Audit: audit.String(), Format: format},
 	}, nil
 }
 
