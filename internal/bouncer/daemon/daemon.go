@@ -171,10 +171,7 @@ func New(opts Options) (*Daemon, error) {
 	d.env = &chain.Env{
 		Approver: d.Approvals,
 		Resolver: d.resolveGitLabProject,
-		Log: func(filter, msg string, fields map[string]any) {
-			flog := component(opts.Log, "filter")
-			flog.Info().Str("filter", filter).Fields(fields).Msg(msg)
-		},
+		Log:      component(opts.Log, "filter"),
 	}
 	creds.ConfigureBitwarden(opts.StateDir, component(opts.Log, "bitwarden"), d.Prompts)
 	d.creds = creds.NewStore(cfg.Credentials)

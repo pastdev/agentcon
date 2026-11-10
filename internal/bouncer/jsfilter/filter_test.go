@@ -1,7 +1,9 @@
 package jsfilter
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
 	"github.com/pastdev/agentcon/internal/bouncer/gitproto"
 	"github.com/pastdev/agentcon/internal/bouncer/kv"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -490,5 +493,71 @@ export default { async onRequest(req, next) {
 		require.NoError(t, err)
 		assert.NotNil(t, resp.Denial, "fast ask() loop was allowed")
 		assert.LessOrEqual(t, time.Since(start), 2*time.Second, "ask() loop ran past a 50ms budget")
+	})
+}
+
+func TestLogging(t *testing.T) {
+	type line struct {
+		Level   string `json:"level"`
+		Filter  string `json:"filter"`
+		Message string `json:"message"`
+		Key     string `json:"key"`
+	}
+	type testCase struct {
+		body string
+		env  chain.Env
+		want []line
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		var buf bytes.Buffer
+		tc.env.Log = zerolog.New(&buf)
+		f := load(t, `
+import { defineFilter, ask, log } from "bouncer";
+export default defineFilter({
+  async onRequest(req, next) {
+`+tc.body+`
+    return next(req);
+  },
+});`, Options{Env: &tc.env})
+		_, err := chain.Build([]chain.Filter{f}, upstream("ok"))(req(t, "GET", "https://x/", nil))
+		require.NoError(t, err)
+		var got []line
+		for _, raw := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+			var l line
+			require.NoError(t, json.Unmarshal([]byte(raw), &l))
+			got = append(got, l)
+		}
+		assert.Equal(t, tc.want, got)
+	}
+
+	t.Run("console methods log at their levels", func(t *testing.T) {
+		tester(t, testCase{
+			body: `
+    console.debug("d");
+    console.log("l", { a: 1 });
+    console.info("i");
+    console.warn("w");
+    console.error("e");`,
+			want: []line{
+				{Level: "debug", Filter: "f", Message: "d"},
+				{Level: "info", Filter: "f", Message: `l {"a":1}`},
+				{Level: "info", Filter: "f", Message: "i"},
+				{Level: "warn", Filter: "f", Message: "w"},
+				{Level: "error", Filter: "f", Message: "e"},
+			},
+		})
+	})
+	t.Run("log takes fields at info", func(t *testing.T) {
+		tester(t, testCase{
+			body: `    log("m", { key: "v" });`,
+			want: []line{{Level: "info", Filter: "f", Message: "m", Key: "v"}},
+		})
+	})
+	t.Run("ask without an approver warns", func(t *testing.T) {
+		tester(t, testCase{
+			body: `    await ask("ok?");`,
+			want: []line{{Level: "warn", Filter: "f", Message: "ask() denied: no approver configured"}},
+		})
 	})
 }
