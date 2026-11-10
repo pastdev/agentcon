@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install CLI tools Cursor agents use while searching, editing, and talking to GitHub.
+# Install CLI tools agents use while searching, editing, and talking to GitHub.
 
 set -euo pipefail
 

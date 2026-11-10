@@ -10,7 +10,7 @@ EOF
 
 COPY contrib/ /
 
-# CLI tools Cursor agents use while searching, editing, and talking to GitHub.
+# CLI tools agents use while searching, editing, and talking to GitHub.
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked \
     --mount=type=cache,target=/var/cache/agentcon,sharing=locked \
     <<'EOF'
