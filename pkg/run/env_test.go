@@ -139,6 +139,7 @@ func TestBouncerSidecarSpec(t *testing.T) {
 				SidecarExtraHosts: []string{testExtraHost},
 				SidecarEnv:        []string{"SMOKE_TOKEN=should-not-appear"},
 			},
+			sidecarImage,
 			map[string]string{labelRole: roleBouncer},
 			externalNet{name: "ext-net", subnet: "10.2.0.0/16", hostPort: 18228, controlAddr: "127.0.0.1:18228"},
 			"agent-net",

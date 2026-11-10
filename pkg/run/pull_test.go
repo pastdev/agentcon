@@ -85,3 +85,46 @@ func TestEnsureImage(t *testing.T) {
 		tester(t, testCase{policy: PullMissing, existsErr: errors.New("daemon down"), wantErr: "daemon down"})
 	})
 }
+
+func TestPrepareImage(t *testing.T) {
+	type testCase struct {
+		build      *ImageBuild
+		policy     PullPolicy
+		missing    bool
+		wantBuilt  bool
+		wantParent bool
+		wantPulled bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		rt := &captureRuntime{missing: tc.missing}
+		err := prepareImage(context.Background(), rt, testImage, tc.build, tc.policy, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		built := rt.build.Tags != nil
+		if built != tc.wantBuilt {
+			t.Fatalf("built = %v, want %v", built, tc.wantBuilt)
+		}
+		if built && (rt.build.Context != tc.build.Context || rt.build.Dockerfile != tc.build.Dockerfile) {
+			t.Fatalf("build %+v", rt.build)
+		}
+		if rt.build.PullParent != tc.wantParent {
+			t.Fatalf("PullParent = %v", rt.build.PullParent)
+		}
+		if tc.wantPulled != (len(rt.pulled) == 1) {
+			t.Fatalf("pulled %v", rt.pulled)
+		}
+	}
+	build := &ImageBuild{Context: "/ctx", Dockerfile: "Dockerfile", Tags: []string{testImage}}
+
+	t.Run("builds a build", func(t *testing.T) {
+		tester(t, testCase{build: build, missing: true, wantBuilt: true})
+	})
+	t.Run("refreshes the base under always", func(t *testing.T) {
+		tester(t, testCase{build: build, policy: PullAlways, wantBuilt: true, wantParent: true})
+	})
+	t.Run("fetches an image without a build", func(t *testing.T) {
+		tester(t, testCase{missing: true, wantPulled: true})
+	})
+}

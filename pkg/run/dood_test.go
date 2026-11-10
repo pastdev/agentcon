@@ -191,7 +191,7 @@ func TestDooDNetwork(t *testing.T) {
 
 func TestBouncerSidecarSpecOnDooDNetwork(t *testing.T) {
 	ext := externalNet{name: "dev", subnet: "172.30.0.0/16", controlAddr: "agentcon-x-deadbeef-bouncer:8228"}
-	spec := bouncerSidecarSpec(Request{User: testUser}, nil, ext, "agent-net", "10.1.0.0/16")
+	spec := bouncerSidecarSpec(Request{User: testUser}, sidecarImage, nil, ext, "agent-net", "10.1.0.0/16")
 	if len(spec.Networks) != 2 || spec.Networks[0] != "dev" || spec.Networks[1] != "agent-net" {
 		t.Fatalf("networks %v", spec.Networks)
 	}

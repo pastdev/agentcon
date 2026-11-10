@@ -44,8 +44,12 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("bouncer policy: %w", err)
 	}
 	// Before any networks exist, so a missing image leaves nothing to clean up.
+	image := req.SidecarImage
+	if image == "" {
+		image = sidecarImage
+	}
 	out := log.InfoWriter()
-	err = ensureImage(ctx, req.Runtime, sidecarImage, req.SidecarPullPolicy, out)
+	err = prepareImage(ctx, req.Runtime, image, req.SidecarBuild, req.SidecarPullPolicy, out)
 	out.Flush()
 	if err != nil {
 		return fmt.Errorf("sidecar image: %w", err)
@@ -132,7 +136,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("inspect agent network: %w", err)
 	}
 
-	sidecarSpec := withSSHAuthSock(bouncerSidecarSpec(req, labels, ext, agentNetName, agentNet.Subnet), sshSock)
+	sidecarSpec := withSSHAuthSock(bouncerSidecarSpec(req, image, labels, ext, agentNetName, agentNet.Subnet), sshSock)
 	sidecarSpec.Mounts, err = translateMounts(sidecarSpec.Mounts, req.DooD)
 	if err != nil {
 		return fmt.Errorf("sidecar mounts: %w", err)
@@ -239,13 +243,14 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 
 func bouncerSidecarSpec(
 	req Request,
+	image string,
 	labels map[string]string,
 	ext externalNet,
 	agentNetName, agentSubnet string,
 ) container.Spec {
 	spec := container.Spec{
 		Name:       running.ResourceName(req.Project, req.Slug, roleBouncer),
-		Image:      sidecarImage,
+		Image:      image,
 		User:       req.User,
 		GroupAdd:   []string{groupRoot},
 		Entrypoint: []string{sidecarBinPath},

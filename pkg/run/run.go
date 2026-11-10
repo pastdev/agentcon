@@ -82,6 +82,10 @@ type Request struct {
 	DooD *DooD
 	// PullPolicy governs the agent image. Empty is PullMissing.
 	PullPolicy PullPolicy
+	// SidecarImage is the bouncer sidecar image, or the tag SidecarBuild
+	// produces. Empty is the stock image.
+	SidecarImage string
+	SidecarBuild *ImageBuild
 	// SidecarPullPolicy governs the bouncer sidecar image. Empty is PullMissing.
 	SidecarPullPolicy PullPolicy
 	// SidecarEnv is extra NAME=value pairs for source: env credentials.
@@ -106,26 +110,11 @@ func Run(ctx context.Context, req Request) error {
 		return err
 	}
 
-	if req.Build != nil {
-		out := log.InfoWriter()
-		err = req.Runtime.Build(ctx, container.Build{
-			Context:    req.Build.Context,
-			Dockerfile: req.Build.Dockerfile,
-			Tags:       req.Build.Tags,
-			Output:     out,
-			PullParent: req.PullPolicy == PullAlways,
-		})
-		out.Flush()
-		if err != nil {
-			return fmt.Errorf("build image: %w", err)
-		}
-	} else {
-		out := log.InfoWriter()
-		err = ensureImage(ctx, req.Runtime, req.Image, req.PullPolicy, out)
-		out.Flush()
-		if err != nil {
-			return fmt.Errorf("agent image: %w", err)
-		}
+	out := log.InfoWriter()
+	err = prepareImage(ctx, req.Runtime, req.Image, req.Build, req.PullPolicy, out)
+	out.Flush()
+	if err != nil {
+		return fmt.Errorf("agent image: %w", err)
 	}
 
 	spec, err := specFrom(req)
