@@ -5,10 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	"github.com/pastdev/agentcon/internal/bouncer/audit"
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
@@ -29,7 +30,7 @@ type ServeOptions struct {
 	Provided    map[string]string
 	Quiet       bool
 	ShowTunnels bool
-	Log         io.Writer
+	Log         zerolog.Logger
 	Stdin       io.Reader
 	Stderr      io.Writer
 	Interactive bool
@@ -41,30 +42,25 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	if opts.ConfigPath == "" {
 		return fmt.Errorf("no bouncer policy: set contexts.<name>.bouncer or pass --file")
 	}
-	logw := opts.Log
-	if logw == nil {
-		logw = os.Stderr
-	}
-	logger := log.New(logw, "", log.Ltime)
 	d, err := daemon.New(daemon.Options{
 		Provided:   opts.Provided,
 		ConfigPath: opts.ConfigPath,
 		StateDir:   opts.StateDir,
 		Load:       opts.Load,
-		Logf:       logger.Printf,
+		Log:        opts.Log,
 		Decision: func(e audit.Entry) {
 			if opts.Quiet || (e.Decision == audit.DecisionTunnel && !opts.ShowTunnels) {
 				return
 			}
-			logger.Print(FormatDecision(e))
+			opts.Log.Info().Msg(FormatDecision(e))
 		},
 	})
 	if err != nil {
 		return fmt.Errorf("daemon setup: %w", err)
 	}
 	cfg := d.Config()
-	logger.Printf("config %s", cfg.Path)
-	logger.Printf("CA certificate %s", d.CA.CertPath())
+	opts.Log.Info().Str("path", cfg.Path).Msg("config")
+	opts.Log.Info().Str("path", d.CA.CertPath()).Msg("CA certificate")
 	if cfg.Prompts.TerminalEnabled() && opts.Interactive {
 		in, out := opts.Stdin, opts.Stderr
 		if in == nil {
@@ -86,7 +82,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 			<-done
 		}()
 	} else if cfg.Prompts.CLIEnabled() {
-		logger.Printf("answer prompts with `agentcon bouncer prompts` / `agentcon bouncer answer <id>`")
+		opts.Log.Info().Msg("answer prompts with `agentcon bouncer prompts` / `agentcon bouncer answer <id>`")
 	}
 	if opts.Context != "" && opts.Home != "" {
 		token, err := os.ReadFile(daemon.AdminTokenPath(opts.StateDir))
@@ -112,7 +108,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		if err != nil {
 			return fmt.Errorf("write running record: %w", err)
 		}
-		logger.Printf("session %s", slug)
+		opts.Log.Info().Str("slug", slug).Msg("session")
 		defer func() { _ = running.Remove(opts.Home, slug) }()
 	}
 	err = d.Run(ctx)

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/zalando/go-keyring"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -183,8 +184,8 @@ func (s *Store) MissingProvided() []string {
 // and refresh token, where unlock progress is logged, and the broker that
 // asks a human for master passwords and verification codes. The decrypted
 // vault is kept in memory only. Call this before the first fetch.
-func ConfigureBitwarden(stateDir string, logf func(string, ...any), prompts *prompt.Broker) {
-	bitwarden.Configure(bitwarden.Options{StateDir: stateDir, Logf: logf, Prompt: bitwarden.BrokerPrompter(prompts)})
+func ConfigureBitwarden(stateDir string, log zerolog.Logger, prompts *prompt.Broker) {
+	bitwarden.Configure(bitwarden.Options{StateDir: stateDir, Log: log, Prompt: bitwarden.BrokerPrompter(prompts)})
 }
 
 // Prepare unlocks every Bitwarden vault the credential set uses, so the

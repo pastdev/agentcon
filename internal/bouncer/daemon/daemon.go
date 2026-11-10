@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/pastdev/agentcon/internal/bouncer/approval"
 	"github.com/pastdev/agentcon/internal/bouncer/audit"
 	"github.com/pastdev/agentcon/internal/bouncer/ca"
@@ -40,9 +42,10 @@ type Options struct {
 	StateDir   string
 	// Load returns the service config. When nil, ConfigPath is read with config.Load.
 	Load func() (*config.Config, error)
-	// Logf receives operational messages; Decision receives audit entries
-	// for display (they are always written to the audit log too).
-	Logf     func(format string, args ...any)
+	// Log receives operational messages. Each component logs through a
+	// child that names it. Decision receives audit entries for display
+	// (they are always written to the audit log too).
+	Log      zerolog.Logger
 	Decision func(audit.Entry)
 	// Provided are secrets supplied at daemon start. They override
 	// configured sources and are held only in memory.
@@ -66,6 +69,7 @@ func (o Options) loadConfig() (*config.Config, error) {
 // Daemon is a running bouncer.
 type Daemon struct {
 	opts      Options
+	log       zerolog.Logger
 	CA        *ca.Authority
 	Approvals *approval.Manager
 	Prompts   *prompt.Broker
@@ -135,19 +139,21 @@ type resolvedID struct {
 
 // New loads config and state. It does not start listening.
 func New(opts Options) (*Daemon, error) {
-	if opts.Logf == nil {
-		opts.Logf = func(string, ...any) {}
-	}
 	if err := os.MkdirAll(opts.StateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("state dir: %w", err)
 	}
-	d := &Daemon{opts: opts, sessions: map[string]*SessionRecord{}, transport: proxy.NewTransport()}
+	d := &Daemon{
+		opts:      opts,
+		log:       component(opts.Log, "daemon"),
+		sessions:  map[string]*SessionRecord{},
+		transport: proxy.NewTransport(),
+	}
 	var err error
 	if d.CA, err = ca.LoadOrCreate(opts.StateDir); err != nil {
 		return nil, fmt.Errorf("ca: %w", err)
 	}
 	if err := d.CA.WriteBundle(); err != nil {
-		opts.Logf("warning: writing CA bundle: %v", err)
+		d.log.Error().Err(err).Msg("write CA bundle")
 	}
 	if d.admin, err = LoadOrCreateAdminToken(opts.StateDir); err != nil {
 		return nil, err
@@ -168,15 +174,11 @@ func New(opts Options) (*Daemon, error) {
 		Approver: d.Approvals,
 		Resolver: d.resolveGitLabProject,
 		Log: func(filter, msg string, fields map[string]any) {
-			if len(fields) > 0 {
-				b, _ := json.Marshal(fields)
-				opts.Logf("[%s] %s %s", filter, msg, b)
-			} else {
-				opts.Logf("[%s] %s", filter, msg)
-			}
+			flog := component(opts.Log, "filter")
+			flog.Info().Str("filter", filter).Fields(fields).Msg(msg)
 		},
 	}
-	creds.ConfigureBitwarden(opts.StateDir, opts.Logf, d.Prompts)
+	creds.ConfigureBitwarden(opts.StateDir, component(opts.Log, "bitwarden"), d.Prompts)
 	d.creds = creds.NewStore(cfg.Credentials)
 	d.creds.SetProvided(opts.Provided)
 	d.env.Credential = func(ctx context.Context, name string) (string, error) {
@@ -200,7 +202,7 @@ func New(opts Options) (*Daemon, error) {
 func (d *Daemon) prepare(set map[string]*config.Credential, startup bool) {
 	err := d.creds.Prepare(context.Background(), set)
 	if err != nil {
-		d.opts.Logf("warning: preparing credentials: %v", err)
+		d.log.Warn().Err(err).Msg("prepare credentials")
 	}
 	if !startup {
 		return
@@ -310,14 +312,14 @@ func (d *Daemon) Reload() error {
 		err = d.apply(cfg)
 	}
 	if err != nil {
-		d.opts.Logf("reload failed, keeping previous config: %v", err)
+		d.log.Warn().Err(err).Msg("reload failed, keeping previous config")
 		return err
 	}
 	go d.prepare(cfg.Credentials, false)
 	if old != nil && (old.Listen != cfg.Listen || old.SSHListen != cfg.SSHListen) {
-		d.opts.Logf("listen address changes take effect after restart")
+		d.log.Warn().Msg("listen address changes take effect after restart")
 	}
-	d.opts.Logf("config reloaded")
+	d.log.Info().Msg("config reloaded")
 	return nil
 }
 
@@ -505,7 +507,7 @@ func (d *Daemon) saveSessions() {
 		err = os.Rename(tmp, d.sessionsFile())
 	}
 	if err != nil {
-		d.opts.Logf("warning: saving sessions: %v", err)
+		d.log.Error().Err(err).Msg("save sessions")
 	}
 }
 
@@ -592,14 +594,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	px := &proxy.Server{Backend: d, CA: d.CA, Creds: d.creds, Audit: d.audit, Transport: d.transport,
-		Dialer: &net.Dialer{Timeout: 30 * time.Second}, Logf: d.opts.Logf, DisableControl: plan.split}
+		Dialer: &net.Dialer{Timeout: 30 * time.Second}, Log: component(d.opts.Log, "proxy"), DisableControl: plan.split}
 	httpSrv := &http.Server{Handler: px, ReadHeaderTimeout: 30 * time.Second}
-	sshSrv := &sshproxy.Server{Backend: d, CA: d.CA, Creds: d.creds, Audit: d.audit, Logf: d.opts.Logf}
+	sshSrv := &sshproxy.Server{Backend: d, CA: d.CA, Creds: d.creds, Audit: d.audit, Log: component(d.opts.Log, "ssh")}
 	mgmtSrv := &http.Server{Handler: d.Control(), ReadHeaderTimeout: 30 * time.Second}
 
 	stopWatch, err := d.watch()
 	if err != nil {
-		d.opts.Logf("warning: config watching disabled: %v", err)
+		d.log.Warn().Err(err).Msg("config watching disabled")
 	} else {
 		defer stopWatch()
 	}
@@ -620,14 +622,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 		PID: os.Getpid(), Config: cfg.Path,
 	})
 	if err := os.WriteFile(RuntimePath(d.opts.StateDir), rt, 0o600); err != nil {
-		d.opts.Logf("warning: writing runtime file: %v", err)
+		d.log.Error().Err(err).Msg("write runtime file")
 	}
 	defer func() { _ = os.Remove(RuntimePath(d.opts.StateDir)) }()
-	if plan.split {
-		d.opts.Logf("proxy listening on %s, ssh on %s, management on %s", httpL.Addr(), sshL.Addr(), mgmtL.Addr())
-	} else {
-		d.opts.Logf("proxy listening on %s, ssh on %s", httpL.Addr(), sshL.Addr())
-	}
+	d.log.Info().Str("proxy", d.proxyAddr).Str("ssh", d.sshAddr).Str("management", d.mgmtAddr).Msg("listening")
 	select {
 	case <-ctx.Done():
 	case err = <-errc:
@@ -643,11 +641,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	_ = mgmtSrv.Shutdown(shutdownCtx)
 	kvErr := d.kv.Close()
 	if kvErr != nil {
-		d.opts.Logf("warning: saving kv store: %v", kvErr)
+		d.log.Error().Err(kvErr).Msg("save kv store")
 	}
 	auditErr := d.audit.Close()
 	if auditErr != nil {
-		d.opts.Logf("warning: closing audit log: %v", auditErr)
+		d.log.Error().Err(auditErr).Msg("close audit log")
 	}
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		err = nil
@@ -685,3 +683,8 @@ func LoadOrCreateAdminToken(stateDir string) (string, error) {
 
 // NewAdminToken returns a random control API token.
 func NewAdminToken() string { return randHex(32) }
+
+// component returns a child of log that names the component logging.
+func component(log zerolog.Logger, name string) zerolog.Logger {
+	return log.With().Str("component", name).Logger()
+}

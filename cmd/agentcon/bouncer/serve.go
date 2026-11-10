@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/pastdev/agentcon/internal/bouncer/app"
+	"github.com/pastdev/agentcon/pkg/log"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -36,7 +37,7 @@ Decisions are printed here and appended to the audit log.`,
 				Cwd:         cwd,
 				Quiet:       quiet,
 				ShowTunnels: showTunnels,
-				Log:         os.Stderr,
+				Log:         log.Bouncer,
 				Stdin:       os.Stdin,
 				Stderr:      os.Stderr,
 				Interactive: term.IsTerminal(int(os.Stdin.Fd())),
