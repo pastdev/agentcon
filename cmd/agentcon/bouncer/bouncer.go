@@ -45,8 +45,11 @@ host to lint policy and talk to a running sidecar.
 Host commands pick a live session by --slug, then --project, then cwd.`,
 		SilenceUsage: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if p := cmd.Root(); p != nil && p.PersistentPreRun != nil {
-				p.PersistentPreRun(cmd, args)
+			if p := cmd.Root(); p != nil && p.PersistentPreRunE != nil {
+				err := p.PersistentPreRunE(cmd, args)
+				if err != nil {
+					return err //nolint:wrapcheck // the root hook already names its source
+				}
 			}
 			if cmd.Name() == "ssh-connect" {
 				return nil
