@@ -444,11 +444,12 @@ func TestNewRunRequest(t *testing.T) {
 
 func TestRunRequestPullPolicy(t *testing.T) {
 	type testCase struct {
-		agentPolicy string
-		flag        string
-		wantAgent   run.PullPolicy
-		wantSidecar run.PullPolicy
-		wantErr     string
+		agentPolicy   string
+		sidecarPolicy string
+		flag          string
+		wantAgent     run.PullPolicy
+		wantSidecar   run.PullPolicy
+		wantErr       string
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
@@ -457,6 +458,7 @@ func TestRunRequestPullPolicy(t *testing.T) {
 		agent := cfg.Agents["cursor"]
 		agent.PullPolicy = tc.agentPolicy
 		cfg.Agents["cursor"] = agent
+		cfg.Sidecar.PullPolicy = tc.sidecarPolicy
 		req, err := NewRunRequest(&cfg, RunFlags{Pull: tc.flag}, root, t.TempDir())
 		if tc.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
@@ -478,13 +480,110 @@ func TestRunRequestPullPolicy(t *testing.T) {
 	t.Run("applies the agent pull_policy to the agent only", func(t *testing.T) {
 		tester(t, testCase{agentPolicy: "always", wantAgent: run.PullAlways, wantSidecar: run.PullMissing})
 	})
+	t.Run("applies the sidecar pull_policy to the sidecar only", func(t *testing.T) {
+		tester(t, testCase{sidecarPolicy: "always", wantAgent: run.PullMissing, wantSidecar: run.PullAlways})
+	})
 	t.Run("overrides with the flag for both", func(t *testing.T) {
-		tester(t, testCase{agentPolicy: "always", flag: "never", wantAgent: run.PullNever, wantSidecar: run.PullNever})
+		tester(t, testCase{agentPolicy: "always", sidecarPolicy: "always", flag: "never", wantAgent: run.PullNever, wantSidecar: run.PullNever})
 	})
 	t.Run("rejects an unknown pull_policy", func(t *testing.T) {
 		tester(t, testCase{agentPolicy: "sometimes", wantErr: `agent "cursor" pull_policy`})
 	})
+	t.Run("rejects an unknown sidecar pull_policy", func(t *testing.T) {
+		tester(t, testCase{sidecarPolicy: "sometimes", wantErr: "sidecar pull_policy"})
+	})
 	t.Run("rejects an unknown flag value", func(t *testing.T) {
 		tester(t, testCase{flag: "sometimes", wantErr: "--pull"})
+	})
+}
+
+func TestRunRequestSidecarImage(t *testing.T) {
+	type testCase struct {
+		sidecar   SidecarSpec
+		noBouncer bool
+		wantImage string
+		wantBuild bool
+		wantErr   string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		root := t.TempDir()
+		overlay := t.TempDir()
+		contextDir := filepath.Join(overlay, "sidecar")
+		err := os.MkdirAll(contextDir, 0o700)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = os.WriteFile(filepath.Join(contextDir, defaultDockerfile), []byte("FROM scratch\n"), 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := bouncerCfg(root, t)
+		cfg.OverlayDirs = []string{overlay}
+		cfg.Sidecar = tc.sidecar
+		req, err := NewRunRequest(&cfg, RunFlags{NoBouncer: tc.noBouncer}, root, t.TempDir())
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.SidecarImage != tc.wantImage {
+			t.Fatalf("image %q, want %q", req.SidecarImage, tc.wantImage)
+		}
+		if tc.wantBuild != (req.SidecarBuild != nil) {
+			t.Fatalf("build %+v", req.SidecarBuild)
+		}
+		if req.SidecarBuild == nil {
+			return
+		}
+		if req.SidecarBuild.Context != contextDir || req.SidecarBuild.Dockerfile != defaultDockerfile {
+			t.Fatalf("build %+v", req.SidecarBuild)
+		}
+		if len(req.SidecarBuild.Tags) != 1 || req.SidecarBuild.Tags[0] != tc.wantImage {
+			t.Fatalf("tags %v", req.SidecarBuild.Tags)
+		}
+	}
+
+	t.Run("leaves the stock image by default", func(t *testing.T) {
+		tester(t, testCase{})
+	})
+	t.Run("uses a configured image", func(t *testing.T) {
+		tester(t, testCase{sidecar: SidecarSpec{Image: "approved/ubi:10"}, wantImage: "approved/ubi:10"})
+	})
+	t.Run("tags a build-only sidecar", func(t *testing.T) {
+		tester(t, testCase{
+			sidecar:   SidecarSpec{Build: &BuildSpec{Context: "sidecar"}},
+			wantImage: sidecarImageTag,
+			wantBuild: true,
+		})
+	})
+	t.Run("keeps image when build and image are both set", func(t *testing.T) {
+		tester(t, testCase{
+			sidecar:   SidecarSpec{Image: "mine/sidecar:1", Build: &BuildSpec{Context: "sidecar"}},
+			wantImage: "mine/sidecar:1",
+			wantBuild: true,
+		})
+	})
+	t.Run("requires a build context", func(t *testing.T) {
+		tester(t, testCase{
+			sidecar: SidecarSpec{Build: &BuildSpec{}},
+			wantErr: "sidecar build.context is required",
+		})
+	})
+	t.Run("reports a missing dockerfile", func(t *testing.T) {
+		tester(t, testCase{
+			sidecar: SidecarSpec{Build: &BuildSpec{Context: "sidecar", Dockerfile: "Other"}},
+			wantErr: "sidecar dockerfile Other",
+		})
+	})
+	t.Run("skips the sidecar when --no-bouncer", func(t *testing.T) {
+		tester(t, testCase{
+			sidecar:   SidecarSpec{Build: &BuildSpec{}},
+			noBouncer: true,
+		})
 	})
 }

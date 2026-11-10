@@ -386,6 +386,38 @@ prompts:
 `cli: false` stops `agentcon run` and the `agentcon bouncer` commands from answering.
 `agentcon run` refuses a policy with `cli: false` when a Bitwarden credential has no `password_env`, because nothing could unlock it.
 
+## Sidecar image
+
+The sidecar runs `registry.access.redhat.com/ubi10/ubi-minimal:10.2` unless `sidecar` names another image.
+`sidecar` takes the same `image`, `build`, and `pull_policy` fields as `agents.<name>`, with the same meaning.
+A `build` without `image` is tagged `agentcon/bouncer-sidecar`.
+`--pull` overrides `sidecar.pull_policy` for one run.
+
+```yaml
+sidecar:
+  build:
+    context: '{{relativeDir "sidecar"}}'
+```
+
+The image has to work in your environment, the same as an agent image.
+That includes trusting the CAs your network presents and passing your image scans.
+
+The image does not need agentcon.
+`run` copies its static binary to `/opt/agentcon` and makes it the entrypoint.
+The container runs as the host UID with group `0`, not as root, so install trust when the image is built.
+
+### Trusting a TLS inspection CA
+
+On a network that inspects TLS, upstream certificates are signed by an inspection CA.
+The stock image does not trust it, so the Bitwarden unlock and every intercepted host fail with `x509: certificate signed by unknown authority`.
+Put the CA in the `sidecar.build` context next to this Dockerfile:
+
+```dockerfile
+FROM registry.access.redhat.com/ubi10/ubi-minimal:10.2
+COPY inspection-ca.pem /etc/pki/ca-trust/source/anchors/
+RUN update-ca-trust extract
+```
+
 ## Sidecar layout
 
 `agentcon run` with a `bouncer` section starts two containers and two networks.
@@ -406,6 +438,9 @@ docker network create agentcon-github-com-example-agentcon-deadbeef-ext
 
 Inspect each network for its subnet.
 Those CIDRs become `AGENT_NETWORK` and `MANAGEMENT_NETWORK` on the sidecar.
+
+Under [Docker-outside-of-Docker](../README.md#docker-outside-of-docker), `DOOD_NETWORK` takes the place of the external network.
+The sidecar then publishes no port, and the management API is at the sidecar's container name on port `8228`.
 
 ### Sidecar payload
 
@@ -450,6 +485,7 @@ docker cp sidecar.tar agentcon-github-com-example-agentcon-deadbeef-bouncer:/
 docker start agentcon-github-com-example-agentcon-deadbeef-bouncer
 ```
 
+Use your `sidecar` image in place of the stock image when one is configured.
 `serve` is PID 1.
 The container exits if serve exits.
 Do not pass credential values with `-e`.

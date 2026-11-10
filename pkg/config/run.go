@@ -60,7 +60,7 @@ func NewRunRequest(cfg *Config, flags RunFlags, cwd, home string) (run.Request, 
 		return run.Request{}, err
 	}
 
-	agentPull, sidecarPull, err := pullPolicies(agentName, agent, flags.Pull)
+	agentPull, sidecarPull, err := pullPolicies(agentName, agent, cfg.Sidecar, flags.Pull)
 	if err != nil {
 		return run.Request{}, err
 	}
@@ -71,6 +71,8 @@ func NewRunRequest(cfg *Config, flags RunFlags, cwd, home string) (run.Request, 
 	}
 
 	var setup *run.BouncerSetup
+	var sidecarImage string
+	var sidecarBuild *run.ImageBuild
 	if !flags.NoBouncer {
 		bouncerName := flags.Bouncer
 		if bouncerName == "" {
@@ -80,12 +82,18 @@ func NewRunRequest(cfg *Config, flags RunFlags, cwd, home string) (run.Request, 
 		if err != nil {
 			return run.Request{}, err
 		}
+		sidecarImage, sidecarBuild, err = cfg.resolveSidecarImage(home)
+		if err != nil {
+			return run.Request{}, err
+		}
 	}
 
 	return run.Request{
 		Image:             image,
 		Build:             build,
 		PullPolicy:        agentPull,
+		SidecarImage:      sidecarImage,
+		SidecarBuild:      sidecarBuild,
 		SidecarPullPolicy: sidecarPull,
 		Mounts:            mounts,
 		Root:              root,
@@ -98,15 +106,18 @@ func NewRunRequest(cfg *Config, flags RunFlags, cwd, home string) (run.Request, 
 }
 
 // pullPolicies resolves the agent and sidecar pull policies. The --pull
-// flag overrides the agent's pull_policy and also applies to the sidecar,
-// which otherwise pulls only when its image is missing.
-func pullPolicies(agentName string, agent AgentSpec, flag string) (run.PullPolicy, run.PullPolicy, error) {
+// flag overrides both pull_policy settings.
+func pullPolicies(agentName string, agent AgentSpec, sidecar SidecarSpec, flag string) (run.PullPolicy, run.PullPolicy, error) {
 	agentPull, err := run.ParsePullPolicy(agent.PullPolicy)
 	if err != nil {
 		return "", "", fmt.Errorf("agent %q pull_policy: %w", agentName, err)
 	}
+	sidecarPull, err := run.ParsePullPolicy(sidecar.PullPolicy)
+	if err != nil {
+		return "", "", fmt.Errorf("sidecar pull_policy: %w", err)
+	}
 	if flag == "" {
-		return agentPull, run.PullMissing, nil
+		return agentPull, sidecarPull, nil
 	}
 	p, err := run.ParsePullPolicy(flag)
 	if err != nil {
@@ -168,35 +179,49 @@ func (c *Config) resolveAgentImage(name string, agent AgentSpec, home string) (s
 	if agent.Image == "" && agent.Build == nil {
 		return "", nil, fmt.Errorf("agent %q requires image or build", name)
 	}
-	image := agent.Image
-	if image == "" {
-		image = agentImagePrefix + strings.ToLower(name)
+	return c.resolveImage(fmt.Sprintf("agent %q", name), agent.Image, agent.Build, agentImagePrefix+strings.ToLower(name), home)
+}
+
+// resolveSidecarImage returns an empty image and no build when the sidecar
+// is not configured, so run uses its stock image.
+func (c *Config) resolveSidecarImage(home string) (string, *run.ImageBuild, error) {
+	if c.Sidecar.Image == "" && c.Sidecar.Build == nil {
+		return "", nil, nil
 	}
-	if agent.Build == nil {
+	return c.resolveImage("sidecar", c.Sidecar.Image, c.Sidecar.Build, sidecarImageTag, home)
+}
+
+// resolveImage resolves an image and its optional build. A build without an
+// image is tagged defaultTag. owner prefixes errors.
+func (c *Config) resolveImage(owner, image string, build *BuildSpec, defaultTag, home string) (string, *run.ImageBuild, error) {
+	if image == "" {
+		image = defaultTag
+	}
+	if build == nil {
 		return image, nil, nil
 	}
-	if agent.Build.Context == "" {
-		return "", nil, fmt.Errorf("agent %q build.context is required", name)
+	if build.Context == "" {
+		return "", nil, fmt.Errorf("%s build.context is required", owner)
 	}
 	overlayDirs := []string{}
 	if c != nil {
 		overlayDirs = c.OverlayDirs
 	}
-	contextDir, err := resolveConfigDir(agent.Build.Context, home, overlayDirs)
+	contextDir, err := resolveConfigDir(build.Context, home, overlayDirs)
 	if err != nil {
-		return "", nil, fmt.Errorf("agent %q build.context: %w", name, err)
+		return "", nil, fmt.Errorf("%s build.context: %w", owner, err)
 	}
-	dockerfile := agent.Build.Dockerfile
+	dockerfile := build.Dockerfile
 	if dockerfile == "" {
 		dockerfile = defaultDockerfile
 	}
 	if filepath.IsAbs(dockerfile) || strings.HasPrefix(dockerfile, "~") {
-		return "", nil, fmt.Errorf("agent %q build.dockerfile must be relative to the build context", name)
+		return "", nil, fmt.Errorf("%s build.dockerfile must be relative to the build context", owner)
 	}
 	dockerfilePath := filepath.Join(contextDir, dockerfile)
 	_, err = os.Stat(dockerfilePath)
 	if err != nil {
-		return "", nil, fmt.Errorf("agent %q dockerfile %s: %w", name, dockerfile, err)
+		return "", nil, fmt.Errorf("%s dockerfile %s: %w", owner, dockerfile, err)
 	}
 	return image, &run.ImageBuild{
 		Context:    contextDir,

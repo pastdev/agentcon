@@ -143,7 +143,7 @@ agentcon run
 Omitting it uses `default_context`.
 Cwd must be at or under that `root`.
 `--agent` and `--bouncer` override the names on the context.
-`--pull` overrides `pull_policy` for one run and also applies to the bouncer sidecar image, which otherwise uses `missing`.
+`--pull` overrides every `pull_policy` for one run, including `sidecar.pull_policy`.
 
 The first start builds the image.
 Progress is logged at info:
@@ -223,6 +223,8 @@ It only creates a user and home, then starts a mock agent.
 ### When a bouncer is attached
 
 The sidecar is a separate image.
+It defaults to `registry.access.redhat.com/ubi10/ubi-minimal:10.2`, and `sidecar` replaces it.
+[Sidecar image](docs/bouncer.md#sidecar-image) has the fields.
 `run` still starts your agent image under this contract, then adds:
 
 - Proxy and CA environment (`HTTPS_PROXY`, `SSL_CERT_FILE`, `GIT_SSH_COMMAND`, `BOUNCER_*`, and related vars)
@@ -283,7 +285,37 @@ Leftover paths on an intercepted host do not get the credential.
 `agentcon run` asks for the Bitwarden master password at its terminal when that source is used.
 Answer an `ask` rule with `agentcon bouncer approve` from the project directory.
 
+On a network that inspects TLS, the sidecar needs the inspection CA in its image.
+[Trusting a TLS inspection CA](docs/bouncer.md#trusting-a-tls-inspection-ca) shows the Dockerfile.
+
 Policy shape, credentials, sessions, and the sidecar layout are in [docs/bouncer.md](docs/bouncer.md).
+
+## Docker-outside-of-Docker
+
+`agentcon run` can itself run inside a container that drives the host's Docker daemon.
+Two kinds of environment variables describe that setup.
+Without them, `run` assumes it shares a host with the daemon.
+
+- `DOOD_NETWORK=<network>` names a Docker network the calling container is attached to.
+  Its presence means `agentcon` runs inside a container, and that network has egress to the internet.
+- `DOOD_MOUNT_<NAME>=<volume>:<path>` says that `<path>` inside the calling container is the Docker volume `<volume>`.
+  Set any number of them.
+  `<NAME>` is only a label.
+
+With any `DOOD_MOUNT_*` set, `run` translates every bind source before it creates a container.
+That covers the context `root`, `agents.<name>.mounts`, and the sidecar's `SSH_AUTH_SOCK`.
+A source at or under a `<path>` becomes a mount of `<volume>` with the matching subpath.
+The longest matching `<path>` wins.
+A source under no `<path>` fails with its name, because the Docker host cannot resolve it.
+Volume subpaths need Docker Engine 26 or later.
+Build contexts are read by `agentcon` and sent to the daemon, so they need no translation.
+
+With `DOOD_NETWORK` set, the bouncer sidecar uses it as its external network instead of a network `run` creates.
+`run` publishes no host port and reaches the sidecar by container name on that network.
+`agentcon bouncer` commands in the same container reach it the same way.
+The agent stays on the internal agent network only.
+`run` refuses a `DOOD_NETWORK` that is marked internal, because the sidecar would have no egress.
+Other containers on `DOOD_NETWORK` can reach the sidecar's management port, though they still need its admin token.
 
 ## See also
 

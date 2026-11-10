@@ -31,6 +31,32 @@ func ParsePullPolicy(s string) (PullPolicy, error) {
 	return "", fmt.Errorf("unknown pull policy %q (want missing, always, or never)", s)
 }
 
+// prepareImage builds build when it is set, refreshing its base images under
+// PullAlways. Otherwise it makes image available as policy allows.
+func prepareImage(
+	ctx context.Context,
+	rt container.Runtime,
+	image string,
+	build *ImageBuild,
+	policy PullPolicy,
+	out io.Writer,
+) error {
+	if build == nil {
+		return ensureImage(ctx, rt, image, policy, out)
+	}
+	err := rt.Build(ctx, container.Build{
+		Context:    build.Context,
+		Dockerfile: build.Dockerfile,
+		Tags:       build.Tags,
+		Output:     out,
+		PullParent: policy == PullAlways,
+	})
+	if err != nil {
+		return fmt.Errorf("build: %w", err)
+	}
+	return nil
+}
+
 // ensureImage makes image available locally as policy allows. An empty
 // policy is PullMissing.
 func ensureImage(ctx context.Context, rt container.Runtime, image string, policy PullPolicy, out io.Writer) error {

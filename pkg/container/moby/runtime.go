@@ -150,6 +150,15 @@ func New() (*Runtime, error) {
 func mounts(in []container.Mount) []mount.Mount {
 	out := make([]mount.Mount, 0, len(in))
 	for _, m := range in {
+		if m.Volume != "" {
+			out = append(out, mount.Mount{
+				Type:          mount.TypeVolume,
+				Source:        m.Volume,
+				Target:        m.Target,
+				VolumeOptions: &mount.VolumeOptions{Subpath: m.Subpath},
+			})
+			continue
+		}
 		out = append(out, mount.Mount{
 			Type:   mount.TypeBind,
 			Source: m.Source,
