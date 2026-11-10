@@ -303,6 +303,7 @@ func TestWithSSHAuthSock(t *testing.T) {
 func containerSpecEnvOnly() container.Spec {
 	return bouncerSidecarSpec(
 		Request{Image: testImage, User: testUser},
+		sidecarImage,
 		nil,
 		externalNet{name: "ext-net", subnet: "10.2.0.0/16", hostPort: 18228, controlAddr: "127.0.0.1:18228"},
 		"agent-net",

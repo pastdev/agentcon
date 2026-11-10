@@ -62,6 +62,7 @@ type Config struct {
 	Agents         map[string]AgentSpec          `json:"agents,omitempty" yaml:"agents,omitempty"`
 	Bouncers       map[string]*bouncercfg.Config `json:"bouncers,omitempty" yaml:"bouncers,omitempty"`
 	Contexts       map[string]ContextSpec        `json:"contexts" yaml:"contexts"`
+	Sidecar        SidecarSpec                   `json:"sidecar,omitempty" yaml:"sidecar,omitempty"`
 	OverlayDirs    []string                      `json:"-" yaml:"-"`
 }
 
@@ -87,6 +88,13 @@ type BuildSpec struct {
 type MountSpec struct {
 	Source string `json:"source" yaml:"source"`
 	Target string `json:"target" yaml:"target"`
+}
+
+// SidecarSpec configures the bouncer sidecar container that run starts.
+type SidecarSpec struct {
+	// CAFiles are PEM certificate files added to the sidecar's system trust.
+	// A path is relative to the host home unless it is absolute or starts with ~.
+	CAFiles []string `json:"ca_files,omitempty" yaml:"ca_files,omitempty"`
 }
 
 // ContextSpec binds an agent, a workspace root, and an optional bouncer.

@@ -84,6 +84,9 @@ type Request struct {
 	PullPolicy PullPolicy
 	// SidecarPullPolicy governs the bouncer sidecar image. Empty is PullMissing.
 	SidecarPullPolicy PullPolicy
+	// SidecarCAFiles are PEM certificate files added to the bouncer sidecar's
+	// system trust. When set, the sidecar runs a derived image built from them.
+	SidecarCAFiles []string
 	// SidecarEnv is extra NAME=value pairs for source: env credentials.
 	// They overlay the host environment and are PUT to the sidecar after serve is up.
 	// They are not passed as container environment variables.
