@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/creds"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,6 +40,21 @@ func (b *fakeBackend) Profile(name string) (*policy.Profile, bool) {
 	return p, ok
 }
 func (b *fakeBackend) Control() http.Handler { return http.NotFoundHandler() }
+
+// entryWriter decodes each logged audit event back into an Entry.
+type entryWriter struct {
+	entries *[]audit.Entry
+}
+
+func (w entryWriter) Write(p []byte) (int, error) {
+	var en audit.Entry
+	err := json.Unmarshal(p, &en)
+	if err != nil {
+		return 0, err //nolint:wrapcheck // test helper
+	}
+	*w.entries = append(*w.entries, en)
+	return len(p), nil
+}
 
 type env struct {
 	upstream *httptest.Server
@@ -86,8 +103,7 @@ profiles:
 	require.NoError(t, err)
 	tr := NewTransport()
 	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test upstream uses a self-signed certificate
-	log, err := audit.Open("", func(en audit.Entry) { e.audit = append(e.audit, en) })
-	require.NoError(t, err)
+	log := audit.New(zerolog.New(entryWriter{&e.audit}))
 	e.backend = &fakeBackend{set: set, sessions: map[string]*chain.Session{"tok123": {ID: "s1", Profile: "p"}}}
 	srv := &Server{
 		Backend:   e.backend,

@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/pastdev/agentcon/internal/bouncer/audit"
 	"github.com/pastdev/agentcon/internal/bouncer/ca"
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
@@ -44,7 +46,7 @@ type Server struct {
 	Audit     *audit.Log
 	Transport http.RoundTripper
 	Dialer    *net.Dialer
-	Logf      func(format string, args ...any)
+	Log       zerolog.Logger
 	// DisableControl keeps /_bouncer/ off the agent-facing proxy so the
 	// management API can listen on a different address.
 	DisableControl bool
@@ -65,12 +67,6 @@ func NewTransport() *http.Transport {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: time.Second,
-	}
-}
-
-func (s *Server) logf(format string, args ...any) {
-	if s.Logf != nil {
-		s.Logf(format, args...)
 	}
 }
 
@@ -204,7 +200,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err := tlsConn.HandshakeContext(r.Context()); err != nil {
-		s.logf("TLS handshake with client for %s failed (does it trust the bouncer CA?): %v", host, err)
+		s.Log.Warn().Err(err).Str("host", host).Msg("TLS handshake with client failed (does it trust the bouncer CA?)")
 		_ = tlsConn.Close()
 		return
 	}

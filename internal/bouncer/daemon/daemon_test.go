@@ -341,7 +341,7 @@ func TestStartupStatus(t *testing.T) {
 		err := os.WriteFile(cfg, []byte(config), 0o600)
 		require.NoError(t, err)
 		state := filepath.Join(dir, "state")
-		d, err := New(Options{ConfigPath: cfg, StateDir: state, Logf: func(string, ...any) {}})
+		d, err := New(Options{ConfigPath: cfg, StateDir: state})
 		require.NoError(t, err)
 		token, err := os.ReadFile(AdminTokenPath(state))
 		require.NoError(t, err)

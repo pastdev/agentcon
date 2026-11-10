@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -110,7 +111,7 @@ func TestGet(t *testing.T) {
 			http.Error(w, "nope", http.StatusInternalServerError)
 		}))
 		t.Cleanup(srv.Close)
-		ConfigureBitwarden(t.TempDir(), nil, prompt.NewBroker(time.Minute))
+		ConfigureBitwarden(t.TempDir(), zerolog.Nop(), prompt.NewBroker(time.Minute))
 		s := NewStore(map[string]*config.Credential{"bw": tokenCred("bw", config.ValueSource{
 			Source: "bitwarden", Email: "user@example.com", Server: srv.URL, Item: "GitLab", Path: "$.login.password",
 		})})

@@ -39,7 +39,7 @@ func (s *Server) forwarder(svc *policy.Service, origLength int64) chain.Handler 
 				if err != nil {
 					// Source errors can carry password-manager output; keep them
 					// in the daemon log, not in the agent's response.
-					s.logf("credential for service %s: %v", svc.Config.Name, err)
+					s.Log.Warn().Err(err).Str("service", svc.Config.Name).Msg("credential unavailable")
 					return synthetic(http.StatusBadGateway, "agent-bouncer: credential for "+svc.Config.Name+" is unavailable; see the bouncer log"), nil
 				}
 				Inject(header, &u, name, spec, secret)

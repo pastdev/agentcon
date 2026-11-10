@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/pastdev/agentcon/internal/bouncer/audit"
@@ -158,7 +159,7 @@ profiles:
 	set, err := policy.Compile(cfg, &chain.Env{}, nil)
 	require.NoError(t, err)
 	authority, _ := ca.LoadOrCreate(filepath.Join(dir, "state"))
-	log, _ := audit.Open("", nil)
+	log := audit.New(zerolog.Nop())
 	revoked := new(bool)
 	srv := &Server{Backend: backend{set: set, revoked: revoked}, CA: authority, Creds: creds.NewStore(cfg.Credentials), Audit: log}
 	l, _ := net.Listen("tcp", "127.0.0.1:0")

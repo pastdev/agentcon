@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
@@ -146,7 +147,11 @@ func RunFile(path string) ([]Result, error) {
 	logs := &bytes.Buffer{}
 	env := &chain.Env{
 		Approver: approver,
-		Log:      func(f, m string, _ map[string]any) { fmt.Fprintf(logs, "[%s] %s\n", f, m) },
+		Log: zerolog.New(zerolog.ConsoleWriter{
+			Out:        logs,
+			NoColor:    true,
+			PartsOrder: []string{zerolog.LevelFieldName, zerolog.MessageFieldName},
+		}),
 		Resolver: func(_ context.Context, _, _, p string) (int64, error) {
 			if id, ok := spec.GitLabProjectIDs[p]; ok {
 				return id, nil

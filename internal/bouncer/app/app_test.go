@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/pastdev/agentcon/internal/bouncer/audit"
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
@@ -40,29 +39,5 @@ profiles:
 		cfg, err := bouncercfg.Load(path)
 		require.NoError(t, err)
 		tester(t, testCase{cfg: cfg, wantPath: cfg.Path, wantProfile: "default"})
-	})
-}
-
-func TestFormatDecision(t *testing.T) {
-	type testCase struct {
-		entry audit.Entry
-	}
-	tester := func(t *testing.T, tc testCase) {
-		t.Helper()
-		got := FormatDecision(tc.entry)
-		assert.Contains(t, got, "DENY")
-		assert.Contains(t, got, "blocked")
-	}
-
-	t.Run("includes the decision and reason", func(t *testing.T) {
-		tester(t, testCase{
-			entry: audit.Entry{
-				Decision: "deny",
-				Label:    "agent",
-				Request:  "GET https://example",
-				By:       "filter",
-				Reason:   "blocked",
-			},
-		})
 	})
 }

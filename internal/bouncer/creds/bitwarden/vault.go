@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/rs/zerolog"
 )
 
 // Account is one Bitwarden login. Vaults for the same email and server
@@ -42,7 +44,7 @@ type Options struct {
 	// StateDir stores the device id and refresh token (mode 0600).
 	// The decrypted vault is never written.
 	StateDir string
-	Logf     func(string, ...any)
+	Log      zerolog.Logger
 	// Prompt asks for master passwords and verification codes. It is fixed
 	// for the life of the set. Nil means only password_env can unlock.
 	Prompt Prompter
@@ -52,7 +54,7 @@ type Options struct {
 // memory until the process exits; nothing relocks it.
 type Vaults struct {
 	stateDir string
-	logf     func(string, ...any)
+	log      zerolog.Logger
 	prompt   Prompter
 	api      *api
 
@@ -111,9 +113,7 @@ func current() *Vaults {
 	globalMu.Lock()
 	defer globalMu.Unlock()
 	if global == nil {
-		global = New(Options{Logf: func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, format+"\n", args...)
-		}})
+		global = New(Options{})
 	}
 	return global
 }
@@ -136,13 +136,9 @@ func ItemJSON(ctx context.Context, q Query) ([]byte, error) {
 
 // New returns a vault set that does not share process-wide state.
 func New(opt Options) *Vaults {
-	logf := opt.Logf
-	if logf == nil {
-		logf = func(string, ...any) {}
-	}
 	return &Vaults{
 		stateDir: opt.StateDir,
-		logf:     logf,
+		log:      opt.Log,
 		prompt:   opt.Prompt,
 		api:      newAPI(nil),
 		slots:    map[string]*slot{},
@@ -262,7 +258,7 @@ func (v *Vaults) unlock(ctx context.Context, a Account) (*unlocked, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bitwarden: %w", err)
 	}
-	v.logf("bitwarden: unlocking vault for %s", a.label())
+	v.log.Info().Str("account", a.label()).Msg("unlocking vault")
 	kdf, err := v.api.prelogin(ctx, identityBase, email)
 	if err != nil {
 		return nil, fmt.Errorf("bitwarden: %w", err)
@@ -319,7 +315,7 @@ func (v *Vaults) unlock(ctx context.Context, a Account) (*unlocked, error) {
 				clear(id.passwordHash)
 				if errors.Is(lerr, errBadPassword) && attempt < attempts {
 					lastErr = lerr
-					v.logf("bitwarden: %s (attempt %d/%d)", lerr.Error(), attempt, attempts)
+					v.log.Warn().Err(lerr).Str("account", a.label()).Int("attempt", attempt).Int("attempts", attempts).Msg("login failed")
 					continue
 				}
 				return nil, fmt.Errorf("bitwarden: %w", lerr)
@@ -340,7 +336,7 @@ func (v *Vaults) unlock(ctx context.Context, a Account) (*unlocked, error) {
 		if oerr != nil {
 			if fromRefresh && errors.Is(oerr, errBadMAC) && attempt < attempts {
 				lastErr = errBadPassword
-				v.logf("bitwarden: incorrect master password for %s (attempt %d/%d)", a.label(), attempt, attempts)
+				v.log.Warn().Str("account", a.label()).Int("attempt", attempt).Int("attempts", attempts).Msg("incorrect master password")
 				continue
 			}
 			if errors.Is(oerr, errBadMAC) {
@@ -350,7 +346,7 @@ func (v *Vaults) unlock(ctx context.Context, a Account) (*unlocked, error) {
 		}
 		st.RefreshToken = refresh
 		v.saveState(email, apiBase, st)
-		v.logf("bitwarden: unlocked vault for %s (%d items)", a.label(), len(opened.entries))
+		v.log.Info().Str("account", a.label()).Int("items", len(opened.entries)).Msg("unlocked vault")
 		return opened, nil
 	}
 	if lastErr == nil {
@@ -756,16 +752,16 @@ func (v *Vaults) saveState(email, apiBase string, st accountState) {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		v.logf("bitwarden: saving device state: %v", err)
+		v.log.Error().Err(err).Msg("save device state")
 		return
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		v.logf("bitwarden: saving device state: %v", err)
+		v.log.Error().Err(err).Msg("save device state")
 		return
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		v.logf("bitwarden: saving device state: %v", err)
+		v.log.Error().Err(err).Msg("save device state")
 	}
 }
 

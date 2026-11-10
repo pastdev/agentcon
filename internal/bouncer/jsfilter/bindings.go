@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/dop251/goja"
+	"github.com/rs/zerolog"
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
 )
@@ -65,7 +66,7 @@ func (i *instance) installHost() error {
 		req := i.cur
 		env := i.f.opts.Env
 		if req == nil || env.Approver == nil {
-			i.log("ask() denied: no approver configured", nil)
+			i.log(zerolog.WarnLevel, "ask() denied: no approver configured", nil)
 			return i.resolved(vm.ToValue(false))
 		}
 		ctx := req.Ctx
@@ -78,7 +79,7 @@ func (i *instance) installHost() error {
 		ok, err := env.Approver.Ask(ctx, chain.AskRequest{Session: req.Session, Filter: i.f.name, Prompt: prompt, Key: key, Request: req.Describe()})
 		i.wd.resume()
 		if err != nil {
-			i.log("ask() failed: "+err.Error(), nil)
+			i.log(zerolog.WarnLevel, "ask() failed: "+err.Error(), nil)
 		}
 		return i.resolved(vm.ToValue(ok))
 	})
@@ -111,7 +112,7 @@ func (i *instance) installHost() error {
 		if o, ok := call.Argument(1).(*goja.Object); ok {
 			fields, _ = o.Export().(map[string]any)
 		}
-		i.log(call.Argument(0).String(), fields)
+		i.log(zerolog.InfoLevel, call.Argument(0).String(), fields)
 		return goja.Undefined()
 	})
 
@@ -167,22 +168,30 @@ func (i *instance) installHost() error {
 		return fmt.Errorf("bouncer host: %w", err)
 	}
 	console := vm.NewObject()
-	logFn := func(call goja.FunctionCall) goja.Value {
-		parts := make([]string, len(call.Arguments))
-		for j, a := range call.Arguments {
-			if o, ok := a.(*goja.Object); ok && o.ClassName() != "Function" {
-				if s, err := i.jsonStr(goja.Undefined(), a); err == nil && !goja.IsUndefined(s) {
-					parts[j] = s.String()
-					continue
+	logAt := func(level zerolog.Level) func(goja.FunctionCall) goja.Value {
+		return func(call goja.FunctionCall) goja.Value {
+			parts := make([]string, len(call.Arguments))
+			for j, a := range call.Arguments {
+				if o, ok := a.(*goja.Object); ok && o.ClassName() != "Function" {
+					if s, err := i.jsonStr(goja.Undefined(), a); err == nil && !goja.IsUndefined(s) {
+						parts[j] = s.String()
+						continue
+					}
 				}
+				parts[j] = a.String()
 			}
-			parts[j] = a.String()
+			i.log(level, strings.Join(parts, " "), nil)
+			return goja.Undefined()
 		}
-		i.log(strings.Join(parts, " "), nil)
-		return goja.Undefined()
 	}
-	for _, n := range []string{"log", "info", "warn", "error", "debug"} {
-		console.Set(n, logFn)
+	for n, level := range map[string]zerolog.Level{
+		"debug": zerolog.DebugLevel,
+		"log":   zerolog.InfoLevel,
+		"info":  zerolog.InfoLevel,
+		"warn":  zerolog.WarnLevel,
+		"error": zerolog.ErrorLevel,
+	} {
+		console.Set(n, logAt(level))
 	}
 	err := vm.Set("console", console)
 	if err != nil {
@@ -191,10 +200,8 @@ func (i *instance) installHost() error {
 	return nil
 }
 
-func (i *instance) log(msg string, fields map[string]any) {
-	if l := i.f.opts.Env.Log; l != nil {
-		l(i.f.name, msg, fields)
-	}
+func (i *instance) log(level zerolog.Level, msg string, fields map[string]any) {
+	i.f.opts.Env.Log.WithLevel(level).Str("filter", i.f.name).Fields(fields).Msg(msg)
 }
 
 // context is the third argument to hooks.

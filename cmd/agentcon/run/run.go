@@ -7,6 +7,7 @@ import (
 
 	pkgcfg "github.com/pastdev/agentcon/pkg/config"
 	"github.com/pastdev/agentcon/pkg/container/moby"
+	"github.com/pastdev/agentcon/pkg/log"
 	pkgrun "github.com/pastdev/agentcon/pkg/run"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -94,6 +95,8 @@ func execute(
 	req.Stdout = cmd.OutOrStdout()
 	req.Stderr = cmd.ErrOrStderr()
 	req.Runtime = runtime
+	logs := log.Current()
+	req.SidecarLog = pkgrun.SidecarLog{Bouncer: logs.Bouncer, Audit: logs.Audit, Format: logs.Format}
 
 	err = pkgrun.Run(cmd.Context(), req)
 	if err != nil {

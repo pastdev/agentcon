@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
@@ -74,15 +75,9 @@ type Server struct {
 	CA      *ca.Authority
 	Creds   *creds.Store
 	Audit   *audit.Log
-	Logf    func(format string, args ...any)
+	Log     zerolog.Logger
 	// Dial connects to upstream hosts; defaults to a 30s-timeout TCP dial.
 	Dial func(network, addr string) (net.Conn, error)
-}
-
-func (s *Server) logf(format string, args ...any) {
-	if s.Logf != nil {
-		s.Logf(format, args...)
-	}
 }
 
 // Serve accepts connections until l is closed.
@@ -150,14 +145,14 @@ func (s *Server) handle(c net.Conn) {
 
 	signer, err := s.CA.SSHHostSigner(cn.host)
 	if err != nil {
-		s.logf("ssh host cert for %s: %v", cn.host, err)
+		s.Log.Warn().Err(err).Str("host", cn.host).Msg("ssh host cert")
 		return
 	}
 	cfg := &ssh.ServerConfig{NoClientAuth: true, ServerVersion: "SSH-2.0-agent-bouncer"}
 	cfg.AddHostKey(signer)
 	sc, chans, reqs, err := ssh.NewServerConn(&bufConn{Conn: c, r: br}, cfg)
 	if err != nil {
-		s.logf("ssh handshake with agent for %s failed (is it using the bouncer known_hosts?): %v", cn.host, err)
+		s.Log.Warn().Err(err).Str("host", cn.host).Msg("ssh handshake with agent failed (is it using the bouncer known_hosts?)")
 		return
 	}
 	defer func() { _ = sc.Close() }()

@@ -1,14 +1,11 @@
-// Package audit writes one JSON line per policy decision.
+// Package audit logs one event per policy decision.
 package audit
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"sync"
-	"time"
+	"strings"
+
+	"github.com/rs/zerolog"
 )
 
 // Decisions recorded on an Entry.
@@ -19,70 +16,84 @@ const (
 	DecisionError  = "error"
 )
 
-// Entry is one audit record.
+// Entry is one audit record. Its JSON names match the logged fields.
 type Entry struct {
-	Time       time.Time `json:"ts"`
-	Session    string    `json:"session,omitempty"`
-	Label      string    `json:"label,omitempty"`
-	Profile    string    `json:"profile,omitempty"`
-	Transport  string    `json:"transport"`
-	Service    string    `json:"service,omitempty"`
-	Request    string    `json:"request"`
-	Decision   string    `json:"decision"` // one of the Decision* constants
-	By         string    `json:"by,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
-	Status     int       `json:"status,omitempty"`
-	DurationMS int64     `json:"duration_ms"`
+	Session    string `json:"session,omitempty"`
+	Label      string `json:"label,omitempty"`
+	Profile    string `json:"profile,omitempty"`
+	Transport  string `json:"transport"`
+	Service    string `json:"service,omitempty"`
+	Request    string `json:"request"`
+	Decision   string `json:"decision"` // one of the Decision* constants
+	By         string `json:"by,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Status     int    `json:"status,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
 }
 
-// Log appends entries to a file and optionally mirrors a summary elsewhere.
+// Log writes entries to a logger.
 type Log struct {
-	mu     sync.Mutex
-	w      io.WriteCloser
-	mirror func(Entry)
+	log zerolog.Logger
 }
 
-// Open appends to path. An empty path discards entries.
-func Open(path string, mirror func(Entry)) (*Log, error) {
-	l := &Log{mirror: mirror}
-	if path == "" {
-		return l, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("audit dir: %w", err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // path from operator config or the state dir, not the agent
-	if err != nil {
-		return nil, fmt.Errorf("audit log: %w", err)
-	}
-	l.w = f
-	return l, nil
+// New logs entries to log.
+func New(log zerolog.Logger) *Log {
+	return &Log{log: log}
 }
 
+// Write logs e at the level of its decision, with the summary as the
+// message.
 func (l *Log) Write(e Entry) {
-	if e.Time.IsZero() {
-		e.Time = time.Now()
+	ev := l.log.WithLevel(level(e.Decision))
+	str := func(key, value string) {
+		if value != "" {
+			ev.Str(key, value)
+		}
 	}
-	if l.mirror != nil {
-		l.mirror(e)
+	str("session", e.Session)
+	str("label", e.Label)
+	str("profile", e.Profile)
+	ev.Str("transport", e.Transport)
+	str("service", e.Service)
+	ev.Str("request", e.Request)
+	ev.Str("decision", e.Decision)
+	str("by", e.By)
+	str("reason", e.Reason)
+	if e.Status != 0 {
+		ev.Int("status", e.Status)
 	}
-	if l.w == nil {
-		return
-	}
-	b, _ := json.Marshal(e)
-	l.mu.Lock()
-	// A failed audit write must not fail the request it describes.
-	_, _ = l.w.Write(append(b, '\n'))
-	l.mu.Unlock()
+	ev.Int64("duration_ms", e.DurationMS)
+	ev.Msg(Summary(e))
 }
 
-func (l *Log) Close() error {
-	if l.w == nil {
-		return nil
+func level(decision string) zerolog.Level {
+	switch decision {
+	case DecisionTunnel:
+		return zerolog.DebugLevel
+	case DecisionDeny:
+		return zerolog.WarnLevel
+	case DecisionError:
+		return zerolog.ErrorLevel
+	default:
+		return zerolog.InfoLevel
 	}
-	err := l.w.Close()
-	if err != nil {
-		return fmt.Errorf("audit log: %w", err)
+}
+
+// Summary is the one-line message for an entry.
+func Summary(e Entry) string {
+	who := e.Label
+	if who == "" {
+		who = e.Session
 	}
-	return nil
+	s := fmt.Sprintf("%-6s [%s] %s", strings.ToUpper(e.Decision), who, e.Request)
+	if e.Status != 0 && e.Decision == DecisionAllow {
+		s += fmt.Sprintf(" -> %d", e.Status)
+	}
+	switch {
+	case e.Decision == DecisionDeny || e.Decision == DecisionError:
+		s += fmt.Sprintf("  (%s: %s)", e.By, e.Reason)
+	case e.By != "":
+		s += fmt.Sprintf("  (%s)", e.By)
+	}
+	return s
 }

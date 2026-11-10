@@ -1,6 +1,7 @@
 package run
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -112,7 +113,11 @@ func TestParseEnvPairs(t *testing.T) {
 }
 
 func TestBouncerSidecarSpec(t *testing.T) {
-	tester := func(t *testing.T) {
+	type testCase struct {
+		log      SidecarLog
+		wantArgs []string
+	}
+	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		spec := bouncerSidecarSpec(
 			Request{
@@ -123,6 +128,7 @@ func TestBouncerSidecarSpec(t *testing.T) {
 				Slug:              testSlug,
 				SidecarExtraHosts: []string{testExtraHost},
 				SidecarEnv:        []string{"SMOKE_TOKEN=should-not-appear"},
+				SidecarLog:        tc.log,
 			},
 			sidecarImage,
 			map[string]string{labelRole: roleBouncer},
@@ -133,8 +139,7 @@ func TestBouncerSidecarSpec(t *testing.T) {
 		assert.Equal(t, "agentcon-github-com-pastdev-agentcon-deadbeef-bouncer", spec.Name)
 		assert.Equal(t, sidecarImage, spec.Image)
 		assert.Equal(t, []string{sidecarBinPath}, spec.Entrypoint)
-		require.GreaterOrEqual(t, len(spec.Args), 2)
-		assert.Equal(t, []string{roleBouncer, "serve"}, spec.Args[:2])
+		assert.Equal(t, tc.wantArgs, spec.Args)
 		assert.Equal(t, []string{testExtraHost}, spec.ExtraHosts)
 		assert.Equal(t, []string{"ext-net", "agent-net"}, spec.Networks)
 		require.NotEmpty(t, spec.Ports)
@@ -155,8 +160,16 @@ func TestBouncerSidecarSpec(t *testing.T) {
 		assert.Subset(t, got, want)
 	}
 
+	serve := []string{roleBouncer, "serve", "--file", sidecarConfigPath, "--state-dir", sidecarStatePath}
 	t.Run("uses serve as pid 1 and omits secrets", func(t *testing.T) {
-		tester(t)
+		tester(t, testCase{wantArgs: serve})
+	})
+	t.Run("forwards log settings", func(t *testing.T) {
+		tester(t, testCase{
+			log: SidecarLog{Bouncer: "debug", Audit: "warn", Format: "json"},
+			wantArgs: append(slices.Clone(serve),
+				"--log", "bouncer=debug", "--log", "audit=warn", "--log-format", "json"),
+		})
 	})
 }
 

@@ -52,6 +52,13 @@ type ImageBuild struct {
 	Tags       []string
 }
 
+// SidecarLog is how the bouncer in the sidecar logs.
+type SidecarLog struct {
+	Bouncer string
+	Audit   string
+	Format  string
+}
+
 type Request struct {
 	Image   string
 	Build   *ImageBuild
@@ -88,6 +95,9 @@ type Request struct {
 	SidecarBuild *ImageBuild
 	// SidecarPullPolicy governs the bouncer sidecar image. Empty is PullMissing.
 	SidecarPullPolicy PullPolicy
+	// SidecarLog sets the bouncer and audit levels and the log format in the
+	// sidecar, as --log and --log-format take them. Empty keeps its default.
+	SidecarLog SidecarLog
 	// SidecarEnv is extra NAME=value pairs for source: env credentials.
 	// They overlay the host environment and are PUT to the sidecar after serve is up.
 	// They are not passed as container environment variables.

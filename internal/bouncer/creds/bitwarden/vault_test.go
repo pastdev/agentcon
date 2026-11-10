@@ -1,6 +1,7 @@
 package bitwarden
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -383,7 +385,8 @@ func TestGet(t *testing.T) {
 	t.Run("retries a wrong password", func(t *testing.T) {
 		srv, fake := startVault(t, false)
 		p := &memPrompt{passwords: []string{"nope", testPassword}}
-		v := New(Options{StateDir: t.TempDir(), Prompt: p})
+		var logs bytes.Buffer
+		v := New(Options{StateDir: t.TempDir(), Prompt: p, Log: zerolog.New(&logs)})
 		tester(t, testCase{
 			v: v,
 			q: Query{
@@ -393,6 +396,22 @@ func TestGet(t *testing.T) {
 			want: "gl-token",
 		})
 		assert.Equal(t, 2, p.nPass, "prompts")
+		type line struct {
+			Level   string `json:"level"`
+			Message string `json:"message"`
+			Attempt int    `json:"attempt"`
+		}
+		var got []line
+		for _, raw := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+			var l line
+			require.NoError(t, json.Unmarshal([]byte(raw), &l))
+			got = append(got, l)
+		}
+		assert.Equal(t, []line{
+			{Level: "info", Message: "unlocking vault"},
+			{Level: "warn", Message: "login failed", Attempt: 1},
+			{Level: "info", Message: "unlocked vault"},
+		}, got)
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		assert.Equal(t, 2, fake.logins, "logins")

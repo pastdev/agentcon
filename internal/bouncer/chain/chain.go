@@ -3,6 +3,8 @@ package chain
 import (
 	"context"
 	"fmt"
+
+	"github.com/rs/zerolog"
 )
 
 // Handler processes a request, typically by calling the rest of the chain.
@@ -33,16 +35,14 @@ type AskRequest struct {
 	Request string
 }
 
-// Logger receives filter log output.
-type Logger func(filter, msg string, fields map[string]any)
-
 // ProjectResolver maps a GitLab project path to its numeric ID on a host.
 type ProjectResolver func(ctx context.Context, service, host, project string) (int64, error)
 
 // Env is shared by every filter in a daemon.
 type Env struct {
 	Approver Approver
-	Log      Logger
+	// Log receives filter log output. Each line names its filter.
+	Log      zerolog.Logger
 	Resolver ProjectResolver
 	// Credential returns a named secret. Filters are trusted; the request
 	// object still does not carry secrets unless a filter puts one in a
