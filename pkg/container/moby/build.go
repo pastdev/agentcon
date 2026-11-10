@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,7 +29,7 @@ const (
 )
 
 func (r *Runtime) Build(ctx context.Context, spec container.Build) error {
-	if spec.Context == "" {
+	if spec.Context == "" && spec.Files == nil {
 		return fmt.Errorf("build context is required")
 	}
 	out := spec.Output
@@ -46,7 +47,12 @@ func (r *Runtime) Build(ctx context.Context, spec container.Build) error {
 		dockerfile = defaultDockerfile
 	}
 
-	archive, err := tarDirectory(spec.Context)
+	var archive io.Reader
+	if spec.Files != nil {
+		archive, err = tarFiles(spec.Files)
+	} else {
+		archive, err = tarDirectory(spec.Context)
+	}
 	if err != nil {
 		return fmt.Errorf("pack build context: %w", err)
 	}
@@ -75,6 +81,39 @@ func buildTagSummary(tags []string) string {
 		return "image"
 	}
 	return strings.Join(tags, ", ")
+}
+
+// tarFiles packs an in-memory build context. Names are sorted and headers
+// fixed, so the same files always produce the same archive.
+func tarFiles(files map[string][]byte) (io.Reader, error) {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	buf := &bytes.Buffer{}
+	tw := tar.NewWriter(buf)
+	for _, name := range names {
+		data := files[name]
+		err := tw.WriteHeader(&tar.Header{
+			Name:     filepath.ToSlash(name),
+			Mode:     0o644,
+			Size:     int64(len(data)),
+			Typeflag: tar.TypeReg,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("tar header %s: %w", name, err)
+		}
+		_, err = tw.Write(data)
+		if err != nil {
+			return nil, fmt.Errorf("tar %s: %w", name, err)
+		}
+	}
+	err := tw.Close()
+	if err != nil {
+		return nil, fmt.Errorf("close tar: %w", err)
+	}
+	return buf, nil
 }
 
 func tarDirectory(root string) (io.Reader, error) {

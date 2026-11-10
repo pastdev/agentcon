@@ -98,7 +98,10 @@ type Spec struct {
 }
 
 type Build struct {
-	Context    string
+	Context string
+	// Files, when set, is the whole build context, held in memory by
+	// relative path, and Context is ignored.
+	Files      map[string][]byte
 	Dockerfile string
 	Tags       []string
 	Output     io.Writer

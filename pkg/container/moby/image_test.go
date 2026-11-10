@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
 	"strings"
@@ -25,6 +26,7 @@ type fakeAPI struct {
 	pullBody   string
 	pulled     string
 	buildOpts  client.ImageBuildOptions
+	buildTar   []byte
 	network    network.Inspect
 }
 
@@ -40,8 +42,13 @@ func (f *fakeAPI) ImagePull(_ context.Context, ref string, _ client.ImagePullOpt
 	return fakePull{io.NopCloser(strings.NewReader(f.pullBody))}, nil
 }
 
-func (f *fakeAPI) ImageBuild(_ context.Context, _ io.Reader, opts client.ImageBuildOptions) (client.ImageBuildResult, error) {
+func (f *fakeAPI) ImageBuild(_ context.Context, buildContext io.Reader, opts client.ImageBuildOptions) (client.ImageBuildResult, error) {
 	f.buildOpts = opts
+	b, err := io.ReadAll(buildContext)
+	if err != nil {
+		return client.ImageBuildResult{}, fmt.Errorf("read build context: %w", err)
+	}
+	f.buildTar = b
 	return client.ImageBuildResult{Body: io.NopCloser(strings.NewReader(""))}, nil
 }
 
@@ -140,6 +147,22 @@ func TestPull(t *testing.T) {
 	t.Run("does not blame credentials for other failures", func(t *testing.T) {
 		tester(t, testCase{pullErr: errors.New("connection refused"), wantErr: "connection refused"})
 	})
+}
+
+func TestBuildInMemoryContext(t *testing.T) {
+	f := &fakeAPI{}
+	r := &Runtime{api: f}
+	err := r.Build(context.Background(), container.Build{
+		Files:  map[string][]byte{"Dockerfile": []byte("FROM scratch\n")},
+		Tags:   []string{"agentcon/sidecar:test"},
+		Output: io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(f.buildTar, []byte("FROM scratch")) {
+		t.Fatalf("context did not carry the Dockerfile: %d bytes", len(f.buildTar))
+	}
 }
 
 func TestBuildPullParent(t *testing.T) {
