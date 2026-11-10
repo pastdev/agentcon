@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -487,53 +486,5 @@ func TestRunRequestPullPolicy(t *testing.T) {
 	})
 	t.Run("rejects an unknown flag value", func(t *testing.T) {
 		tester(t, testCase{flag: "sometimes", wantErr: "--pull"})
-	})
-}
-
-func TestRunRequestSidecarCAFiles(t *testing.T) {
-	type testCase struct {
-		caFiles []string
-		want    func(home string) []string
-		wantErr string
-	}
-	tester := func(t *testing.T, tc testCase) {
-		t.Helper()
-		root := t.TempDir()
-		home := t.TempDir()
-		cfg := agentCfg(root)
-		cfg.Sidecar.CAFiles = tc.caFiles
-		req, err := NewRunRequest(&cfg, RunFlags{}, root, home)
-		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v", err)
-			}
-			return
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := tc.want(home)
-		if !reflect.DeepEqual(req.SidecarCAFiles, want) {
-			t.Fatalf("ca files %v, want %v", req.SidecarCAFiles, want)
-		}
-	}
-
-	t.Run("is empty by default", func(t *testing.T) {
-		tester(t, testCase{want: func(string) []string { return nil }})
-	})
-	t.Run("resolves absolute, home, and relative paths", func(t *testing.T) {
-		tester(t, testCase{
-			caFiles: []string{"/etc/ca/a.pem", "~/certs/b.pem", "certs/c.pem"},
-			want: func(home string) []string {
-				return []string{
-					"/etc/ca/a.pem",
-					filepath.Join(home, "certs", "b.pem"),
-					filepath.Join(home, "certs", "c.pem"),
-				}
-			},
-		})
-	})
-	t.Run("rejects an empty path", func(t *testing.T) {
-		tester(t, testCase{caFiles: []string{"a.pem", ""}, wantErr: "sidecar.ca_files[1]: path is required"})
 	})
 }

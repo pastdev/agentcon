@@ -70,11 +70,6 @@ func NewRunRequest(cfg *Config, flags RunFlags, cwd, home string) (run.Request, 
 		return run.Request{}, err
 	}
 
-	caFiles, err := resolveCAFiles(cfg.Sidecar.CAFiles, home)
-	if err != nil {
-		return run.Request{}, err
-	}
-
 	var setup *run.BouncerSetup
 	if !flags.NoBouncer {
 		bouncerName := flags.Bouncer
@@ -92,7 +87,6 @@ func NewRunRequest(cfg *Config, flags RunFlags, cwd, home string) (run.Request, 
 		Build:             build,
 		PullPolicy:        agentPull,
 		SidecarPullPolicy: sidecarPull,
-		SidecarCAFiles:    caFiles,
 		Mounts:            mounts,
 		Root:              root,
 		Cwd:               absCwd,
@@ -209,22 +203,6 @@ func (c *Config) resolveAgentImage(name string, agent AgentSpec, home string) (s
 		Dockerfile: dockerfile,
 		Tags:       []string{image},
 	}, nil
-}
-
-// resolveCAFiles resolves sidecar.ca_files paths. The files are read and
-// checked by run, only when a bouncer sidecar starts.
-func resolveCAFiles(files []string, home string) ([]string, error) {
-	if len(files) == 0 {
-		return nil, nil
-	}
-	out := make([]string, 0, len(files))
-	for i, f := range files {
-		if f == "" {
-			return nil, fmt.Errorf("sidecar.ca_files[%d]: path is required", i)
-		}
-		out = append(out, resolveMountSource(f, home))
-	}
-	return out, nil
 }
 
 func resolveAgentMounts(mounts []MountSpec, home string) ([]container.Mount, error) {
