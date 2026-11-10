@@ -18,6 +18,7 @@ const (
 	SystemConfigDir    = "/etc/agentcon.d"
 	defaultDockerfile  = "Dockerfile"
 	agentImagePrefix   = "agentcon/"
+	sidecarImageTag    = agentImagePrefix + "bouncer-sidecar"
 )
 
 func userConfigDir() string {
@@ -51,6 +52,7 @@ type Config struct {
 	Agents         map[string]AgentSpec          `json:"agents,omitempty" yaml:"agents,omitempty"`
 	Bouncers       map[string]*bouncercfg.Config `json:"bouncers,omitempty" yaml:"bouncers,omitempty"`
 	Contexts       map[string]ContextSpec        `json:"contexts" yaml:"contexts"`
+	Sidecar        SidecarSpec                   `json:"sidecar,omitempty" yaml:"sidecar,omitempty"`
 	OverlayDirs    []string                      `json:"-" yaml:"-"`
 }
 
@@ -60,6 +62,15 @@ type AgentSpec struct {
 	Build  *BuildSpec  `json:"build,omitempty" yaml:"build,omitempty"`
 	Mounts []MountSpec `json:"mounts,omitempty" yaml:"mounts,omitempty"`
 	Tunnel []string    `json:"tunnel,omitempty" yaml:"tunnel,omitempty"`
+	// PullPolicy is missing (default), always, or never.
+	PullPolicy string `json:"pull_policy,omitempty" yaml:"pull_policy,omitempty"`
+}
+
+// SidecarSpec is the bouncer sidecar image, configured like an agent image.
+// With neither Image nor Build, run uses its stock image.
+type SidecarSpec struct {
+	Image string     `json:"image,omitempty" yaml:"image,omitempty"`
+	Build *BuildSpec `json:"build,omitempty" yaml:"build,omitempty"`
 	// PullPolicy is missing (default), always, or never.
 	PullPolicy string `json:"pull_policy,omitempty" yaml:"pull_policy,omitempty"`
 }
