@@ -20,6 +20,7 @@ linters:
     - revive
     - sqlclosecheck
     - staticcheck
+    - testifylint
     - unparam
     - unused
     - wastedassign

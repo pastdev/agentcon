@@ -82,6 +82,10 @@ Use `function <name> {` instead of `<name>() {`.
 Do not use `if err := <thing>; err != nil` unless `<thing>` is only validation.
 Keep real actions on their own line so later readers can see them.
 
+Tests use testify.
+Use `require` when a failure makes the rest of the case meaningless, and `assert` otherwise.
+Group cases with a `tester` closure and one `t.Run` per case.
+
 ### Handoff process
 
 The agent runs in a container without credentials or elevated host access.
