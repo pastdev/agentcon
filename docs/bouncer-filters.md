@@ -134,7 +134,10 @@ Use a filter `ask()` when the decision needs the body, GraphQL fields, or git re
 `ctx.name` is the filter `name` field, or the file name.
 `ctx.config` is the YAML `config:` block.
 
-`log(message, fields?)` writes to the sidecar log.
+`log(message, fields?)` writes to the bouncer log at `info`, with `fields` as structured fields.
+`console.debug`, `console.log`, `console.info`, `console.warn`, and `console.error` log their arguments at `debug`, `info`, `info`, `warn`, and `error`.
+Every line names the filter.
+[Logging](../README.md#logging) covers the levels.
 
 `credential(name)` returns that credential's secret.
 Filters are trusted.

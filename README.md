@@ -149,15 +149,16 @@ The first start builds the image.
 Progress is logged at info:
 
 ```text
-2:58PM INF building pastdev.com/agentcon-cursor:latest
-2:58PM INF #1 [internal] load remote build context
-2:58PM INF #1 DONE 0.0s
+2:58PM INF building pastdev.com/agentcon-cursor:latest log=cli
+2:58PM INF #1 [internal] load remote build context log=cli
+2:58PM INF #1 DONE 0.0s log=cli
 ```
 
 That can take a while.
 Later starts replay cache (`CACHED`) unless the Dockerfile changed.
 `--log warn` hides the build lines.
 `--log-format json` emits the same lines as JSON.
+[Logging](#logging) covers the log flags.
 
 Arguments after `--` go to the agent.
 
@@ -289,6 +290,43 @@ On a network that inspects TLS, the sidecar needs the inspection CA in its image
 [Trusting a TLS inspection CA](docs/bouncer.md#trusting-a-tls-inspection-ca) shows the Dockerfile.
 
 Policy shape, credentials, sessions, and the sidecar layout are in [docs/bouncer.md](docs/bouncer.md).
+
+## Logging
+
+agentcon logs to stderr through three loggers.
+Every line has a `log` field that names its logger.
+
+| Log | Covers | Default level |
+|---|---|---|
+| `cli` | the agentcon process: config, image builds, container setup | `info` |
+| `bouncer` | the bouncer: listeners, credentials, filters, reloads | the `cli` level |
+| `audit` | one line per bouncer decision | `info` |
+
+`--log` takes `[name=]level` and can repeat.
+A level without a name sets `cli`.
+Levels are `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic`, and `disabled`.
+
+```bash
+agentcon --log warn --log bouncer=debug --log audit=warn run
+```
+
+Each decision logs at a level that matches it.
+Tunnels log at `debug`, allows at `info`, denials at `warn`, and errors at `error`.
+`--log audit=warn` shows only what was blocked or failed, and `--log audit=debug` adds tunnels.
+
+`--log-format` is `pretty` or `json` for all three loggers.
+Pretty output is colored only on a terminal, so `grep 'log=audit'` works on redirected output.
+
+`run` passes the bouncer and audit levels and the format to the sidecar.
+Sidecar output goes to its container log, not your terminal:
+
+```bash
+docker logs -f agentcon-<bounded>-<slug>-bouncer 2>&1 | grep 'log=audit'
+```
+
+Nothing is written to disk.
+The sidecar is removed when `run` exits, so follow its log during the session to keep a record.
+Redirect stderr from `agentcon bouncer serve` to keep its log.
 
 ## Docker-outside-of-Docker
 

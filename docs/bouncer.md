@@ -75,15 +75,14 @@ Choose `deny` when:
 An agent allowed to push to a GitHub repo can still put data in that repo.
 Use `rules` and filters on intercepted services to control what reaches them.
 
-To move from `tunnel` to `deny`, run with `tunnel` and collect the tunneled hosts from the sidecar audit log.
+To move from `tunnel` to `deny`, run with `tunnel` and `--log audit=debug`, and collect the tunneled hosts from the sidecar log.
 Then put the ones you accept on the profile `tunnel` list and switch to `deny`.
 
 ```bash
-docker exec agentcon-<bounded>-<slug>-bouncer cat /opt/agentcon/state/audit.jsonl \
-  | grep '"decision":"tunnel"'
+docker logs agentcon-<bounded>-<slug>-bouncer 2>&1 | grep 'decision=tunnel'
 ```
 
-The audit log lives in the sidecar and is removed with it, so collect it before the session ends.
+The sidecar log is removed with the sidecar, so collect it before the session ends.
 Container names are described in [Sessions](#sessions).
 
 ## Credentials
@@ -342,7 +341,7 @@ Container and network names are `agentcon-<bounded>-<slug>-<role>`.
 Host discovery files are `~/.local/state/agentcon/running/<slug>.yml`.
 `run` prints `agentcon session <slug> project <project>`.
 
-Decisions are appended to the sidecar audit log even when `--quiet` hides them on the TTY.
+Decisions go to the audit logger, which [Logging](../README.md#logging) describes.
 
 ## Prompts
 
@@ -477,7 +476,9 @@ docker create \
   bouncer serve \
     --file /opt/agentcon/config.yaml \
     --state-dir /opt/agentcon/state \
-    --quiet
+    --log bouncer=info \
+    --log audit=info \
+    --log-format pretty
 
 docker network connect agentcon-github-com-example-agentcon-deadbeef-agent \
   agentcon-github-com-example-agentcon-deadbeef-bouncer
