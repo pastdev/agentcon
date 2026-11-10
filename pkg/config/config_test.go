@@ -2,6 +2,9 @@ package config
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewLoader(t *testing.T) {
@@ -9,15 +12,9 @@ func TestNewLoader(t *testing.T) {
 		t.Helper()
 		loader := NewLoader()
 		cfg, err := loader.Config()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg == nil {
-			t.Fatal("expected config")
-		}
-		if len(cfg.Agents) != 0 {
-			t.Fatalf("unexpected builtin agents %v", cfg.Agents)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.Agents)
 	}
 
 	t.Run("returns an empty config", func(t *testing.T) {

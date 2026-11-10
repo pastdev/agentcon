@@ -2,10 +2,12 @@ package bitwarden
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 )
@@ -34,28 +36,23 @@ func TestBrokerPrompter(t *testing.T) {
 		}()
 		ev := <-events
 		p := ev.Pending
-		if p.Kind != tc.wantKind || p.Source != tc.wantSource || p.Message != tc.wantMessage {
-			t.Fatalf("asked %+v", p)
-		}
+		require.Equal(t, tc.wantKind, p.Kind)
+		require.Equal(t, tc.wantSource, p.Source)
+		require.Equal(t, tc.wantMessage, p.Message)
 		var err error
 		if tc.answer == "" {
 			err = b.Decline(p.ID)
 		} else {
 			err = b.Answer(p.ID, prompt.Answer{Value: tc.answer})
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		r := <-done
 		if tc.answer == "" {
-			if !errors.Is(r.err, prompt.ErrDeclined) {
-				t.Fatalf("err=%v", r.err)
-			}
+			require.ErrorIs(t, r.err, prompt.ErrDeclined)
 			return
 		}
-		if r.err != nil || r.v != tc.answer {
-			t.Fatalf("got %q err=%v", r.v, r.err)
-		}
+		require.NoError(t, r.err)
+		assert.Equal(t, tc.answer, r.v)
 	}
 
 	t.Run("asks for a master password as a secret", func(t *testing.T) {
@@ -115,25 +112,17 @@ func TestBrokerUnlock(t *testing.T) {
 			p := (<-events).Pending
 			messages = append(messages, p.Message)
 			err := b.Answer(p.ID, prompt.Answer{Value: a})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			<-events // settled
 		}
 		err := <-done
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		want := []string{
 			"Bitwarden master password",
 			"Bitwarden master password (incorrect, attempt 2 of 3)",
 			"Bitwarden verification code for authenticator app",
 		}
-		for i := range want {
-			if messages[i] != want[i] {
-				t.Fatalf("prompt %d %q, want %q", i, messages[i], want[i])
-			}
-		}
+		assert.Equal(t, want, messages)
 	})
 
 	t.Run("gives each account only its own answer", func(t *testing.T) {
@@ -161,28 +150,20 @@ func TestBrokerUnlock(t *testing.T) {
 		}
 		sourceA := "bitwarden:" + accounts[0].label()
 		sourceB := "bitwarden:" + accounts[1].label()
-		if pending[sourceA] == "" || pending[sourceB] == "" {
-			t.Fatalf("sources %v", pending)
-		}
+		require.NotEmpty(t, pending[sourceA], "sources %v", pending)
+		require.NotEmpty(t, pending[sourceB], "sources %v", pending)
 		// Answering A must not unlock B.
 		err := b.Answer(pending[sourceA], prompt.Answer{Value: testPassword})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		time.Sleep(50 * time.Millisecond)
 		still := b.List()
-		if len(still) != 1 || still[0].ID != pending[sourceB] {
-			t.Fatalf("after answering A, pending %+v", still)
-		}
+		require.Len(t, still, 1, "after answering A")
+		require.Equal(t, pending[sourceB], still[0].ID, "after answering A")
 		err = b.Answer(pending[sourceB], prompt.Answer{Value: testPassword})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		wg.Wait()
 		for i, err := range errs {
-			if err != nil {
-				t.Fatalf("account %d: %v", i, err)
-			}
+			require.NoError(t, err, "account %d", i)
 		}
 	})
 
@@ -197,12 +178,8 @@ func TestBrokerUnlock(t *testing.T) {
 			done <- v.Unlock(context.Background(), []Account{{Email: testEmail, Server: srv.URL}})
 		}()
 		err := b.Decline((<-events).Pending.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		err = <-done
-		if !errors.Is(err, prompt.ErrDeclined) {
-			t.Fatalf("err=%v", err)
-		}
+		require.ErrorIs(t, err, prompt.ErrDeclined)
 	})
 }

@@ -3,12 +3,13 @@ package moby
 import (
 	"context"
 	"net/netip"
-	"reflect"
 	"testing"
 
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	"github.com/pastdev/agentcon/pkg/container"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMounts(t *testing.T) {
@@ -19,9 +20,7 @@ func TestMounts(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		got := mounts(tc.in)
-		if !reflect.DeepEqual(got, tc.want) {
-			t.Fatalf("got %+v, want %+v", got, tc.want)
-		}
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("binds a source", func(t *testing.T) {
@@ -52,12 +51,8 @@ func TestInspectNetwork(t *testing.T) {
 		inspected.IPAM.Config = []network.IPAMConfig{{Subnet: netip.MustParsePrefix("172.30.0.0/16")}}
 		r := &Runtime{api: &fakeAPI{network: inspected}}
 		got, err := r.InspectNetwork(context.Background(), "dev")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		want := container.NetworkInfo{ID: "abc", Name: "dev", Subnet: "172.30.0.0/16", Internal: internal}
-		if got != want {
-			t.Fatalf("got %+v, want %+v", got, want)
-		}
+		assert.Equal(t, want, got)
 	}
 }

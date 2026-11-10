@@ -25,6 +25,8 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/gitproto"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type backend struct {
@@ -59,9 +61,7 @@ func startUpstream(t *testing.T, clientKey ssh.PublicKey) *upstream {
 	}}
 	cfg.AddHostKey(hs)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = l.Close() })
 	u := &upstream{addr: l.Addr().String(), hostKey: hs.PublicKey(), received: map[string][]byte{}}
 	go func() {
@@ -154,13 +154,9 @@ profiles:
             reason: main is protected
             git: {service: receive-pack, refs: [refs/heads/main]}
 `, keyPath, port, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(up.hostKey))))), filepath.Join(dir, "c.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	set, err := policy.Compile(cfg, &chain.Env{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	authority, _ := ca.LoadOrCreate(filepath.Join(dir, "state"))
 	log, _ := audit.Open("", nil)
 	revoked := new(bool)
@@ -188,9 +184,7 @@ func client(_ *testing.T, bouncer string, authority *ca.Authority, token string)
 
 func run(t *testing.T, cl *ssh.Client, cmd string, stdin []byte) (string, string, error) {
 	s, err := cl.NewSession()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 	var out, errb bytes.Buffer
 	s.Stdout, s.Stderr = &out, &errb
@@ -218,108 +212,77 @@ func TestServe(t *testing.T) {
 		_, addr, authority := setup(t)
 		_, err := client(t, addr, authority, tc.token)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v", err)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	}
 
 	t.Run("applies exec git and forwarding policy", func(t *testing.T) {
 		up, addr, authority := setup(t)
 		cl, err := client(t, addr, authority, "tok")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = cl.Close() }()
 
-		if out, _, err := run(t, cl, "echo hi", nil); err != nil || out != "hi\n" {
-			t.Fatalf("exec: %q %v", out, err)
-		}
-		if _, stderr, err := run(t, cl, "", nil); err == nil || !strings.Contains(stderr, "ssh shell is not in the allow list") {
-			t.Fatalf("shell should be denied: %q %v", stderr, err)
-		}
+		out, _, err := run(t, cl, "echo hi", nil)
+		require.NoError(t, err)
+		require.Equal(t, "hi\n", out)
+		_, stderr, err := run(t, cl, "", nil)
+		require.Error(t, err, "shell should be denied")
+		require.Contains(t, stderr, "ssh shell is not in the allow list")
 
 		a, b := strings.Repeat("a", 40), strings.Repeat("b", 40)
 		ok := gitproto.BuildPush([]gitproto.RefUpdate{{OldOID: a, NewOID: b, Ref: "refs/heads/feature"}}, []string{"report-status"}, nil)
-		out, _, err := run(t, cl, "git-receive-pack 'g/feature.git'", ok)
-		if err != nil || out == "" || !strings.HasSuffix(out, "pushed\n") {
-			t.Fatalf("allowed push: %q %v", out, err)
-		}
+		out, _, err = run(t, cl, "git-receive-pack 'g/feature.git'", ok)
+		require.NoError(t, err)
+		require.True(t, strings.HasSuffix(out, "pushed\n"), "allowed push: %q", out)
 		up.mu.Lock()
 		got := up.received["git-receive-pack 'g/feature.git'"]
 		up.mu.Unlock()
-		if !bytes.Equal(got, ok) {
-			t.Fatalf("upstream received %q, want %q", got, ok)
-		}
+		require.Equal(t, ok, got)
 
 		bad := gitproto.BuildPush([]gitproto.RefUpdate{{OldOID: a, NewOID: b, Ref: "refs/heads/main"}}, []string{"report-status"}, nil)
 		out, _, _ = run(t, cl, "git-receive-pack 'g/main.git'", bad)
-		if !strings.Contains(out, "ng refs/heads/main denied by rules:up rules[0]: main is protected") {
-			t.Fatalf("push to main should be rejected with a status report: %q", out)
-		}
+		require.Contains(t, out, "ng refs/heads/main denied by rules:up rules[0]: main is protected")
 		bare := gitproto.BuildPush([]gitproto.RefUpdate{{OldOID: a, NewOID: b, Ref: "refs/heads/main"}}, nil, nil)
-		_, stderr, err := run(t, cl, "git-receive-pack 'g/main.git'", bare)
-		if err == nil || !strings.Contains(stderr, "main is protected") {
-			t.Fatalf("push to main should be denied: %q %v", stderr, err)
-		}
+		_, stderr, err = run(t, cl, "git-receive-pack 'g/main.git'", bare)
+		require.Error(t, err, "push to main should be denied")
+		require.Contains(t, stderr, "main is protected")
 		up.mu.Lock()
 		leaked := up.received["git-receive-pack 'g/main.git'"]
 		up.mu.Unlock()
-		if len(leaked) != 0 {
-			t.Fatalf("upstream saw commands for a denied push: %q", leaked)
-		}
+		require.Empty(t, leaked, "upstream saw commands for a denied push")
 
-		if _, err := cl.Dial("tcp", "10.0.0.1:80"); err == nil {
-			t.Fatal("port forward should be denied")
-		}
+		_, err = cl.Dial("tcp", "10.0.0.1:80")
+		require.Error(t, err, "port forward should be denied")
 	})
 	t.Run("forwards allowlisted env and rejects the rest", func(t *testing.T) {
 		_, addr, authority := setup(t)
 		cl, err := client(t, addr, authority, "tok")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = cl.Close() }()
 		s, err := cl.NewSession()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = s.Close() }()
 		err = s.Setenv("GIT_PROTOCOL", "version=2")
-		if err != nil {
-			t.Fatalf("allowlisted env refused: %v", err)
-		}
+		require.NoError(t, err, "allowlisted env refused")
 		err = s.Setenv("LD_PRELOAD", "/tmp/x.so")
-		if err == nil {
-			t.Fatal("non-allowlisted env accepted")
-		}
+		require.Error(t, err, "non-allowlisted env accepted")
 		out, err := s.Output("env")
-		if err != nil || string(out) != "GIT_PROTOCOL=version=2" {
-			t.Fatalf("upstream saw env %q (%v)", out, err)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "GIT_PROTOCOL=version=2", string(out))
 	})
 	t.Run("closes an oversized preamble", func(t *testing.T) {
 		_, addr, _ := setup(t)
 		c, err := net.Dial("tcp", addr)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = c.Close() }()
 		_, err = c.Write([]byte(preamblePrefix + strings.Repeat("x", maxPreamble+10)))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		err = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := c.Read(make([]byte, 1)); err == nil {
-			t.Fatal("oversized preamble should close the connection")
-		}
+		require.NoError(t, err)
+		_, err = c.Read(make([]byte, 1))
+		require.Error(t, err, "oversized preamble should close the connection")
 	})
 	t.Run("rejects an unknown session token", func(t *testing.T) {
 		tester(t, testCase{token: "nope", wantErr: "unknown session token"})
@@ -327,17 +290,14 @@ func TestServe(t *testing.T) {
 	t.Run("refuses new channels after revocation", func(t *testing.T) {
 		_, addr, authority, revoked := setupR(t)
 		cl, err := client(t, addr, authority, "tok")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = cl.Close() }()
-		if out, _, err := run(t, cl, "echo hi", nil); err != nil || out != "hi\n" {
-			t.Fatalf("first exec: %q %v", out, err)
-		}
+		out, _, err := run(t, cl, "echo hi", nil)
+		require.NoError(t, err)
+		require.Equal(t, "hi\n", out)
 		*revoked = true
-		if _, err := cl.NewSession(); err == nil {
-			t.Fatal("opened a new channel after the session was revoked")
-		}
+		_, err = cl.NewSession()
+		require.Error(t, err, "opened a new channel after the session was revoked")
 	})
 }
 
@@ -350,20 +310,14 @@ func TestMalformedRequest(t *testing.T) {
 		t.Helper()
 		_, addr, authority := setup(t)
 		cl, err := client(t, addr, authority, "tok")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = cl.Close() }()
 		ch, reqs, err := cl.OpenChannel("session", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = ch.Close() }()
 		go ssh.DiscardRequests(reqs)
-		ok, err := ch.SendRequest(tc.kind, true, tc.payload)
-		if err == nil && ok {
-			t.Fatalf("%s with payload %q was not refused as malformed", tc.kind, tc.payload)
-		}
+		ok, _ := ch.SendRequest(tc.kind, true, tc.payload)
+		assert.False(t, ok, "%s with payload %q was not refused as malformed", tc.kind, tc.payload)
 	}
 
 	valid := ssh.Marshal(struct{ Command string }{"echo hi"})
@@ -395,18 +349,12 @@ profiles:
         hosts: [example.com]
         credential: key
 `), filepath.Join(t.TempDir(), "c.yaml"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		set, err := policy.Compile(cfg, &chain.Env{}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		srv := &Server{Backend: backend{set: set}, Creds: creds.NewStore(cfg.Credentials)}
 		_, err = srv.prepare(context.Background(), &Preamble{Token: "tok", Host: "example.com", Port: tc.port, User: "git"})
-		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-			t.Fatalf("err = %v", err)
-		}
+		require.ErrorContains(t, err, tc.wantErr)
 	}
 
 	t.Run("rejects a port the agent chose unless pinned", func(t *testing.T) {

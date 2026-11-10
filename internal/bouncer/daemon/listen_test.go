@@ -3,6 +3,9 @@ package daemon
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
@@ -18,20 +21,13 @@ func TestPlanListen(t *testing.T) {
 		t.Helper()
 		plan, err := planListen(tc.cfg)
 		if tc.wantErr {
-			if err == nil {
-				t.Fatal("expected error")
-			}
+			require.Error(t, err)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if plan.split != tc.wantSplit {
-			t.Fatal("expected combined listen")
-		}
-		if plan.proxy != tc.wantProxy || plan.mgmt != tc.wantMgmt {
-			t.Fatalf("plan %+v", plan)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantSplit, plan.split, "split")
+		assert.Equal(t, tc.wantProxy, plan.proxy)
+		assert.Equal(t, tc.wantMgmt, plan.mgmt)
 	}
 
 	t.Run("uses a combined listen when network env is unset", func(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLineWriter(t *testing.T) {
@@ -27,41 +29,28 @@ func TestLineWriter(t *testing.T) {
 
 		w := tc.writer()
 		_, err := w.Write(tc.input)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if tc.flush {
-			if strings.Contains(buf.String(), "DONE") {
-				t.Fatalf("partial line logged early: %s", buf.String())
-			}
+			require.NotContains(t, buf.String(), "DONE", "partial line logged early")
 			w.Flush()
 		}
 		if tc.wantMsg > 0 {
 			got := buf.String()
-			if strings.Count(got, `"message"`) != tc.wantMsg {
-				t.Fatalf("got %s", got)
-			}
-			if !strings.Contains(got, `"level":"`+tc.level+`"`) {
-				t.Fatalf("level %s", got)
-			}
+			assert.Equal(t, tc.wantMsg, strings.Count(got, `"message"`), got)
+			assert.Contains(t, got, `"level":"`+tc.level+`"`)
 			return
 		}
 		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-		if len(lines) != len(tc.want) {
-			t.Fatalf("got %d lines: %s", len(lines), buf.String())
-		}
+		require.Len(t, lines, len(tc.want))
 		for i, line := range lines {
 			var msg struct {
 				Level   string `json:"level"`
 				Message string `json:"message"`
 			}
 			err = json.Unmarshal([]byte(line), &msg)
-			if err != nil {
-				t.Fatalf("line %d: %v %s", i, err, line)
-			}
-			if msg.Level != tc.level || msg.Message != tc.want[i] {
-				t.Fatalf("line %d: %+v", i, msg)
-			}
+			require.NoError(t, err, line)
+			assert.Equal(t, tc.level, msg.Level)
+			assert.Equal(t, tc.want[i], msg.Message)
 		}
 	}
 

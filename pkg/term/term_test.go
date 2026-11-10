@@ -3,10 +3,11 @@ package term
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReadLine(t *testing.T) {
@@ -31,25 +32,17 @@ func TestReadLine(t *testing.T) {
 		}
 		got, err := ReadLine(ctx, bytes.NewReader(tc.input), echo)
 		if tc.wantErr != nil {
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("got %v", err)
-			}
+			require.ErrorIs(t, err, tc.wantErr)
 			return
 		}
 		if tc.errContains != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.errContains) {
-				t.Fatalf("got %v", err)
-			}
+			require.ErrorContains(t, err, tc.errContains)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(got) != tc.want {
-			t.Fatalf("got %q", got)
-		}
-		if tc.echo != nil && tc.echo.String() != tc.wantEcho {
-			t.Fatalf("echo %q", tc.echo.String())
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, string(got))
+		if tc.echo != nil {
+			assert.Equal(t, tc.wantEcho, tc.echo.String())
 		}
 	}
 

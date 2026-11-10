@@ -17,6 +17,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -27,21 +30,15 @@ const (
 func testIdentity(t *testing.T) identity {
 	t.Helper()
 	id, err := deriveIdentity(testEmail, testPassword, kdfParams{kind: kdfPBKDF2, iterations: 1000})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := base64.StdEncoding.EncodeToString(id.passwordHash); got != "8vx9APjb5Q1wtLcQUtQiEautn2Wd5oBGzkZeyYe9tV4=" {
-		t.Fatalf("password hash %s", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "8vx9APjb5Q1wtLcQUtQiEautn2Wd5oBGzkZeyYe9tV4=", base64.StdEncoding.EncodeToString(id.passwordHash))
 	return id
 }
 
 func mustEnc(t *testing.T, k keys, s string) string {
 	t.Helper()
 	out, err := encryptSymmetric(k, []byte(s))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return out
 }
 
@@ -148,39 +145,25 @@ func buildVault(t *testing.T, id identity) []byte {
 		userMaterial[i] = byte(i + 1)
 	}
 	user, err := keysFromMaterial(userMaterial)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	protectedUser, err := encryptSymmetric(id.keys, userMaterial)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	der, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	encPriv := mustEnc(t, user, string(der))
 	orgMaterial := bytesRepeat(0x42, 64)
 	org, err := keysFromMaterial(orgMaterial)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	rsaCT, err := rsa.EncryptOAEP(sha1.New(), rand.Reader, &priv.PublicKey, orgMaterial, nil) //nolint:gosec // Bitwarden mandates RSA-OAEP with SHA-1
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	orgKey := "4." + base64.StdEncoding.EncodeToString(rsaCT)
 
 	itemMaterial := bytesRepeat(0x11, 64)
 	itemKey, err := keysFromMaterial(itemMaterial)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	encItemKey := mustEnc(t, user, string(itemMaterial))
 
 	body := map[string]any{
@@ -223,9 +206,7 @@ func buildVault(t *testing.T, id identity) []byte {
 		},
 	}
 	b, err := json.Marshal(body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return b
 }
 
@@ -327,23 +308,15 @@ func TestGet(t *testing.T) {
 		t.Helper()
 		got, err := tc.v.Get(context.Background(), tc.q)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v", err)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if tc.wantContains != "" {
-			if !strings.Contains(got, tc.wantContains) {
-				t.Fatalf("got %q %v", got, err)
-			}
+			assert.Contains(t, got, tc.wantContains)
 			return
 		}
-		if got != tc.want {
-			t.Fatalf("got %q, %v", got, err)
-		}
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("looks up items and reuses an unlocked vault", func(t *testing.T) {
@@ -355,12 +328,10 @@ func TestGet(t *testing.T) {
 		tester(t, testCase{v: v, q: q, want: "gl-token"})
 		tester(t, testCase{v: v, q: q, want: "gl-token"})
 		fake.mu.Lock()
-		if fake.logins != 1 || fake.syncs != 1 || fake.refreshes != 0 {
-			t.Fatalf("logins=%d syncs=%d refreshes=%d", fake.logins, fake.syncs, fake.refreshes)
-		}
-		if len(fake.authEmails) != 1 || fake.authEmails[0] != "dXNlckBleGFtcGxlLmNvbQ" {
-			t.Fatalf("auth-email %v", fake.authEmails)
-		}
+		assert.Equal(t, 1, fake.logins, "logins")
+		assert.Equal(t, 1, fake.syncs, "syncs")
+		assert.Equal(t, 0, fake.refreshes, "refreshes")
+		assert.Equal(t, []string{"dXNlckBleGFtcGxlLmNvbQ"}, fake.authEmails)
 		fake.mu.Unlock()
 
 		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "GitLab", Folder: "Work", Field: "username"}, want: "oauth2"})
@@ -373,64 +344,41 @@ func TestGet(t *testing.T) {
 		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "Org Secret"}, want: "org-password"})
 		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "Wrapped"}, want: "from-item-key"})
 		_, err := v.Get(context.Background(), Query{Account: q.Account, Item: "Gone"})
-		if err == nil {
-			t.Fatal("deleted item was returned")
-		}
+		require.Error(t, err, "deleted item was returned")
 		tester(t, testCase{v: v, q: Query{Account: q.Account, Item: "Runbook", Field: "notes"}, want: "do the thing"})
 
 		raw, err := v.ItemJSON(context.Background(), q)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		var doc map[string]any
 		err = json.Unmarshal(raw, &doc)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if doc["notes"] != "a note" {
-			t.Fatalf("item json notes %v", doc["notes"])
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "a note", doc["notes"])
 		login, _ := doc["login"].(map[string]any)
-		if login["username"] != "oauth2" || login["password"] != "gl-token" {
-			t.Fatalf("item json login %v", login)
-		}
+		assert.Equal(t, "oauth2", login["username"])
+		assert.Equal(t, "gl-token", login["password"])
 		sshRaw, err := v.ItemJSON(context.Background(), Query{Account: q.Account, Item: "sandbox"})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		var sshDoc map[string]any
 		err = json.Unmarshal(sshRaw, &sshDoc)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		sshKey, _ := sshDoc["sshKey"].(map[string]any)
 		priv, _ := sshKey["privateKey"].(string)
-		if !strings.Contains(priv, "BEGIN OPENSSH PRIVATE KEY") {
-			t.Fatalf("item json ssh %v", sshKey)
-		}
+		assert.Contains(t, priv, "BEGIN OPENSSH PRIVATE KEY")
 
 		matches, err := filepath.Glob(filepath.Join(dir, "bitwarden", "*.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(matches) != 1 {
-			t.Fatalf("state files: %v", matches)
-		}
+		require.NoError(t, err)
+		require.Len(t, matches, 1, "state files")
 		info, err := os.Stat(matches[0])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("state mode %o", info.Mode().Perm())
-		}
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 
 		v2 := New(Options{StateDir: dir})
 		tester(t, testCase{v: v2, q: q, want: "gl-token"})
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
-		if fake.logins != 1 || fake.refreshes != 1 || fake.syncs != 2 {
-			t.Fatalf("after restart logins=%d refreshes=%d syncs=%d", fake.logins, fake.refreshes, fake.syncs)
-		}
+		assert.Equal(t, 1, fake.logins, "logins after restart")
+		assert.Equal(t, 1, fake.refreshes, "refreshes after restart")
+		assert.Equal(t, 2, fake.syncs, "syncs after restart")
 	})
 	t.Run("retries a wrong password", func(t *testing.T) {
 		srv, fake := startVault(t, false)
@@ -444,14 +392,10 @@ func TestGet(t *testing.T) {
 			},
 			want: "gl-token",
 		})
-		if p.nPass != 2 {
-			t.Fatalf("prompts %d", p.nPass)
-		}
+		assert.Equal(t, 2, p.nPass, "prompts")
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
-		if fake.logins != 2 {
-			t.Fatalf("logins %d", fake.logins)
-		}
+		assert.Equal(t, 2, fake.logins, "logins")
 	})
 	t.Run("does not stick a failed password env", func(t *testing.T) {
 		srv, _ := startVault(t, false)
@@ -474,14 +418,10 @@ func TestGet(t *testing.T) {
 			q:    Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"},
 			want: "org-password",
 		})
-		if p.nCode != 1 {
-			t.Fatalf("codes %d", p.nCode)
-		}
+		assert.Equal(t, 1, p.nCode, "codes")
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
-		if fake.logins != 2 {
-			t.Fatalf("logins %d", fake.logins)
-		}
+		assert.Equal(t, 2, fake.logins, "logins")
 	})
 	t.Run("retries a wrong two-factor code", func(t *testing.T) {
 		srv, fake := startVault(t, true)
@@ -492,14 +432,10 @@ func TestGet(t *testing.T) {
 			q:    Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"},
 			want: "org-password",
 		})
-		if p.nCode != 2 {
-			t.Fatalf("codes %d", p.nCode)
-		}
+		assert.Equal(t, 2, p.nCode, "codes")
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
-		if fake.logins != 3 {
-			t.Fatalf("logins %d", fake.logins)
-		}
+		assert.Equal(t, 3, fake.logins, "logins")
 	})
 	t.Run("prompts for two-factor", func(t *testing.T) {
 		srv, fake := startVault(t, true)
@@ -510,14 +446,10 @@ func TestGet(t *testing.T) {
 			q:    Query{Account: Account{Email: testEmail, Server: srv.URL}, Item: "Org Secret"},
 			want: "org-password",
 		})
-		if p.nCode != 1 {
-			t.Fatalf("codes %d", p.nCode)
-		}
+		assert.Equal(t, 1, p.nCode, "codes")
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
-		if fake.logins != 2 {
-			t.Fatalf("logins %d", fake.logins)
-		}
+		assert.Equal(t, 2, fake.logins, "logins")
 	})
 }
 
@@ -530,9 +462,7 @@ func TestUnlock(t *testing.T) {
 		t.Helper()
 		v := New(Options{StateDir: t.TempDir()})
 		err := v.Unlock(context.Background(), tc.accounts)
-		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-			t.Fatalf("err = %v", err)
-		}
+		require.ErrorContains(t, err, tc.wantErr)
 	}
 
 	t.Run("rejects conflicting password env values", func(t *testing.T) {

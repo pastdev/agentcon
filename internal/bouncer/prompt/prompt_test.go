@@ -3,10 +3,11 @@ package prompt
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const secret = "correct horse battery staple"
@@ -23,27 +24,15 @@ func TestAnswer(t *testing.T) {
 		tk := b.Raise(Question{Kind: tc.kind, Source: "test", Message: "?"})
 		err := b.Answer(tk.ID(), tc.answer)
 		if tc.wantErr != nil {
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("err=%v, want %v", err, tc.wantErr)
-			}
-			if len(b.List()) != 1 {
-				t.Fatal("rejected answer settled the prompt")
-			}
+			require.ErrorIs(t, err, tc.wantErr)
+			assert.Len(t, b.List(), 1, "rejected answer settled the prompt")
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		got, err := tk.Wait(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != tc.answer {
-			t.Fatalf("got %+v, want %+v", got, tc.answer)
-		}
-		if len(b.List()) != 0 {
-			t.Fatal("answered prompt still pending")
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.answer, got)
+		assert.Empty(t, b.List(), "answered prompt still pending")
 	}
 
 	t.Run("confirm allow", func(t *testing.T) {
@@ -73,54 +62,37 @@ func TestSettle(t *testing.T) {
 	t.Run("unknown id", func(t *testing.T) {
 		b := NewBroker(time.Minute)
 		err := b.Answer("nope", Answer{Allow: true})
-		if !errors.Is(err, ErrNotFound) {
-			t.Fatal(err)
-		}
+		require.ErrorIs(t, err, ErrNotFound)
 		err = b.Decline("nope")
-		if !errors.Is(err, ErrNotFound) {
-			t.Fatal(err)
-		}
+		require.ErrorIs(t, err, ErrNotFound)
 	})
 
 	t.Run("answering twice", func(t *testing.T) {
 		b := NewBroker(time.Minute)
 		tk := b.Raise(Question{Kind: KindConfirm})
 		err := b.Answer(tk.ID(), Answer{Allow: true})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		err = b.Answer(tk.ID(), Answer{})
-		if !errors.Is(err, ErrNotFound) {
-			t.Fatal(err)
-		}
+		require.ErrorIs(t, err, ErrNotFound)
 		got, err := tk.Wait(context.Background())
-		if err != nil || !got.Allow {
-			t.Fatalf("got %+v err=%v", got, err)
-		}
+		require.NoError(t, err)
+		assert.True(t, got.Allow)
 	})
 
 	t.Run("decline", func(t *testing.T) {
 		b := NewBroker(time.Minute)
 		tk := b.Raise(Question{Kind: KindSecret})
 		err := b.Decline(tk.ID())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		_, err = tk.Wait(context.Background())
-		if !errors.Is(err, ErrDeclined) {
-			t.Fatal(err)
-		}
+		require.ErrorIs(t, err, ErrDeclined)
 	})
 
 	t.Run("expires", func(t *testing.T) {
 		b := NewBroker(20 * time.Millisecond)
 		_, err := b.Ask(context.Background(), Question{Kind: KindSecret})
-		if !errors.Is(err, ErrExpired) {
-			t.Fatal(err)
-		}
-		if len(b.List()) != 0 {
-			t.Fatal("expired prompt still pending")
-		}
+		require.ErrorIs(t, err, ErrExpired)
+		assert.Empty(t, b.List(), "expired prompt still pending")
 	})
 
 	t.Run("ctx withdraws", func(t *testing.T) {
@@ -128,12 +100,8 @@ func TestSettle(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		defer cancel()
 		_, err := b.Ask(ctx, Question{Kind: KindSecret})
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatal(err)
-		}
-		if len(b.List()) != 0 {
-			t.Fatal("withdrawn prompt still pending")
-		}
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Empty(t, b.List(), "withdrawn prompt still pending")
 	})
 }
 
@@ -146,39 +114,25 @@ func TestEvents(t *testing.T) {
 
 	tk := b.Raise(Question{Kind: KindSecret, Source: "bitwarden:you@example.com", Message: "Master password"})
 	ev := <-events
-	if ev.Type != "pending" || ev.Pending.ID != tk.ID() {
-		t.Fatalf("%+v", ev)
-	}
+	require.Equal(t, "pending", ev.Type)
+	require.Equal(t, tk.ID(), ev.Pending.ID)
 	p := <-notified
-	if p.ID != tk.ID() {
-		t.Fatalf("%+v", p)
-	}
+	require.Equal(t, tk.ID(), p.ID)
 	listed, err := json.Marshal(b.List())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	err = b.Answer(tk.ID(), Answer{Value: secret})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	ev = <-events
-	if ev.Type != "settled" || ev.Outcome != OutcomeAnswered || ev.Allowed {
-		t.Fatalf("%+v", ev)
-	}
+	require.Equal(t, "settled", ev.Type)
+	require.Equal(t, OutcomeAnswered, ev.Outcome)
+	require.False(t, ev.Allowed)
 	settled, err := json.Marshal(ev)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, out := range [][]byte{listed, settled} {
-		if strings.Contains(string(out), secret) {
-			t.Fatalf("secret leaked: %s", out)
-		}
-	}
+	require.NoError(t, err)
+	assert.NotContains(t, string(listed), secret)
+	assert.NotContains(t, string(settled), secret)
 	_, err = tk.Wait(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 }
 
 func TestConfirmAllowedEvent(t *testing.T) {
@@ -188,11 +142,8 @@ func TestConfirmAllowedEvent(t *testing.T) {
 	tk := b.Raise(Question{Kind: KindConfirm})
 	<-events
 	err := b.Answer(tk.ID(), Answer{Allow: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	ev := <-events
-	if !ev.Allowed || ev.Outcome != OutcomeAnswered {
-		t.Fatalf("%+v", ev)
-	}
+	assert.True(t, ev.Allowed)
+	assert.Equal(t, OutcomeAnswered, ev.Outcome)
 }

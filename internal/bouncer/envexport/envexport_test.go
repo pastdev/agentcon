@@ -2,6 +2,8 @@ package envexport
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestBuild(t *testing.T) {
@@ -16,11 +18,7 @@ func TestBuild(t *testing.T) {
 		for _, kv := range got.Vars {
 			have[kv[0]] = kv[1]
 		}
-		for k, v := range tc.want {
-			if have[k] != v {
-				t.Fatalf("%s=%q, want %q", k, have[k], v)
-			}
-		}
+		assert.Subset(t, have, tc.want)
 	}
 
 	t.Run("exports proxy, ca, ssh, and placeholder vars", func(t *testing.T) {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParsePullPolicy(t *testing.T) {
@@ -17,12 +19,12 @@ func TestParsePullPolicy(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		got, err := ParsePullPolicy(tc.in)
-		if tc.wantErr != (err != nil) {
-			t.Fatalf("err = %v", err)
+		if tc.wantErr {
+			require.Error(t, err)
+			return
 		}
-		if got != tc.want {
-			t.Fatalf("got %q, want %q", got, tc.want)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("defaults to missing", func(t *testing.T) {
@@ -52,15 +54,11 @@ func TestEnsureImage(t *testing.T) {
 		rt := &captureRuntime{missing: tc.missing, existsErr: tc.existsErr}
 		err := ensureImage(context.Background(), rt, testImage, tc.policy, io.Discard)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v", err)
-			}
-		} else if err != nil {
-			t.Fatal(err)
+			require.ErrorContains(t, err, tc.wantErr)
+		} else {
+			require.NoError(t, err)
 		}
-		if tc.wantPulled != (len(rt.pulled) == 1) {
-			t.Fatalf("pulled %v", rt.pulled)
-		}
+		assert.Equal(t, tc.wantPulled, len(rt.pulled) == 1, "pulled %v", rt.pulled)
 	}
 
 	t.Run("missing uses a local image", func(t *testing.T) {
@@ -99,22 +97,15 @@ func TestPrepareImage(t *testing.T) {
 		t.Helper()
 		rt := &captureRuntime{missing: tc.missing}
 		err := prepareImage(context.Background(), rt, testImage, tc.build, tc.policy, io.Discard)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		built := rt.build.Tags != nil
-		if built != tc.wantBuilt {
-			t.Fatalf("built = %v, want %v", built, tc.wantBuilt)
+		assert.Equal(t, tc.wantBuilt, built, "built")
+		if built {
+			assert.Equal(t, tc.build.Context, rt.build.Context)
+			assert.Equal(t, tc.build.Dockerfile, rt.build.Dockerfile)
 		}
-		if built && (rt.build.Context != tc.build.Context || rt.build.Dockerfile != tc.build.Dockerfile) {
-			t.Fatalf("build %+v", rt.build)
-		}
-		if rt.build.PullParent != tc.wantParent {
-			t.Fatalf("PullParent = %v", rt.build.PullParent)
-		}
-		if tc.wantPulled != (len(rt.pulled) == 1) {
-			t.Fatalf("pulled %v", rt.pulled)
-		}
+		assert.Equal(t, tc.wantParent, rt.build.PullParent, "PullParent")
+		assert.Equal(t, tc.wantPulled, len(rt.pulled) == 1, "pulled %v", rt.pulled)
 	}
 	build := &ImageBuild{Context: "/ctx", Dockerfile: "Dockerfile", Tags: []string{testImage}}
 

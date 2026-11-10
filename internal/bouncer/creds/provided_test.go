@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
@@ -24,20 +26,15 @@ func TestParseProvided(t *testing.T) {
 		t.Helper()
 		got, err := ParseProvided(strings.NewReader(tc.in))
 		if tc.wantErr {
-			if err == nil {
-				t.Fatal("expected error")
-			}
-			if tc.echo != "" && strings.Contains(err.Error(), tc.echo) {
-				t.Errorf("error echoes input: %v", err)
+			require.Error(t, err)
+			if tc.echo != "" {
+				assert.NotContains(t, err.Error(), tc.echo, "error echoes input")
 			}
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got["gitlab"] != "glpat-abc: #not a comment 'quoted'" || got["github"] != "ghp_nospace" {
-			t.Fatalf("%q", got)
-		}
+		require.NoError(t, err)
+		require.Equal(t, "glpat-abc: #not a comment 'quoted'", got["gitlab"])
+		require.Equal(t, "ghp_nospace", got["github"])
 		store := NewStore(map[string]*config.Credential{
 			"gitlab":     {Name: "gitlab", Token: &config.ValueSource{Source: "keyring"}},
 			"deploy-key": {Name: "deploy-key", PrivateKey: &config.ValueSource{Source: "provided"}},
@@ -47,29 +44,22 @@ func TestParseProvided(t *testing.T) {
 			config.ProvidedKey("gitlab", config.SlotToken):          got["gitlab"],
 			config.ProvidedKey("deploy-key", config.SlotPrivateKey): got["deploy-key"],
 		})
-		if v, err := store.Get(context.Background(), "gitlab"); err != nil || v.Token != got["gitlab"] {
-			t.Fatalf("provided value should override keyring: %+v %v", v, err)
-		}
-		if signers, err := store.SSHSigners(context.Background(), "deploy-key"); err != nil || len(signers) != 1 {
-			t.Fatalf("multi-line key via base64: %v", err)
-		}
-		if m := store.MissingProvided(); len(m) != 1 || m[0] != config.ProvidedKey("other", config.SlotToken) {
-			t.Fatalf("missing: %v", m)
-		}
-		if _, err := store.Get(context.Background(), "other"); err == nil || !strings.Contains(err.Error(), "no value provided") {
-			t.Fatalf("err = %v", err)
-		}
+		v, err := store.Get(context.Background(), "gitlab")
+		require.NoError(t, err)
+		assert.Equal(t, got["gitlab"], v.Token, "provided value should override keyring")
+		signers, err := store.SSHSigners(context.Background(), "deploy-key")
+		require.NoError(t, err)
+		assert.Len(t, signers, 1, "multi-line key via base64")
+		assert.Equal(t, []string{config.ProvidedKey("other", config.SlotToken)}, store.MissingProvided())
+		_, err = store.Get(context.Background(), "other")
+		require.ErrorContains(t, err, "no value provided")
 	}
 
 	t.Run("parses tokens and a multi-line key", func(t *testing.T) {
 		_, k, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		block, err := ssh.MarshalPrivateKey(k, "")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		keyPEM := pem.EncodeToMemory(block)
 		in := "# generated\n" +
 			"gitlab: glpat-abc: #not a comment 'quoted'\n" +
@@ -110,20 +100,15 @@ func TestSSHSigners(t *testing.T) {
 			config.ProvidedKey("deploy", config.SlotPrivateKey): tc.pem,
 		})
 		signers, err := store.SSHSigners(context.Background(), "deploy")
-		if err != nil || len(signers) != tc.wantN {
-			t.Fatalf("signers %v %v", signers, err)
-		}
+		require.NoError(t, err)
+		assert.Len(t, signers, tc.wantN)
 	}
 
 	t.Run("overlays a provided key on an ssh-agent source", func(t *testing.T) {
 		_, k, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		block, err := ssh.MarshalPrivateKey(k, "")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		keyPEM := strings.TrimRight(string(pem.EncodeToMemory(block)), "\n")
 		tester(t, testCase{src: "ssh-agent", pem: keyPEM, wantN: 1})
 	})

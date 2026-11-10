@@ -6,6 +6,9 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const a = "1111111111111111111111111111111111111111"
@@ -28,44 +31,34 @@ func TestParsePush(t *testing.T) {
 		r := bytes.NewReader(tc.body)
 		p, err := ParsePush(r)
 		if tc.wantErr {
-			if err == nil {
-				t.Fatal("expected error")
-			}
+			require.Error(t, err)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if tc.wantUpdates != 0 && len(p.Updates) != tc.wantUpdates {
-			t.Fatalf("updates: %+v", p.Updates)
+		require.NoError(t, err)
+		if tc.wantUpdates != 0 {
+			require.Len(t, p.Updates, tc.wantUpdates)
 		}
 		for i, want := range tc.wantTypes {
-			if p.Updates[i].Type != want {
-				t.Errorf("update %d type %s, want %s", i, p.Updates[i].Type, want)
-			}
+			assert.Equal(t, want, p.Updates[i].Type, "update %d", i)
 		}
-		if tc.wantCap != "" && !p.HasCapability(tc.wantCap) {
-			t.Errorf("caps/options: %+v", p)
+		if tc.wantCap != "" {
+			assert.True(t, p.HasCapability(tc.wantCap), "caps: %+v", p)
 		}
-		if tc.wantOption != "" && (len(p.PushOptions) != 1 || p.PushOptions[0] != tc.wantOption) {
-			t.Errorf("caps/options: %+v", p)
+		if tc.wantOption != "" {
+			assert.Equal(t, []string{tc.wantOption}, p.PushOptions)
 		}
 		if tc.wantRef != "" {
-			if p.Updates[len(p.Updates)-1].Ref != tc.wantRef {
-				t.Fatal("last ref not parsed")
-			}
+			assert.Equal(t, tc.wantRef, p.Updates[len(p.Updates)-1].Ref, "last ref")
 		}
-		if tc.wantSigned && (!p.Signed || len(p.Updates) != 1 || p.Updates[0].Ref != "refs/heads/main") {
-			t.Fatalf("%+v", p)
+		if tc.wantSigned {
+			assert.True(t, p.Signed, "signed")
+			require.Len(t, p.Updates, 1)
+			assert.Equal(t, "refs/heads/main", p.Updates[0].Ref)
 		}
 		if tc.wantPackRest {
 			rest, err := io.ReadAll(r)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.HasPrefix(rest, []byte("PACK")) {
-				t.Errorf("parser consumed packfile; rest=%q", rest)
-			}
+			require.NoError(t, err)
+			assert.True(t, bytes.HasPrefix(rest, []byte("PACK")), "parser consumed packfile; rest=%q", rest)
 		}
 	}
 
@@ -176,19 +169,14 @@ func TestFromHTTP(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		q, err := url.ParseQuery(tc.query)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		info, ok := FromHTTP(tc.path, q)
 		if tc.wantNotOK {
-			if ok {
-				t.Error("non-git path recognized")
-			}
+			assert.False(t, ok, "non-git path recognized")
 			return
 		}
-		if !ok || info.Service != tc.wantSvc || info.Repo != tc.wantRepo {
-			t.Errorf("FromHTTP(%q) = %+v, %v", tc.path, info, ok)
-		}
+		require.True(t, ok, "ok")
+		assert.Equal(t, &Info{Service: tc.wantSvc, Repo: tc.wantRepo}, info)
 	}
 
 	t.Run("parses receive-pack info/refs", func(t *testing.T) {
@@ -219,14 +207,14 @@ func TestFromSSHCommand(t *testing.T) {
 		t.Helper()
 		info, ok := FromSSHCommand(tc.cmd)
 		if tc.wantBad {
-			if ok {
-				t.Errorf("accepted %q", tc.cmd)
-			}
+			assert.False(t, ok, "accepted %q", tc.cmd)
 			return
 		}
-		if !ok || (tc.wantSvc != "" && info.Service != tc.wantSvc) || info.Repo != tc.wantRepo {
-			t.Fatalf("%+v %v", info, ok)
+		require.True(t, ok, "ok")
+		if tc.wantSvc != "" {
+			assert.Equal(t, tc.wantSvc, info.Service)
 		}
+		assert.Equal(t, tc.wantRepo, info.Repo)
 	}
 
 	t.Run("parses git-receive-pack", func(t *testing.T) {
@@ -298,29 +286,22 @@ func TestRejectPush(t *testing.T) {
 		t.Helper()
 		out := RejectPush(tc.p, tc.reason)
 		if tc.wantNil {
-			if out != nil {
-				t.Fatal("no report-status capability should yield nil")
-			}
+			assert.Nil(t, out, "no report-status capability should yield nil")
 			return
 		}
 		r := bytes.NewReader(out)
 		var bands [3][]byte
 		for {
 			payload, special, err := ReadPkt(r)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			if special == "flush" {
 				break
 			}
 			bands[payload[0]] = append(bands[payload[0]], payload[1:]...)
 		}
-		if string(bands[2]) != tc.wantBand2 {
-			t.Fatalf("band 2: %q", bands[2])
-		}
-		if !bytes.Contains(bands[1], []byte(tc.wantBand1Ng)) || !bytes.Contains(bands[1], []byte(tc.wantUnpack)) {
-			t.Fatalf("band 1: %q", bands[1])
-		}
+		assert.Equal(t, tc.wantBand2, string(bands[2]))
+		assert.Contains(t, string(bands[1]), tc.wantBand1Ng)
+		assert.Contains(t, string(bands[1]), tc.wantUnpack)
 	}
 
 	t.Run("writes a sideband status report", func(t *testing.T) {

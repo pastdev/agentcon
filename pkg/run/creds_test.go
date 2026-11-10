@@ -5,11 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/pastdev/agentcon/internal/bouncer/creds"
 	"github.com/pastdev/agentcon/pkg/container"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/zalando/go-keyring"
 )
 
@@ -28,31 +31,18 @@ func TestHostProvidedCreds(t *testing.T) {
 		}
 		got, err := hostProvidedCreds(context.Background(), []byte(tc.policy), tc.extra)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("got %v", err)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(got) != len(tc.want) {
-			t.Fatalf("got %v", got)
-		}
-		for k, v := range tc.want {
-			if got[k] != v {
-				t.Fatalf("got %v", got)
-			}
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("reads a file slot", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "secret")
 		err := os.WriteFile(path, []byte("from-file\n"), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{
 			policy: `
 credentials:
@@ -93,9 +83,7 @@ credentials:
 		dir := t.TempDir()
 		path := filepath.Join(dir, "secret")
 		err := os.WriteFile(path, []byte("from-file"), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{
 			policy: `
 credentials:
@@ -135,9 +123,7 @@ credentials:
 		dir := t.TempDir()
 		path := filepath.Join(dir, "secret")
 		err := os.WriteFile(path, []byte("from-file\n"), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		policy := `
 credentials:
   login:
@@ -154,12 +140,8 @@ credentials:
 			want:   map[string]string{"login.password": "from-file"},
 		})
 		env, err := hostEnvCreds([]byte(policy), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(env) != 1 || env["SMOKE_USER"] != "alice" {
-			t.Fatalf("env %v", env)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"SMOKE_USER": "alice"}, env)
 	})
 	t.Run("skips env bitwarden and ssh-agent sources", func(t *testing.T) {
 		tester(t, testCase{
@@ -185,9 +167,7 @@ credentials:
 	t.Run("reads a keyring slot", func(t *testing.T) {
 		keyring.MockInit()
 		err := keyring.Set(creds.KeyringService, "tok", "from-keyring")
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		tester(t, testCase{
 			policy: `
 credentials:
@@ -210,26 +190,15 @@ func TestHostSSHAuthSock(t *testing.T) {
 		t.Helper()
 		got, err := hostSSHAuthSock([]byte(tc.policy))
 		if len(tc.wantErr) > 0 {
-			if err == nil {
-				t.Fatal("expected error")
-			}
-			found := false
-			for _, s := range tc.wantErr {
-				if strings.Contains(err.Error(), s) {
-					found = true
-				}
-			}
-			if !found {
-				t.Fatalf("got %v", err)
-			}
+			require.Error(t, err)
+			found := slices.ContainsFunc(tc.wantErr, func(s string) bool {
+				return strings.Contains(err.Error(), s)
+			})
+			assert.True(t, found, "got %v", err)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != tc.want {
-			t.Fatalf("got %q", got)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("ignores policy without ssh-agent", func(t *testing.T) {
@@ -261,9 +230,7 @@ credentials:
 		}
 		sock := filepath.Join(t.TempDir(), "agent.sock")
 		err := os.WriteFile(sock, []byte{}, 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		t.Setenv("SSH_AUTH_SOCK", sock)
 		tester(t, testCase{
 			policy: `
@@ -281,18 +248,8 @@ func TestWithSSHAuthSock(t *testing.T) {
 	tester := func(t *testing.T) {
 		t.Helper()
 		spec := withSSHAuthSock(containerSpecEnvOnly(), "/tmp/agent.sock")
-		if len(spec.Mounts) != 1 || spec.Mounts[0].Source != "/tmp/agent.sock" || spec.Mounts[0].Target != sidecarSSHAuthSock {
-			t.Fatalf("mounts %+v", spec.Mounts)
-		}
-		found := false
-		for _, e := range spec.Env {
-			if e == "SSH_AUTH_SOCK="+sidecarSSHAuthSock {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("env %v", spec.Env)
-		}
+		assert.Equal(t, []container.Mount{{Source: "/tmp/agent.sock", Target: sidecarSSHAuthSock}}, spec.Mounts)
+		assert.Contains(t, spec.Env, "SSH_AUTH_SOCK="+sidecarSSHAuthSock)
 	}
 
 	t.Run("binds the socket and sets SSH_AUTH_SOCK", func(t *testing.T) {

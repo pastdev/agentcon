@@ -14,6 +14,8 @@ import (
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	"github.com/pastdev/agentcon/pkg/container"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeAPI implements only the calls a test makes. Any other call panics on
@@ -66,12 +68,12 @@ func TestImageExists(t *testing.T) {
 		t.Helper()
 		r := &Runtime{api: &fakeAPI{inspectErr: tc.inspectErr}}
 		got, err := r.ImageExists(context.Background(), "example/image:1")
-		if tc.wantErr != (err != nil) {
-			t.Fatalf("err = %v", err)
+		if tc.wantErr {
+			require.Error(t, err)
+		} else {
+			require.NoError(t, err)
 		}
-		if got != tc.want {
-			t.Fatalf("got %v", got)
-		}
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("present", func(t *testing.T) {
@@ -99,24 +101,14 @@ func TestPull(t *testing.T) {
 		r := &Runtime{api: f}
 		var out bytes.Buffer
 		err := r.Pull(context.Background(), "example/image:1", &out)
-		if f.pulled != "example/image:1" {
-			t.Fatalf("pulled %q", f.pulled)
-		}
+		require.Equal(t, "example/image:1", f.pulled)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v", err)
-			}
-			if tc.wantPrivate != strings.Contains(err.Error(), "docker pull example/image:1") {
-				t.Fatalf("private image hint: %v", err)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
+			assert.Equal(t, tc.wantPrivate, strings.Contains(err.Error(), "docker pull example/image:1"), "private image hint: %v", err)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if out.String() != tc.wantOut {
-			t.Fatalf("out %q, want %q", out.String(), tc.wantOut)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantOut, out.String())
 	}
 
 	t.Run("prints status lines and skips progress updates", func(t *testing.T) {
@@ -147,11 +139,7 @@ func TestBuildPullParent(t *testing.T) {
 		f := &fakeAPI{}
 		r := &Runtime{api: f}
 		err := r.Build(context.Background(), container.Build{Context: t.TempDir(), Output: io.Discard, PullParent: pull})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if f.buildOpts.PullParent != pull {
-			t.Fatalf("PullParent %v, want %v", f.buildOpts.PullParent, pull)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, pull, f.buildOpts.PullParent, "PullParent")
 	}
 }

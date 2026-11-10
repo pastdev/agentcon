@@ -6,9 +6,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
@@ -39,25 +41,18 @@ func TestGet(t *testing.T) {
 		}
 		v, err := tc.store.Get(context.Background(), tc.name)
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v", err)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
+		require.NoError(t, err)
+		assert.Equal(t, Secret{Token: tc.wantToken, Username: tc.wantUser, Password: tc.wantPass}, v)
+		if tc.wantHTTP != "" {
+			assert.Equal(t, tc.wantHTTP, v.HTTP())
+			assert.Equal(t, tc.wantUser, v.BasicUser(""))
+			assert.Equal(t, tc.wantPass, v.BasicPass())
 		}
-		if tc.wantToken != "" && v.Token != tc.wantToken {
-			t.Fatalf("got %+v, %v", v, err)
-		}
-		if tc.wantUser != "" && (v.Username != tc.wantUser || v.Password != tc.wantPass) {
-			t.Fatalf("got %+v", v)
-		}
-		if tc.wantHTTP != "" && (v.HTTP() != tc.wantHTTP || v.BasicUser("") != tc.wantUser || v.BasicPass() != tc.wantPass) {
-			t.Fatalf("helpers %+v", v)
-		}
-		if tc.override != "" && v.BasicUser(tc.override) != tc.wantOver {
-			t.Fatalf("override %q", v.BasicUser(tc.override))
+		if tc.override != "" {
+			assert.Equal(t, tc.wantOver, v.BasicUser(tc.override))
 		}
 	}
 
@@ -96,9 +91,7 @@ func TestGet(t *testing.T) {
 	t.Run("reads an env overlay without an os value", func(t *testing.T) {
 		s := NewStore(map[string]*config.Credential{"e": tokenCred("e", config.ValueSource{Source: "env", Env: "BOUNCER_TEST_UNSET"})})
 		_, err := s.Get(context.Background(), "e")
-		if err == nil {
-			t.Fatal("expected missing env")
-		}
+		require.Error(t, err)
 		s.SetEnv(map[string]string{"BOUNCER_TEST_UNSET": "from-put"})
 		tester(t, testCase{store: s, name: "e", wantToken: "from-put"})
 	})
@@ -106,9 +99,7 @@ func TestGet(t *testing.T) {
 		dir := t.TempDir()
 		path := dir + "/secret"
 		err := os.WriteFile(path, []byte("from-file"), 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		s := NewStore(map[string]*config.Credential{"tok": tokenCred("tok", config.ValueSource{Source: "file", File: path})})
 		tester(t, testCase{store: s, name: "tok", wantToken: "from-file"})
 		s.SetProvided(map[string]string{config.ProvidedKey("tok", config.SlotToken): "from-put"})
@@ -123,11 +114,9 @@ func TestGet(t *testing.T) {
 		s := NewStore(map[string]*config.Credential{"bw": tokenCred("bw", config.ValueSource{
 			Source: "bitwarden", Email: "user@example.com", Server: srv.URL, Item: "GitLab", Path: "$.login.password",
 		})})
-		v, err := s.Get(context.Background(), "bw")
-		if err == nil || !strings.Contains(err.Error(), `credential "bw"`) || !strings.Contains(err.Error(), "prelogin") {
-			t.Fatalf("err = %v", err)
-		}
-		_ = v
+		_, err := s.Get(context.Background(), "bw")
+		require.ErrorContains(t, err, `credential "bw"`)
+		require.ErrorContains(t, err, "prelogin")
 	})
 	t.Run("fills composite username and password slots", func(t *testing.T) {
 		c := &config.Credential{
@@ -163,14 +152,11 @@ func TestExtractJSONPath(t *testing.T) {
 		t.Helper()
 		got, err := extractJSONPath(tc.payload, tc.path)
 		if tc.wantErr {
-			if err == nil {
-				t.Fatal("expected error")
-			}
+			require.Error(t, err)
 			return
 		}
-		if err != nil || got != tc.want {
-			t.Errorf("%s: got %q %v, want %q", tc.path, got, err, tc.want)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
 	}
 
 	payload := []byte(`{"notes":"pat","login":{"username":"alice","password":"s3cret"},"fields":[{"name":"API Key","value":"k"}]}`)
@@ -204,9 +190,7 @@ func TestHTTP(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		if tc.s.HTTP() != tc.want {
-			t.Fatalf("HTTP %q", tc.s.HTTP())
-		}
+		assert.Equal(t, tc.want, tc.s.HTTP())
 	}
 
 	t.Run("prefers token over password", func(t *testing.T) {
@@ -221,9 +205,7 @@ func TestBasicPass(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		if tc.s.BasicPass() != tc.want {
-			t.Fatalf("BasicPass %q", tc.s.BasicPass())
-		}
+		assert.Equal(t, tc.want, tc.s.BasicPass())
 	}
 
 	t.Run("uses the password slot", func(t *testing.T) {

@@ -3,12 +3,14 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 )
@@ -90,9 +92,7 @@ func TestRunTerminalPrompter(t *testing.T) {
 			cancel()
 			_ = w.Close()
 			<-done
-			if tty.isRaw() {
-				t.Error("terminal left in raw mode")
-			}
+			assert.False(t, tty.isRaw(), "terminal left in raw mode")
 		})
 
 		if !tc.raiseFirst {
@@ -109,22 +109,14 @@ func TestRunTerminalPrompter(t *testing.T) {
 		}
 		if tc.keys == "" {
 			err := d.Prompts.Answer(ticket.ID(), tc.wantAnswer)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 		} else {
 			_, err := io.WriteString(w, tc.keys)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 		}
 		got, err := ticket.Wait(context.Background())
-		if !errors.Is(err, tc.wantErr) {
-			t.Fatalf("err=%v, want %v", err, tc.wantErr)
-		}
-		if got != tc.wantAnswer {
-			t.Fatalf("got %+v, want %+v", got, tc.wantAnswer)
-		}
+		require.ErrorIs(t, err, tc.wantErr)
+		require.Equal(t, tc.wantAnswer, got)
 		outcome := "\n  [" + ticket.ID() + "] "
 		for !strings.Contains(out.String(), outcome) || tty.isRaw() {
 			if time.Now().After(deadline) {
@@ -133,14 +125,10 @@ func TestRunTerminalPrompter(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 		for _, s := range tc.wantOut {
-			if !strings.Contains(out.String(), s) {
-				t.Errorf("output lacks %q: %q", s, out.String())
-			}
+			assert.Contains(t, out.String(), s)
 		}
 		for _, s := range tc.hideOut {
-			if strings.Contains(out.String(), s) {
-				t.Errorf("output shows %q: %q", s, out.String())
-			}
+			assert.NotContains(t, out.String(), s)
 		}
 	}
 

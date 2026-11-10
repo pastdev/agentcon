@@ -3,6 +3,8 @@ package approval
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestDisplay(t *testing.T) {
@@ -18,20 +20,16 @@ func TestDisplay(t *testing.T) {
 		t.Helper()
 		got := Display(tc.in, tc.max)
 		if tc.escapeCtrl {
-			if strings.ContainsAny(got, "\x1b\r\u202e\u200b") || !strings.Contains(got, `\u001b`) {
-				t.Fatalf("control characters survived: %q", got)
-			}
+			assert.False(t, strings.ContainsAny(got, "\x1b\r\u202e\u200b"), "control characters survived: %q", got)
+			assert.Contains(t, got, `\u001b`)
 			return
 		}
 		if tc.wantSuffix != "" {
-			if !strings.HasSuffix(got, tc.wantSuffix) || len([]rune(got)) > tc.wantMaxRune {
-				t.Fatalf("not truncated: %q", got)
-			}
+			assert.True(t, strings.HasSuffix(got, tc.wantSuffix), "suffix of %q", got)
+			assert.LessOrEqual(t, len([]rune(got)), tc.wantMaxRune)
 			return
 		}
-		if got != tc.want {
-			t.Fatal("plain text altered")
-		}
+		assert.Equal(t, tc.want, got)
 	}
 
 	t.Run("escapes control characters", func(t *testing.T) {

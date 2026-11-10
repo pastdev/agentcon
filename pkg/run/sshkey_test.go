@@ -4,30 +4,23 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 )
 
 func testSSHPEM(t *testing.T, passphrase string) (plain, encrypted string, pub ssh.PublicKey) {
 	t.Helper()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	plainBlock, err := ssh.MarshalPrivateKey(priv, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	encBlock, err := ssh.MarshalPrivateKeyWithPassphrase(priv, "", []byte(passphrase))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	signer, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(pem.EncodeToMemory(plainBlock)), string(pem.EncodeToMemory(encBlock)), signer.PublicKey()
 }
 
@@ -44,41 +37,25 @@ func TestUnlockSSHKey(t *testing.T) {
 		t.Helper()
 		n := 0
 		got, err := unlockSSHKey(tc.pem, func(name string) (string, error) {
-			if name != "deploy" {
-				t.Fatalf("prompt name %q", name)
-			}
-			if n >= len(tc.prompts) {
-				t.Fatal("extra prompt")
-			}
+			require.Equal(t, "deploy", name)
+			require.Less(t, n, len(tc.prompts), "extra prompt")
 			pass := tc.prompts[n]
 			n++
 			return pass, nil
 		}, "deploy")
 		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("got %v, want %q", err, tc.wantErr)
-			}
+			require.ErrorContains(t, err, tc.wantErr)
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n != len(tc.prompts) {
-			t.Fatalf("prompts %d want %d", n, len(tc.prompts))
-		}
+		require.NoError(t, err)
+		assert.Len(t, tc.prompts, n, "prompts")
 		if tc.wantPub == nil {
-			if got != tc.pem {
-				t.Fatalf("rewrote non-key %q", got)
-			}
+			assert.Equal(t, tc.pem, got, "rewrote non-key")
 			return
 		}
 		signer, err := ssh.ParsePrivateKey([]byte(got + "\n"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if signer.PublicKey().Type() != tc.wantPub.Type() {
-			t.Fatalf("pub type %s", signer.PublicKey().Type())
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantPub.Type(), signer.PublicKey().Type())
 	}
 
 	t.Run("plain key", func(t *testing.T) {
@@ -121,21 +98,13 @@ func TestUnlockHostSSHKeys(t *testing.T) {
 			"other": plain,
 		}
 		err := unlockHostSSHKeys(values, map[string]struct{}{sshKey: {}}, func(name string) (string, error) {
-			if name != sshKey {
-				t.Fatalf("prompted for %q", name)
-			}
+			require.Equal(t, sshKey, name)
 			return "correct horse", nil
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if values["tok"] != encrypted {
-			t.Fatal("unlocked a file that is not an ssh credential")
-		}
+		require.NoError(t, err)
+		assert.Equal(t, encrypted, values["tok"], "unlocked a file that is not an ssh credential")
 		_, err = ssh.ParsePrivateKey([]byte(values[sshKey] + "\n"))
-		if err != nil {
-			t.Fatalf("unlocked: %v", err)
-		}
+		assert.NoError(t, err, "unlocked")
 	}
 
 	t.Run("unlocks only ssh credential keys", func(t *testing.T) {
@@ -157,12 +126,8 @@ credentials:
       source: file
       file: /tmp/token
 `))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := got["deploy.private_key"]; !ok || len(got) != 1 {
-			t.Fatalf("got %v", got)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, map[string]struct{}{"deploy.private_key": {}}, got)
 	}
 
 	t.Run("returns private_key slot names", func(t *testing.T) {

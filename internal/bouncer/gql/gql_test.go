@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSummarize(t *testing.T) {
@@ -18,15 +21,13 @@ func TestSummarize(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		ops, err := Summarize(tc.query)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(ops) != tc.wantLen || ops[0].Type != tc.wantType0 || len(ops[0].Fields) != 2 || ops[0].Fields[0] != tc.wantField0 {
-			t.Fatalf("%+v", ops)
-		}
-		if ops[1].Type != tc.wantType1 || ops[1].Fields[0] != tc.wantField1 {
-			t.Fatalf("%+v", ops)
-		}
+		require.NoError(t, err)
+		require.Len(t, ops, tc.wantLen)
+		assert.Equal(t, tc.wantType0, ops[0].Type)
+		require.Len(t, ops[0].Fields, 2)
+		assert.Equal(t, tc.wantField0, ops[0].Fields[0])
+		assert.Equal(t, tc.wantType1, ops[1].Type)
+		assert.Equal(t, tc.wantField1, ops[1].Fields[0])
 	}
 
 	t.Run("expands fragments into mutation fields", func(t *testing.T) {
@@ -62,34 +63,26 @@ func TestFromHTTP(t *testing.T) {
 		t.Helper()
 		ops, err := FromHTTP(tc.method, tc.query, tc.header, tc.body)
 		if tc.wantErr {
-			if err == nil {
-				t.Fatal("expected error")
-			}
+			require.Error(t, err)
 			return
 		}
+		require.NoError(t, err)
 		if tc.nestedOK {
-			if err != nil {
-				t.Errorf("nested keys are fine: %v", err)
-			}
 			return
 		}
-		if err != nil {
-			t.Fatal(err)
+		require.Len(t, ops, tc.wantLen)
+		first, last := ops[0], ops[len(ops)-1]
+		if tc.wantFirstField != "" {
+			assert.Equal(t, tc.wantFirstField, first.Fields[0])
 		}
-		if tc.wantLen != 0 && len(ops) != tc.wantLen {
-			t.Fatalf("%+v", ops)
+		if tc.wantLastField != "" {
+			assert.Equal(t, tc.wantLastField, last.Fields[0])
 		}
-		if tc.wantFirstField != "" && ops[0].Fields[0] != tc.wantFirstField {
-			t.Fatalf("%+v", ops)
+		if tc.wantLastType != "" {
+			assert.Equal(t, tc.wantLastType, last.Type)
 		}
-		if tc.wantLastField != "" && ops[len(ops)-1].Fields[0] != tc.wantLastField {
-			t.Fatalf("%+v", ops)
-		}
-		if tc.wantLastType != "" && ops[len(ops)-1].Type != tc.wantLastType {
-			t.Fatalf("%+v", ops)
-		}
-		if tc.wantType0 != "" && ops[0].Type != tc.wantType0 {
-			t.Fatalf("url-only mutation: %+v %v", ops, err)
+		if tc.wantType0 != "" {
+			assert.Equal(t, tc.wantType0, first.Type)
 		}
 	}
 
