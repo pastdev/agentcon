@@ -72,9 +72,11 @@ Whether Claude also needs the account metadata in `.claude.json` to skip login i
 ### Network
 
 - Anthropic hosts are tunneled on `agents.claude.tunnel`.
-- The list comes from a smoke run with `unmatched: deny` and `--log audit=warn`.
-  Each `DENY` line names a host Claude needs.
-- A second smoke run with the list confirms that a prompt completes with no denied Anthropic host.
+- The list comes from Anthropic's [Network access requirements](https://code.claude.com/docs/en/network-config#network-access-requirements).
+  It leaves out `formulae.brew.sh`, `*-review.googlesource.com`, `bridge.claudeusercontent.com`, and `github.com`.
+  `github.com` would bypass a GitHub policy, so plugin marketplace users add it themselves.
+- Smoke runs with `unmatched: deny` and that list confirm it.
+  Any `DENY` line names a host the list is missing.
 
 ### Docs
 
@@ -92,15 +94,13 @@ Whether Claude also needs the account metadata in `.claude.json` to skip login i
 1. Plan.
 2. `docs/claude/image`, with agent-neutral comments in the shared scripts of both images.
 3. Docs.
-4. Tunnel list from the smoke, in `docs/claude.md`.
+4. The tunnel list from Anthropic's page, in `docs/claude.md`, and this plan updated to match.
 5. The smoke script under `ad_hoc/issue-25/smoke/` for the record.
 
 ## Verification
 
 - `bash -n` and `shellcheck` pass on the entrypoint.
 - `go build ./...`, `go test -race ./...`, and `golangci-lint run ./...` still pass.
-- Smoke handoff, from the Docker-outside-of-Docker container:
-  1. Build the image through `agentcon run` with the Claude example and `unmatched: deny`.
-     Log in, send one prompt, and collect the `DENY` hosts from the sidecar log.
-  2. Run again with the collected tunnel list.
-     Confirm Claude Code is not reinstalled, the login is reused, a prompt completes, and no Anthropic host is denied.
+- Smoke handoff, from the Docker-outside-of-Docker container, with `unmatched: deny` and the tunnel list from `docs/claude.md`:
+  1. First run: Claude Code installs, you log in, and a prompt completes with no denied host.
+  2. Second run: Claude Code is not reinstalled, the login is reused, and a prompt completes with no denied host.

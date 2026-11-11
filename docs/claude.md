@@ -56,10 +56,18 @@ agents:
     tunnel:
       - api.anthropic.com
       - claude.ai
-      - console.anthropic.com
-      - statsig.anthropic.com
-      - sentry.io
+      - claude.com
+      - platform.claude.com
+      - sso.claude.com
+      - downloads.claude.ai
+      - mcp-proxy.anthropic.com
       - storage.googleapis.com
+      - registry.npmjs.org
+      - raw.githubusercontent.com
+      - code.claude.com
+      - "*.frame.claudeusercontent.com"
+      - http-intake.logs.us5.datadoghq.com
+      - browser-intake-us5-datadoghq.com
 ```
 
 `{{relativeDir "claude"}}` resolves against that copy of the image, next to `agents.yaml`.
@@ -101,6 +109,17 @@ Claude Code hosts must be tunneled or the CLI cannot install, log in, or complet
 Put that list on `agents.claude.tunnel`.
 Root bouncer profiles that do not `extends` another profile receive it.
 
+Anthropic keeps the list in [Network access requirements](https://code.claude.com/docs/en/network-config#network-access-requirements).
+The [agent entry](#agent-entry) takes that list with these changes:
+
+- The two Datadog intake hosts are optional telemetry.
+  They are listed so the bouncer does not log a denial for each event.
+- `formulae.brew.sh` is left out, because it serves Homebrew installs only.
+- `*-review.googlesource.com` and `bridge.claudeusercontent.com` are left out, because they serve Claude Desktop and the Chrome extension only.
+- `github.com` is left out, because tunneling it would bypass a GitHub policy such as [docs/bouncer/github](bouncer/github).
+  Plugin marketplaces hosted on GitHub need it.
+  Add it to the agent `tunnel` list, or allow those repositories in your GitHub policy.
+
 If a host is missing, a profile with `unmatched: deny` refuses it, and the sidecar logs it at `warn`:
 
 ```bash
@@ -116,6 +135,7 @@ If `build` is set, `run` always builds and tags the image, then starts it.
 Docker layer cache makes an unchanged Dockerfile cheap.
 Set `pull_policy: always` or pass `--pull=always` to also refresh the base image.
 Edit `~/.config/agentcon.d/claude/Dockerfile` when the agent needs more tools.
+On a network that inspects TLS, add the inspection CA to your copy's Dockerfile right after `FROM`, as in [Trusting a TLS inspection CA](bouncer.md#trusting-a-tls-inspection-ca), so build-time downloads succeed.
 
 The image does not contain Claude Code.
 The [workspace contract](../README.md#workspace-contract) is what `run` always does.

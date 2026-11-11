@@ -117,6 +117,7 @@ Progress is logged at info, the same shape as `docker build --progress plain`.
 Docker layer cache makes an unchanged Dockerfile cheap.
 Set `pull_policy: always` or pass `--pull=always` to also refresh the base image.
 Edit `~/.config/agentcon.d/cursor/Dockerfile` when the agent needs more tools.
+On a network that inspects TLS, add the inspection CA to your copy's Dockerfile right after `FROM`, as in [Trusting a TLS inspection CA](bouncer.md#trusting-a-tls-inspection-ca), so build-time downloads succeed.
 
 The [workspace contract](../README.md#workspace-contract) is what `run` always does.
 This example also bind-mounts the Cursor dirs above and uses this entrypoint:
