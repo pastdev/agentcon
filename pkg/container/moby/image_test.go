@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -27,7 +30,18 @@ type fakeAPI struct {
 	pullBody   string
 	pulled     string
 	buildOpts  client.ImageBuildOptions
-	network    network.Inspect
+	buildBody  io.Reader
+	buildErr   error
+	// buildWaits makes ImageBuild wait for its context, as the daemon does
+	// while it waits for a build session.
+	buildWaits bool
+	dialErr    error
+	dialed     []string
+	// sessionUp, when set, makes a successful build wait for the session
+	// to dial, as the daemon does.
+	sessionUp chan struct{}
+	upOnce    sync.Once
+	network   network.Inspect
 }
 
 func (f *fakeAPI) ImageInspect(context.Context, string, ...client.ImageInspectOption) (client.ImageInspectResult, error) {
@@ -42,9 +56,42 @@ func (f *fakeAPI) ImagePull(_ context.Context, ref string, _ client.ImagePullOpt
 	return fakePull{io.NopCloser(strings.NewReader(f.pullBody))}, nil
 }
 
-func (f *fakeAPI) ImageBuild(_ context.Context, _ io.Reader, opts client.ImageBuildOptions) (client.ImageBuildResult, error) {
+func (f *fakeAPI) ImageBuild(ctx context.Context, body io.Reader, opts client.ImageBuildOptions) (client.ImageBuildResult, error) {
 	f.buildOpts = opts
+	f.buildBody = body
+	if f.buildWaits {
+		<-ctx.Done()
+		return client.ImageBuildResult{}, fmt.Errorf("build: %w", ctx.Err())
+	}
+	if f.buildErr != nil {
+		return client.ImageBuildResult{}, f.buildErr
+	}
+	if f.sessionUp != nil {
+		select {
+		case <-f.sessionUp:
+		case <-ctx.Done():
+			return client.ImageBuildResult{}, fmt.Errorf("build: %w", ctx.Err())
+		}
+	}
 	return client.ImageBuildResult{Body: io.NopCloser(strings.NewReader(""))}, nil
+}
+
+// DialHijack hands the session one end of a pipe. Nothing answers on the
+// other end, so the session serves until it is closed.
+func (f *fakeAPI) DialHijack(_ context.Context, url, proto string, _ map[string][]string) (net.Conn, error) {
+	f.dialed = append(f.dialed, url+" "+proto)
+	if f.dialErr != nil {
+		return nil, f.dialErr
+	}
+	if f.sessionUp != nil {
+		f.upOnce.Do(func() { close(f.sessionUp) })
+	}
+	conn, peer := net.Pipe()
+	go func() {
+		_, _ = io.Copy(io.Discard, peer)
+		_ = peer.Close()
+	}()
+	return conn, nil
 }
 
 func (f *fakeAPI) NetworkInspect(context.Context, string, client.NetworkInspectOptions) (client.NetworkInspectResult, error) {

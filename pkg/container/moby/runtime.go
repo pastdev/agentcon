@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 
 	"github.com/moby/moby/api/pkg/stdcopy"
@@ -88,6 +89,12 @@ type apiClient interface {
 		networkID string,
 		options client.NetworkRemoveOptions,
 	) (client.NetworkRemoveResult, error)
+	DialHijack(
+		ctx context.Context,
+		url string,
+		proto string,
+		meta map[string][]string,
+	) (net.Conn, error)
 	ImageBuild(
 		ctx context.Context,
 		buildContext io.Reader,

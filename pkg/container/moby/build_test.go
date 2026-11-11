@@ -1,7 +1,6 @@
 package moby
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,42 +9,119 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/moby/api/types/jsonstream"
+	"github.com/pastdev/agentcon/pkg/container"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestTarDirectory(t *testing.T) {
-	tester := func(t *testing.T, root string, want []string) {
+func TestBuildInputs(t *testing.T) {
+	type testCase struct {
+		files          map[string]string
+		dockerfile     string
+		wantDir        string
+		wantDockerfile string
+		wantExcludes   []string
+	}
+	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		r, err := tarDirectory(root)
-		require.NoError(t, err)
-		var found []string
-		tr := tar.NewReader(r)
-		for {
-			hdr, err := tr.Next()
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			require.NoError(t, err)
-			found = append(found, hdr.Name)
+		root := t.TempDir()
+		for name, body := range tc.files {
+			path := filepath.Join(root, name)
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		}
-		assert.Subset(t, found, want)
+		got, err := buildInputs(root, tc.dockerfile)
+		require.NoError(t, err)
+		assert.Equal(t, buildInput{
+			contextDir:     root,
+			dockerfileDir:  filepath.Join(root, tc.wantDir),
+			dockerfileName: tc.wantDockerfile,
+			excludes:       tc.wantExcludes,
+		}, got)
 	}
 
-	t.Run("includes the dockerfile and contrib files", func(t *testing.T) {
-		root := t.TempDir()
-		err := os.WriteFile(filepath.Join(root, "Dockerfile"), []byte("FROM scratch\n"), 0o600)
+	t.Run("defaults to Dockerfile at the root with no excludes", func(t *testing.T) {
+		tester(t, testCase{files: map[string]string{"Dockerfile": "FROM scratch\n"}, wantDockerfile: "Dockerfile"})
+	})
+	t.Run("serves a Dockerfile in a subdirectory", func(t *testing.T) {
+		tester(t, testCase{
+			files:          map[string]string{"build/app.Dockerfile": "FROM scratch\n"},
+			dockerfile:     "build/app.Dockerfile",
+			wantDir:        "build",
+			wantDockerfile: "app.Dockerfile",
+		})
+	})
+	t.Run("reads .dockerignore at the root", func(t *testing.T) {
+		tester(t, testCase{
+			files:          map[string]string{".dockerignore": ".git\n# comment\n*.tmp\n"},
+			wantDockerfile: "Dockerfile",
+			wantExcludes:   []string{".git", "*.tmp"},
+		})
+	})
+	t.Run("prefers the Dockerfile's own ignore file", func(t *testing.T) {
+		tester(t, testCase{
+			files: map[string]string{
+				".dockerignore":                     "root-rule\n",
+				"build/app.Dockerfile.dockerignore": "own-rule\n",
+			},
+			dockerfile:     "build/app.Dockerfile",
+			wantDir:        "build",
+			wantDockerfile: "app.Dockerfile",
+			wantExcludes:   []string{"own-rule"},
+		})
+	})
+}
+
+func TestBuildSession(t *testing.T) {
+	type testCase struct {
+		api     *fakeAPI
+		wantErr string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r := &Runtime{api: tc.api}
+		err := r.Build(ctx, container.Build{
+			Context:    t.TempDir(),
+			Dockerfile: "Dockerfile",
+			Tags:       []string{"agentcon/test:latest"},
+			Output:     io.Discard,
+		})
+		// Build returns only after its session goroutine ends, so returning
+		// at all shows the session was closed.
+		require.NoError(t, ctx.Err(), "build did not return")
+		if tc.wantErr != "" {
+			require.ErrorContains(t, err, tc.wantErr)
+			return
+		}
 		require.NoError(t, err)
-		err = os.MkdirAll(filepath.Join(root, "contrib"), 0o700)
-		require.NoError(t, err)
-		err = os.WriteFile(filepath.Join(root, "contrib", "entrypoint.sh"), []byte("#!/bin/sh\n"), 0o600)
-		require.NoError(t, err)
-		tester(t, root, []string{"Dockerfile", "contrib/entrypoint.sh"})
+		opts := tc.api.buildOpts
+		assert.Nil(t, tc.api.buildBody, "build body")
+		assert.NotEmpty(t, opts.SessionID)
+		assert.Equal(t, "client-session", opts.RemoteContext)
+		assert.Equal(t, "Dockerfile", opts.Dockerfile)
+		assert.Equal(t, []string{"agentcon/test:latest"}, opts.Tags)
+		assert.Equal(t, []string{"/session h2c"}, tc.api.dialed)
+	}
+
+	t.Run("builds through a session", func(t *testing.T) {
+		tester(t, testCase{api: &fakeAPI{sessionUp: make(chan struct{})}})
+	})
+	t.Run("closes the session after a failed build", func(t *testing.T) {
+		tester(t, testCase{api: &fakeAPI{buildErr: errors.New("daemon said no")}, wantErr: "daemon said no"})
+	})
+	t.Run("stops waiting when the session cannot connect", func(t *testing.T) {
+		tester(t, testCase{
+			api:     &fakeAPI{buildWaits: true, dialErr: errors.New("hijack refused")},
+			wantErr: "build session: failed to dial gRPC: hijack refused",
+		})
 	})
 }
 
