@@ -29,14 +29,14 @@ func TestMounts(t *testing.T) {
 			want: []mount.Mount{{Type: mount.TypeBind, Source: "/home/me/git", Target: "/workspace"}},
 		})
 	})
-	t.Run("mounts a volume subpath", func(t *testing.T) {
+	t.Run("mounts a volume subpath without copying the image into it", func(t *testing.T) {
 		tester(t, testCase{
 			in: []container.Mount{{Source: "/workspace/git", Target: "/workspace", Volume: "dev-workspace", Subpath: "git"}},
 			want: []mount.Mount{{
 				Type:          mount.TypeVolume,
 				Source:        "dev-workspace",
 				Target:        "/workspace",
-				VolumeOptions: &mount.VolumeOptions{Subpath: "git"},
+				VolumeOptions: &mount.VolumeOptions{Subpath: "git", NoCopy: true},
 			}},
 		})
 	})

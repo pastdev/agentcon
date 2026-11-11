@@ -42,16 +42,17 @@ golangci-lint run
 A context may use any Linux image that honors the [workspace contract](../README.md#workspace-contract).
 This tree does not ship a product image.
 [docs/workspace/Dockerfile](workspace/Dockerfile) is a mock that only honors the contract.
-[docs/cursor/image](cursor/image) is a Cursor starting point.
-Copy it into the config directory and edit that copy.
+[docs/cursor/image](cursor/image) and [docs/claude/image](claude/image) are Cursor and Claude Code starting points.
+Copy one into the config directory and edit that copy.
 
 ```bash
 docker build --progress plain --tag pastdev.com/agentcon-cursor:latest docs/cursor/image
+docker build --progress plain --tag pastdev.com/agentcon-claude:latest docs/claude/image
 ```
 
 Copy that tree into the config directory for a real agent.
 The [README](../README.md) getting-started path does that copy and the YAML.
-Set `build.context` with `{{relativeDir "cursor"}}` so it resolves against that file before configs merge.
+Set `build.context` with `{{relativeDir "<agent>"}}` so it resolves against that file before configs merge.
 When `build` is set, `run` always builds and relies on the daemon cache.
 `pull_policy: always` or `--pull=always` also refreshes the base images.
 Build progress is logged at info.
@@ -60,6 +61,7 @@ When bouncer is enabled, `run` starts the sidecar from `registry.access.redhat.c
 `run` pulls that image when it is missing, or before every run with `--pull=always`.
 Entrypoint xtrace is off unless `AGENTCON_XTRACE=1`.
 When that is set, the Cursor example writes the trace to `/agent/cursor/entrypoint.xtrace` (host `~/.cursor/entrypoint.xtrace`).
+The Claude Code example writes it to `/agent/claude-install/entrypoint.xtrace` (host `~/.local/share/agentcon/claude/entrypoint.xtrace`).
 Override the path with `AGENTCON_XTRACE_LOG`.
 
 ## Go layout

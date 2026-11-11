@@ -5,8 +5,8 @@ A Cursor session is an agent image that starts `agent`, plus config that names t
 The image still has to honor the [workspace contract](../README.md#workspace-contract).
 This example adds Cursor binds and an entrypoint on top of that minimum.
 
-The [README](../README.md#getting-started) is the install-to-`run` path, including the example `agents.yaml` and `contexts.yaml`.
-This page is the Cursor-specific contract behind those files.
+The [README](../README.md#getting-started) is the install-to-`run` path.
+This page is the Cursor agent entry and the contract behind it.
 
 ## Get started
 
@@ -36,8 +36,39 @@ curl --fail --location \
       '*/docs/cursor/image'
 ```
 
-Then write `agents.yaml` and `contexts.yaml` as in the README.
-Set `build.context` to `'{{relativeDir "cursor"}}'` so it resolves against that copy.
+Then save the [agent entry](#agent-entry) as `~/.config/agentcon.d/cursor.yaml`, and set `agent: cursor` on a context as in the README.
+
+## Agent entry
+
+`~/.config/agentcon.d/cursor.yaml`:
+
+```yaml
+agents:
+  cursor:
+    image: pastdev.com/agentcon-cursor:latest
+    build:
+      context: '{{relativeDir "cursor"}}'
+    mounts:
+      - source: "{{home}}/.cursor"
+        target: /agent/cursor
+      - source: "{{home}}/.config/cursor"
+        target: /agent/cursor-config
+    tunnel:
+      - cursor.com
+      - "*.cursor.com"
+      - "*.cursor.sh"
+      - "*.cursor-cdn.com"
+      - "*.cursorapi.com"
+      - "*.cursorvm.com"
+      - accounts.spacex.ai
+      - accounts.x.ai
+      - anysphere-binaries.s3.us-east-1.amazonaws.com
+      - agent-stores.s3.us-east-1.amazonaws.com
+      - cloud-agent-artifacts.s3.us-east-1.amazonaws.com
+      - cursor.blob.core.windows.net
+```
+
+`{{relativeDir "cursor"}}` resolves against the file it is in, so it finds the `cursor` image copy beside `cursor.yaml`.
 
 ## Image and binds
 
@@ -50,9 +81,10 @@ The example entrypoint links them to `$HOME/.cursor` and `$HOME/.config/cursor`.
 `run` creates the host directories if they are missing.
 It bind-mounts them and unions `tunnel` onto root bouncer profiles.
 
-`--resume` continues the previous Cursor chat.
+`agentcon run -- --resume` continues the previous Cursor chat.
 It needs an existing chat and a stored login.
-First start in a new login location still needs `agent login`.
+First start in a new login location still needs `agent login` inside the session.
+Linux CLI login is stored on the `~/.config/cursor` bind, so a later container can reuse it.
 
 ## Tunnel
 
@@ -63,7 +95,7 @@ Root bouncer profiles that do not `extends` another profile receive it.
 If a vendor host is missing, add it on the agent `tunnel` list or on the profile `tunnel` list.
 See [bouncer.md](bouncer.md).
 
-The list in the README getting-started `agents.yaml` is the current set:
+The list in the [agent entry](#agent-entry) is the current set:
 
 - `cursor.com`
 - `*.cursor.com`
@@ -85,6 +117,7 @@ Progress is logged at info, the same shape as `docker build --progress plain`.
 Docker layer cache makes an unchanged Dockerfile cheap.
 Set `pull_policy: always` or pass `--pull=always` to also refresh the base image.
 Edit `~/.config/agentcon.d/cursor/Dockerfile` when the agent needs more tools.
+On a network that inspects TLS, add the inspection CA to your copy's Dockerfile right after `FROM`, as in [Trusting a TLS inspection CA](bouncer.md#trusting-a-tls-inspection-ca), so build-time downloads succeed.
 
 The [workspace contract](../README.md#workspace-contract) is what `run` always does.
 This example also bind-mounts the Cursor dirs above and uses this entrypoint:

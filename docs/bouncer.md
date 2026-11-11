@@ -315,7 +315,7 @@ curl --fail --location \
       '*/docs/bouncer/github'
 ```
 
-That writes `bouncers.yaml` and `ts/` next to `agents.yaml` and `contexts.yaml`.
+That writes `bouncers.yaml` and `ts/` next to your agent and context files.
 It does not set `agent` or `root`.
 If your context is not named `git`, rename that key in `bouncers.yaml`.
 Add another repo by appending to each `github_repo` list, not by copying the rules.
@@ -632,4 +632,4 @@ bouncers:
           - extra.vendor.example
 ```
 
-A Cursor example list is in [cursor.md](cursor.md).
+Example lists are in [cursor.md](cursor.md) and [claude.md](claude.md).

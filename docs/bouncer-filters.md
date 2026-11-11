@@ -13,8 +13,8 @@ Put sources under `ts/` in an `agentcon.d` overlay directory.
 
 ```text
 ~/.config/agentcon.d/
-  agents.yaml
   bouncers.yaml
+  claude.yaml
   contexts.yaml
   ts/
     filters/

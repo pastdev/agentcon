@@ -9,7 +9,7 @@ Command flags live in `--help`.
 
 ## Getting started
 
-This path starts from the Cursor example image.
+This path starts from an example agent image: [Cursor](docs/cursor.md) or [Claude Code](docs/claude.md).
 Any Linux image that honors the [workspace contract](#workspace-contract) can replace it later.
 
 ### 1. Install the CLI
@@ -32,72 +32,66 @@ chmod 0755 "${binary}"
 Add `~/.local/bin` to `PATH` if it is not already there.
 See [docs/development.md](docs/development.md) to build from source.
 
-### 2. Copy the example image
+### 2. Copy an example image
 
-[docs/cursor/image](docs/cursor/image) is a starting point, not a product image.
-Copy it into `~/.config/agentcon.d/cursor`, then edit that copy's Dockerfile to add project-specific tools.
+[docs/cursor/image](docs/cursor/image) and [docs/claude/image](docs/claude/image) are starting points, not product images.
+Copy one into `~/.config/agentcon.d/<agent>`, then edit that copy's Dockerfile to add project-specific tools.
 
 Config is loaded from `/etc/agentcon.d`, `~/.config/agentcon.d`, and `./agentcon.d`.
 Maps merge.
 Slices replace.
-Name the YAML files `agents.yaml`, `bouncers.yaml`, and `contexts.yaml`.
+Every `*.yml` and `*.yaml` file in a directory is loaded, and the files merge.
+Keep each agent in its own file, such as `cursor.yaml` or `claude.yaml`, with contexts in `contexts.yaml` and bouncers in `bouncers.yaml`.
+Set `default_context` in only one file, because the last file merged wins.
 Put the image next to the YAML so `build.context` does not point at a checkout you might delete.
 
-From a clone of this repository:
+From a clone of this repository, with `agent` set to `cursor` or `claude`:
 
 ```bash
+agent=claude
 mkdir -p ~/.config/agentcon.d
-cp -a docs/cursor/image ~/.config/agentcon.d/cursor
+cp -a "docs/${agent}/image" ~/.config/agentcon.d/"${agent}"
 ```
 
 From a release-only install:
 
 ```bash
-mkdir -p ~/.config/agentcon.d/cursor
+agent=claude
+mkdir -p ~/.config/agentcon.d/"${agent}"
 curl --fail --location \
   https://github.com/pastdev/agentcon/archive/refs/heads/master.tar.gz \
   | tar \
-      --directory ~/.config/agentcon.d/cursor \
+      --directory ~/.config/agentcon.d/"${agent}" \
       --extract \
       --gzip \
       --strip-components 4 \
       --wildcards \
-      '*/docs/cursor/image'
+      "*/docs/${agent}/image"
 ```
 
 ### 3. Write agent and context files
 
 Home in YAML is `{{home}}`.
 `~` is not expanded.
-`{{relativeDir "cursor"}}` resolves against the file that contains it, before overlays merge.
+`{{relativeDir "claude"}}` resolves against the file that contains it, before overlays merge.
 
-`~/.config/agentcon.d/agents.yaml`:
+An agent entry in `~/.config/agentcon.d/claude.yaml` has this shape:
 
 ```yaml
 agents:
-  cursor:
-    image: pastdev.com/agentcon-cursor:latest
+  claude:
+    image: pastdev.com/agentcon-claude:latest
     build:
-      context: '{{relativeDir "cursor"}}'
+      context: '{{relativeDir "claude"}}'
     mounts:
-      - source: "{{home}}/.cursor"
-        target: /agent/cursor
-      - source: "{{home}}/.config/cursor"
-        target: /agent/cursor-config
+      - source: "{{home}}/.claude"
+        target: /agent/claude
     tunnel:
-      - cursor.com
-      - "*.cursor.com"
-      - "*.cursor.sh"
-      - "*.cursor-cdn.com"
-      - "*.cursorapi.com"
-      - "*.cursorvm.com"
-      - accounts.spacex.ai
-      - accounts.x.ai
-      - anysphere-binaries.s3.us-east-1.amazonaws.com
-      - agent-stores.s3.us-east-1.amazonaws.com
-      - cloud-agent-artifacts.s3.us-east-1.amazonaws.com
-      - cursor.blob.core.windows.net
+      - api.anthropic.com
 ```
+
+Each example lists its full entry, with every mount and tunnel host it needs.
+Copy it from [docs/cursor.md](docs/cursor.md#agent-entry) or [docs/claude.md](docs/claude.md#agent-entry).
 
 `~/.config/agentcon.d/contexts.yaml`:
 
@@ -105,9 +99,11 @@ agents:
 default_context: git
 contexts:
   git:
-    agent: cursor
+    agent: claude
     root: "{{home}}/git"
 ```
+
+`agent` names an entry under `agents`, such as `cursor` or `claude`.
 
 `image` is the tag `run` starts.
 `build` is Compose-shaped.
@@ -121,8 +117,7 @@ If `image` is omitted, the tag is `agentcon/<agent-name>`.
 `run` pulls without registry credentials, so run `docker pull` yourself for a private image.
 
 `run` always applies the [workspace contract](#workspace-contract).
-The Cursor binds and tunnel hosts in the YAML above are extra.
-Why they exist is in [docs/cursor.md](docs/cursor.md).
+An example's mounts and tunnel hosts are extra, and its page says why they exist.
 
 ### 4. Confirm the merge
 
@@ -130,7 +125,7 @@ Why they exist is in [docs/cursor.md](docs/cursor.md).
 agentcon config
 ```
 
-`build.context` should be the absolute `cursor` directory under `~/.config/agentcon.d`.
+`build.context` should be the absolute agent directory under `~/.config/agentcon.d`.
 
 ### 5. Run from a repo under `root`
 
@@ -149,7 +144,7 @@ The first start builds the image.
 Progress is logged at info:
 
 ```text
-2:58PM INF building pastdev.com/agentcon-cursor:latest log=cli
+2:58PM INF building pastdev.com/agentcon-claude:latest log=cli
 2:58PM INF #1 [internal] load remote build context log=cli
 2:58PM INF #1 DONE 0.0s log=cli
 ```
@@ -167,9 +162,8 @@ agentcon run -- --resume
 ```
 
 Each `run` is a new container.
-`--resume` asks Cursor to continue the previous chat.
-The first start in a new login location still needs `agent login` inside the session.
-Linux CLI login is stored on the `~/.config/cursor` bind, so a later container can reuse it.
+Agent state lives on the example's binds, so a later container reuses its login and chats.
+Each example page covers login and resuming.
 
 You can run more than one project under the same `root` at once.
 Start each from that project's directory.
@@ -360,6 +354,7 @@ Other containers on `DOOD_NETWORK` can reach the sidecar's management port, thou
 - [Workspace contract](#workspace-contract) for the minimum agent image
 - [docs/workspace/Dockerfile](docs/workspace/Dockerfile) for a mock image that only honors that contract
 - [docs/cursor.md](docs/cursor.md) for the Cursor image, binds, and vendor hosts
+- [docs/claude.md](docs/claude.md) for the Claude Code image, binds, and vendor hosts
 - [docs/bouncer.md](docs/bouncer.md) for bouncer design and policy details
 - [docs/bouncer-filters.md](docs/bouncer-filters.md) for TypeScript filters
 - [docs/bouncer/github](docs/bouncer/github) for a GitHub allowlist starting point
