@@ -6,7 +6,7 @@ The image still has to honor the [workspace contract](../README.md#workspace-con
 This example adds Claude binds and an entrypoint on top of that minimum.
 
 The [README](../README.md#getting-started) is the install-to-`run` path.
-This page is the Claude entry for `agents.yaml` and the contract behind it.
+This page is the Claude agent entry and the contract behind it.
 
 ## Get started
 
@@ -36,11 +36,11 @@ curl --fail --location \
       '*/docs/claude/image'
 ```
 
-Then add the [agent entry](#agent-entry) to `agents.yaml`, and set `agent: claude` on a context as in the README.
+Then save the [agent entry](#agent-entry) as `~/.config/agentcon.d/claude.yaml`, and set `agent: claude` on a context as in the README.
 
 ## Agent entry
 
-`~/.config/agentcon.d/agents.yaml`:
+`~/.config/agentcon.d/claude.yaml`:
 
 ```yaml
 agents:
@@ -70,7 +70,7 @@ agents:
       - browser-intake-us5-datadoghq.com
 ```
 
-`{{relativeDir "claude"}}` resolves against that copy of the image, next to `agents.yaml`.
+`{{relativeDir "claude"}}` resolves against the file it is in, so it finds the `claude` image copy beside `claude.yaml`.
 
 ## Binds
 

@@ -6,7 +6,7 @@ The image still has to honor the [workspace contract](../README.md#workspace-con
 This example adds Cursor binds and an entrypoint on top of that minimum.
 
 The [README](../README.md#getting-started) is the install-to-`run` path.
-This page is the Cursor entry for `agents.yaml` and the contract behind it.
+This page is the Cursor agent entry and the contract behind it.
 
 ## Get started
 
@@ -36,11 +36,11 @@ curl --fail --location \
       '*/docs/cursor/image'
 ```
 
-Then add the [agent entry](#agent-entry) to `agents.yaml`, and set `agent: cursor` on a context as in the README.
+Then save the [agent entry](#agent-entry) as `~/.config/agentcon.d/cursor.yaml`, and set `agent: cursor` on a context as in the README.
 
 ## Agent entry
 
-`~/.config/agentcon.d/agents.yaml`:
+`~/.config/agentcon.d/cursor.yaml`:
 
 ```yaml
 agents:
@@ -68,7 +68,7 @@ agents:
       - cursor.blob.core.windows.net
 ```
 
-`{{relativeDir "cursor"}}` resolves against that copy of the image, next to `agents.yaml`.
+`{{relativeDir "cursor"}}` resolves against the file it is in, so it finds the `cursor` image copy beside `cursor.yaml`.
 
 ## Image and binds
 

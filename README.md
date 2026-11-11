@@ -40,7 +40,9 @@ Copy one into `~/.config/agentcon.d/<agent>`, then edit that copy's Dockerfile t
 Config is loaded from `/etc/agentcon.d`, `~/.config/agentcon.d`, and `./agentcon.d`.
 Maps merge.
 Slices replace.
-Name the YAML files `agents.yaml`, `bouncers.yaml`, and `contexts.yaml`.
+Every `*.yml` and `*.yaml` file in a directory is loaded, and the files merge.
+Keep each agent in its own file, such as `cursor.yaml` or `claude.yaml`, with contexts in `contexts.yaml` and bouncers in `bouncers.yaml`.
+Set `default_context` in only one file, because the last file merged wins.
 Put the image next to the YAML so `build.context` does not point at a checkout you might delete.
 
 From a clone of this repository, with `agent` set to `cursor` or `claude`:
@@ -73,7 +75,7 @@ Home in YAML is `{{home}}`.
 `~` is not expanded.
 `{{relativeDir "claude"}}` resolves against the file that contains it, before overlays merge.
 
-An agent entry in `~/.config/agentcon.d/agents.yaml` has this shape:
+An agent entry in `~/.config/agentcon.d/claude.yaml` has this shape:
 
 ```yaml
 agents:
@@ -101,7 +103,7 @@ contexts:
     root: "{{home}}/git"
 ```
 
-`agent` names an entry in `agents.yaml`, such as `cursor` or `claude`.
+`agent` names an entry under `agents`, such as `cursor` or `claude`.
 
 `image` is the tag `run` starts.
 `build` is Compose-shaped.
