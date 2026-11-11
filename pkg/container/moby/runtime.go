@@ -151,11 +151,13 @@ func mounts(in []container.Mount) []mount.Mount {
 	out := make([]mount.Mount, 0, len(in))
 	for _, m := range in {
 		if m.Volume != "" {
+			// A volume stands in for a bind, so it must not take the image's
+			// files, owner, or mode when the source directory is empty.
 			out = append(out, mount.Mount{
 				Type:          mount.TypeVolume,
 				Source:        m.Volume,
 				Target:        m.Target,
-				VolumeOptions: &mount.VolumeOptions{Subpath: m.Subpath},
+				VolumeOptions: &mount.VolumeOptions{Subpath: m.Subpath, NoCopy: true},
 			})
 			continue
 		}
