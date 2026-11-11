@@ -77,6 +77,9 @@ function install_claude {
   if [[ -x "${HOME}/.local/bin/claude" ]]; then
     return 0
   fi
+  # The installer is quiet until its download finishes.
+  printf 'Installing Claude Code into %s. This can take a few minutes on first start.\n' \
+    "${CLAUDE_INSTALL}" >&2
   curl -fsSL https://claude.ai/install.sh | bash
 }
 
