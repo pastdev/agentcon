@@ -1,30 +1,38 @@
 package moby
 
 import (
-	"archive/tar"
-	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	controlapi "github.com/moby/buildkit/api/services/control"
+	"github.com/moby/buildkit/session"
+	"github.com/moby/buildkit/session/filesync"
 	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/jsonstream"
 	"github.com/moby/moby/client"
+	"github.com/moby/patternmatcher/ignorefile"
 	"github.com/pastdev/agentcon/pkg/container"
+	"github.com/tonistiigi/fsutil"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
 	defaultDockerfile = "Dockerfile"
 	buildkitTraceID   = "moby.buildkit.trace"
+	// remoteContextSession tells the daemon to read the context from the
+	// build session.
+	remoteContextSession = "client-session"
 )
 
 func (r *Runtime) Build(ctx context.Context, spec container.Build) error {
@@ -41,22 +49,56 @@ func (r *Runtime) Build(ctx context.Context, spec container.Build) error {
 		return fmt.Errorf("write build header: %w", err)
 	}
 
-	dockerfile := spec.Dockerfile
-	if dockerfile == "" {
-		dockerfile = defaultDockerfile
-	}
-
-	archive, err := tarDirectory(spec.Context)
+	in, err := buildInputs(spec.Context, spec.Dockerfile)
 	if err != nil {
-		return fmt.Errorf("pack build context: %w", err)
+		return err
+	}
+	dirs, err := in.sources()
+	if err != nil {
+		return err
 	}
 
-	result, err := r.api.ImageBuild(ctx, archive, client.ImageBuildOptions{
-		Tags:       spec.Tags,
-		Dockerfile: filepath.ToSlash(dockerfile),
-		Remove:     true,
-		PullParent: spec.PullParent,
-		Version:    build.BuilderBuildKit,
+	// Send the context through a BuildKit session, as docker build does.
+	// Uploading it as the request body can stall in "load remote build
+	// context" on Docker Desktop.
+	sess, err := session.NewSession(ctx, sharedKey(in.contextDir))
+	if err != nil {
+		return fmt.Errorf("build session: %w", err)
+	}
+	sess.Allow(filesync.NewFSSyncProvider(dirs))
+
+	buildCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		err := sess.Run(buildCtx, func(ctx context.Context, proto string, meta map[string][]string) (net.Conn, error) {
+			return r.api.DialHijack(ctx, "/session", proto, meta)
+		})
+		if err != nil {
+			cancel(fmt.Errorf("build session: %w", err))
+		}
+	}()
+
+	err = r.imageBuild(buildCtx, spec, sess.ID(), in.dockerfileName, out)
+	_ = sess.Close()
+	<-ran
+	cause := context.Cause(buildCtx)
+	if err != nil && cause != nil && !errors.Is(cause, context.Canceled) {
+		return cause //nolint:wrapcheck // the session goroutine already wrapped it
+	}
+	return err
+}
+
+func (r *Runtime) imageBuild(ctx context.Context, spec container.Build, sessionID, dockerfile string, out io.Writer) error {
+	result, err := r.api.ImageBuild(ctx, nil, client.ImageBuildOptions{
+		Tags:          spec.Tags,
+		Dockerfile:    dockerfile,
+		Remove:        true,
+		PullParent:    spec.PullParent,
+		Version:       build.BuilderBuildKit,
+		SessionID:     sessionID,
+		RemoteContext: remoteContextSession,
 	})
 	if err != nil {
 		return fmt.Errorf("build image: %w", err)
@@ -70,76 +112,85 @@ func (r *Runtime) Build(ctx context.Context, spec container.Build) error {
 	return nil
 }
 
+// buildInput is what a session build serves: the context, the directory
+// holding the Dockerfile, and the context paths to leave out.
+type buildInput struct {
+	contextDir     string
+	dockerfileDir  string
+	dockerfileName string
+	excludes       []string
+}
+
+// buildInputs resolves a context and a Dockerfile path relative to it.
+// Ignore patterns come from <Dockerfile>.dockerignore beside the Dockerfile
+// when it exists, else from .dockerignore at the context root.
+func buildInputs(contextDir, dockerfile string) (buildInput, error) {
+	if dockerfile == "" {
+		dockerfile = defaultDockerfile
+	}
+	path := filepath.Join(contextDir, dockerfile)
+	in := buildInput{
+		contextDir:     contextDir,
+		dockerfileDir:  filepath.Dir(path),
+		dockerfileName: filepath.Base(path),
+	}
+	for _, ignore := range []string{path + ".dockerignore", filepath.Join(contextDir, ".dockerignore")} {
+		f, err := os.Open(ignore) //nolint:gosec // beside the build context from config
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return buildInput{}, fmt.Errorf("ignore file: %w", err)
+		}
+		in.excludes, err = ignorefile.ReadAll(f)
+		closeErr := f.Close()
+		if err != nil {
+			return buildInput{}, fmt.Errorf("ignore file %s: %w", ignore, err)
+		}
+		if closeErr != nil {
+			return buildInput{}, fmt.Errorf("ignore file %s: %w", ignore, closeErr)
+		}
+		break
+	}
+	return in, nil
+}
+
+// sources serves the context, without excluded paths, and the Dockerfile
+// directory under the names BuildKit's Dockerfile frontend asks for.
+func (in buildInput) sources() (filesync.StaticDirSource, error) {
+	contextFS, err := fsutil.NewFS(in.contextDir)
+	if err != nil {
+		return nil, fmt.Errorf("build context: %w", err)
+	}
+	contextFS, err = fsutil.NewFilterFS(contextFS, &fsutil.FilterOpt{ExcludePatterns: in.excludes})
+	if err != nil {
+		return nil, fmt.Errorf("build context: %w", err)
+	}
+	dockerfileFS, err := fsutil.NewFS(in.dockerfileDir)
+	if err != nil {
+		return nil, fmt.Errorf("dockerfile directory: %w", err)
+	}
+	return filesync.StaticDirSource{
+		"context":    contextFS,
+		"dockerfile": dockerfileFS,
+	}, nil
+}
+
+// sharedKey lets BuildKit reuse what it already received for this context.
+func sharedKey(contextDir string) string {
+	abs, err := filepath.Abs(contextDir)
+	if err != nil {
+		abs = contextDir
+	}
+	sum := sha256.Sum256([]byte(abs))
+	return hex.EncodeToString(sum[:])
+}
+
 func buildTagSummary(tags []string) string {
 	if len(tags) == 0 {
 		return "image"
 	}
 	return strings.Join(tags, ", ")
-}
-
-func tarDirectory(root string) (io.Reader, error) {
-	buf := &bytes.Buffer{}
-	tw := tar.NewWriter(buf)
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return fmt.Errorf("relative path %s: %w", path, err)
-		}
-		name := filepath.ToSlash(rel)
-		if name == "." {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return fmt.Errorf("stat %s: %w", path, err)
-		}
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return fmt.Errorf("tar header %s: %w", name, err)
-		}
-		header.Name = name
-		if d.Type()&fs.ModeSymlink != 0 {
-			target, err := os.Readlink(path)
-			if err != nil {
-				return fmt.Errorf("readlink %s: %w", path, err)
-			}
-			header.Typeflag = tar.TypeSymlink
-			header.Linkname = target
-		}
-		err = tw.WriteHeader(header)
-		if err != nil {
-			return fmt.Errorf("write tar header %s: %w", name, err)
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		//nolint:gosec // build context path is supplied by config
-		file, err := os.Open(path)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", path, err)
-		}
-		_, err = io.Copy(tw, file)
-		closeErr := file.Close()
-		if err != nil {
-			return fmt.Errorf("copy %s: %w", path, err)
-		}
-		if closeErr != nil {
-			return fmt.Errorf("close %s: %w", path, closeErr)
-		}
-		return nil
-	})
-	if err != nil {
-		_ = tw.Close()
-		return nil, fmt.Errorf("walk build context: %w", err)
-	}
-	err = tw.Close()
-	if err != nil {
-		return nil, fmt.Errorf("close tar: %w", err)
-	}
-	return buf, nil
 }
 
 func displayBuild(ctx context.Context, in io.Reader, out io.Writer) error {
