@@ -20,7 +20,7 @@ func TestRunFile(t *testing.T) {
 		require.GreaterOrEqual(t, len(files), 10, "spec files")
 		for _, f := range files {
 			t.Run(f, func(t *testing.T) {
-				results, err := RunFile(f)
+				results, err := RunFile(f, Options{})
 				require.NoError(t, err)
 				for _, r := range results {
 					assert.True(t, r.Passed, "%s: step %s: %s\n%s", r.Name, r.StepName, r.Message, r.FilterLog)

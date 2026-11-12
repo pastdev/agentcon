@@ -85,8 +85,8 @@ func TestMaterializeBouncer(t *testing.T) {
 		tester(t, testCase{
 			cfg: Config{
 				OverlayDirs: []string{overlay},
-				Bouncers: map[string]*bouncercfg.Config{
-					"github": {
+				Bouncers: map[string]*BouncerSpec{
+					"github": {Config: bouncercfg.Config{
 						Listen: "127.0.0.1:8228",
 						Dir:    overlay,
 						Profiles: map[string]*bouncercfg.Profile{
@@ -94,7 +94,7 @@ func TestMaterializeBouncer(t *testing.T) {
 								Filters: []bouncercfg.FilterRef{{Path: filter}},
 							},
 						},
-					},
+					}},
 				},
 				Contexts: map[string]ContextSpec{
 					"pastdev": {
@@ -114,12 +114,12 @@ func TestMaterializeBouncer(t *testing.T) {
 	t.Run("invalid policy", func(t *testing.T) {
 		tester(t, testCase{
 			cfg: Config{
-				Bouncers: map[string]*bouncercfg.Config{
-					"github": {
+				Bouncers: map[string]*BouncerSpec{
+					"github": {Config: bouncercfg.Config{
 						Credentials: map[string]*bouncercfg.Credential{
 							"gl": {Token: &bouncercfg.ValueSource{Source: "command"}},
 						},
-					},
+					}},
 				},
 				Contexts: map[string]ContextSpec{
 					"pastdev": {
@@ -152,8 +152,8 @@ func TestMaterializeBouncer(t *testing.T) {
 			Agents: map[string]AgentSpec{
 				"cursor": {Image: "pastdev:latest", Tunnel: []string{"cursor.com", "*.cursor.sh"}},
 			},
-			Bouncers: map[string]*bouncercfg.Config{
-				"github": doc,
+			Bouncers: map[string]*BouncerSpec{
+				"github": {Config: *doc},
 			},
 			Contexts: map[string]ContextSpec{
 				"pastdev": {
@@ -186,13 +186,13 @@ func TestMaterializeBouncer(t *testing.T) {
 				"cursor": {Image: "pastdev:latest", Tunnel: []string{"cursor.com"}},
 				"claude": {Image: "other:latest", Tunnel: []string{"api.anthropic.com"}},
 			},
-			Bouncers: map[string]*bouncercfg.Config{
-				"github": {
+			Bouncers: map[string]*BouncerSpec{
+				"github": {Config: bouncercfg.Config{
 					Listen: "127.0.0.1:8228",
 					Profiles: map[string]*bouncercfg.Profile{
 						"default": {Unmatched: bouncercfg.UnmatchedDeny},
 					},
-				},
+				}},
 			},
 			Contexts: map[string]ContextSpec{
 				"pastdev": {
@@ -263,10 +263,10 @@ func TestWriteBouncer(t *testing.T) {
 		tester(t, testCase{
 			cfg: Config{
 				OverlayDirs: []string{overlay},
-				Bouncers: map[string]*bouncercfg.Config{
-					"github": {
+				Bouncers: map[string]*BouncerSpec{
+					"github": {Config: bouncercfg.Config{
 						Listen: "127.0.0.1:8228",
-					},
+					}},
 				},
 				Contexts: map[string]ContextSpec{
 					"pastdev": {
@@ -360,5 +360,62 @@ func TestBouncerLayoutDir(t *testing.T) {
 			name: "pastdev",
 			want: filepath.Join("/home/me", ".local", "state", "agentcon", "pastdev", "bouncer"),
 		})
+	})
+}
+
+func TestBouncerTests(t *testing.T) {
+	type testCase struct {
+		yaml      string
+		context   string
+		wantTests string
+		wantErr   string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		var cfg Config
+		err := yaml.Unmarshal([]byte(tc.yaml), &cfg)
+		require.NoError(t, err)
+		suite, err := cfg.BouncerTests(tc.context)
+		if tc.wantErr != "" {
+			require.ErrorContains(t, err, tc.wantErr)
+			return
+		}
+		require.NoError(t, err)
+		assert.Equal(t, "github", suite.Bouncer)
+		assert.Equal(t, tc.wantTests, suite.TestsDir)
+		assert.NotContains(t, string(suite.PolicyYAML), "tests", "tests reached the daemon policy")
+		var policy bouncercfg.Config
+		err = yaml.Unmarshal(suite.PolicyYAML, &policy)
+		require.NoError(t, err)
+		assert.Equal(t, "default", policy.DefaultProfile)
+	}
+	const bouncers = `
+bouncers:
+  github:
+    default_profile: default
+    tests: /cfg/tests
+    profiles:
+      default: {}
+  untested:
+    default_profile: default
+    profiles:
+      default: {}
+contexts:
+  git: {bouncer: github}
+  plain: {root: /src}
+  bare: {bouncer: untested}
+`
+
+	t.Run("returns the context bouncer's suite", func(t *testing.T) {
+		tester(t, testCase{yaml: bouncers, context: "git", wantTests: "/cfg/tests"})
+	})
+	t.Run("unknown context", func(t *testing.T) {
+		tester(t, testCase{yaml: bouncers, context: "nope", wantErr: `unknown context "nope"`})
+	})
+	t.Run("context without a bouncer", func(t *testing.T) {
+		tester(t, testCase{yaml: bouncers, context: "plain", wantErr: `context "plain" has no bouncer`})
+	})
+	t.Run("bouncer without tests", func(t *testing.T) {
+		tester(t, testCase{yaml: bouncers, context: "bare", wantErr: `bouncer "untested" has no tests`})
 	})
 }

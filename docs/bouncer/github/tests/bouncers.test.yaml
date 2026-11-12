@@ -1,0 +1,95 @@
+# Tests for the rules in bouncers.yaml, one case per claim in the GitHub
+# section of docs/bouncer.md.
+profile: default
+cases:
+  - name: rule-matched API paths carry the PAT
+    steps:
+      - request: {url: "https://api.github.com/user"}
+        expect: allow
+        expect_credential: true
+      - request: {url: "https://api.github.com/repos/your-org/your-repo/pulls"}
+        expect: allow
+        expect_credential: true
+
+  - name: leftover paths go through without the PAT
+    steps:
+      - request: {url: "https://api.github.com/repos/other-org/other-repo/pulls"}
+        expect: allow
+        expect_credential: false
+      - request: {method: DELETE, url: "https://api.github.com/repos/your-org/your-repo"}
+        expect: allow
+        expect_credential: false
+
+  - name: tag push asks
+    steps:
+      - name: denied
+        request: {method: POST, url: "https://github.com/your-org/your-repo.git/git-receive-pack", git_push: [{ref: refs/tags/v1.0.0}]}
+        expect: deny
+        expect_asked: true
+      - name: approved
+        approve: true
+        request: {method: POST, url: "https://github.com/your-org/your-repo.git/git-receive-pack", git_push: [{ref: refs/tags/v1.0.0}]}
+        expect: allow
+        expect_asked: true
+        expect_credential: true
+
+  - name: feature branch push carries the PAT
+    steps:
+      - request: {method: POST, url: "https://github.com/your-org/your-repo.git/git-receive-pack", git_push: [{ref: refs/heads/feature}]}
+        expect: allow
+        expect_credential: true
+
+  - name: pushes to main and master are blocked
+    steps:
+      - request: {method: POST, url: "https://github.com/your-org/your-repo.git/git-receive-pack", git_push: [{ref: refs/heads/main}]}
+        expect: deny
+        expect_reason: protected branch
+      - request: {method: POST, url: "https://github.com/your-org/your-repo.git/git-receive-pack", git_push: [{ref: refs/heads/master}]}
+        expect: deny
+        expect_reason: protected branch
+
+  - name: only main and master are protected
+    steps:
+      - request: {method: POST, url: "https://github.com/your-org/your-repo.git/git-receive-pack", git_push: [{ref: refs/heads/release/1.0}]}
+        expect: allow
+
+  - name: graphql mergePullRequest asks before the graphql allow
+    steps:
+      - request: {method: POST, url: "https://api.github.com/graphql", body: '{"query":"mutation { mergePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }"}'}
+        expect: deny
+        expect_asked: true
+
+  - name: graphql queries carry the PAT
+    steps:
+      - request: {method: POST, url: "https://api.github.com/graphql", body: '{"query":"query { viewer { login } }"}'}
+        expect: allow
+        expect_credential: true
+
+  - name: graphql deny list blocks repository deletion
+    steps:
+      - request: {method: POST, url: "https://api.github.com/graphql", body: '{"query":"mutation { deleteRepository(input:{repositoryId:\"x\"}) { clientMutationId } }"}'}
+        expect: deny
+
+  - name: rest merge asks
+    steps:
+      - request: {method: PUT, url: "https://api.github.com/repos/your-org/your-repo/pulls/1/merge"}
+        expect: deny
+        expect_asked: true
+
+  - name: ssh tag push asks
+    steps:
+      - ssh: {host: github.com, user: git, command: "git-receive-pack 'your-org/your-repo.git'", git_push: [{ref: refs/tags/v1.0.0}]}
+        expect: deny
+        expect_asked: true
+
+  - name: ssh push to main is blocked
+    steps:
+      - ssh: {host: github.com, user: git, command: "git-receive-pack 'your-org/your-repo.git'", git_push: [{ref: refs/heads/main}]}
+        expect: deny
+        expect_reason: protected branch
+
+  - name: ssh clone of the repo
+    steps:
+      - ssh: {host: github.com, user: git, command: "git-upload-pack 'your-org/your-repo.git'"}
+        expect: allow
+        expect_credential: true

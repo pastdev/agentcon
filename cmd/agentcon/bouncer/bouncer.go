@@ -37,6 +37,7 @@ agentcon run starts the sidecar next to the agent. Use these commands from the
 host to lint policy and talk to a running sidecar.
 
   agentcon bouncer check                validate policy and compile filters
+  agentcon bouncer test                 run the bouncer's policy tests
   agentcon bouncer prompts              list pending prompts
   agentcon bouncer answer ID            answer a pending prompt
   agentcon bouncer approve ID           allow a pending request
@@ -71,6 +72,7 @@ Host commands pick a live session by --slug, then --project, then cwd.`,
 		declineCmd(),
 		sessionsCmd(),
 		checkCmd(),
+		testCmd(),
 	)
 	return cmd
 }
@@ -102,6 +104,9 @@ func resolve() error {
 			name = cfg.DefaultContext
 		}
 		if name != "" {
+			if _, ok := cfg.Contexts[name]; !ok {
+				return fmt.Errorf("unknown context %q", name)
+			}
 			dir := pkgcfg.BouncerLayoutDir(home, name)
 			path, err := cfg.WriteBouncer(name, dir)
 			if err != nil {

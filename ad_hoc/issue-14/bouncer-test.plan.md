@@ -46,8 +46,13 @@ type Step struct {
 	Upstream *Upstream    `yaml:"upstream"`
 	Approve  *bool        `yaml:"approve"`
 	// Expect* fields move here from today's Case unchanged.
+	ExpectCredential *bool `yaml:"expect_credential"`
 }
 ```
+
+`expect_credential` was added in commit 3, so specs can test that leftover paths under `unmatched: tunnel` do not carry the service's credential.
+The fake upstream records whether the request reached it with `SkipCredential` set.
+A step has the credential when the request reached the upstream, `SkipCredential` is not set, and its service names a credential.
 
 - Each case gets a fresh KV store and a freshly loaded filter or compiled policy.
 - Steps run in order and share the case's KV store, filter instance and approver.
@@ -171,6 +176,8 @@ func Run(suite Suite, dir string) (Report, error)
 - It calls `BouncerTests(context)`, then `bouncertest.Run`, then prints TAP.
 - It returns an error naming the failure count when any case fails or any spec fails to load, so the exit code is nonzero.
 - The group's `Long` help lists the command.
+- Failures do not print usage.
+- The group's shared setup reports an unknown `--context` by name, instead of the generic "bouncer policy not set" error.
 
 TAP 14 output is formatted in the command package (`tap.go`), with its own unit tests:
 

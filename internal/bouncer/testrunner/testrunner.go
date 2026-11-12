@@ -27,8 +27,9 @@ import (
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
-// Spec is one test file. It targets either a single filter (Filter +
-// FilterConfig) or a profile in a config file (Config + Profile).
+// Spec is one test file. It targets either a single filter (Filter, or the
+// conventional filter for its path, plus FilterConfig) or a profile in a
+// policy (Config or Options.Policy, plus Profile).
 type Spec struct {
 	Filter       string         `yaml:"filter"`
 	FilterConfig map[string]any `yaml:"filter_config"`
@@ -65,6 +66,9 @@ type Step struct {
 	ExpectBodyExcludes   []string          `yaml:"expect_body_excludes"`
 	ExpectAsked          *bool             `yaml:"expect_asked"`
 	ExpectUpstreamHeader map[string]string `yaml:"expect_upstream_header"`
+	// ExpectCredential checks whether the request reached the upstream with
+	// its service's credential. Leftover paths under unmatched: tunnel do not.
+	ExpectCredential *bool `yaml:"expect_credential"`
 }
 
 type HTTPRequest struct {
@@ -144,11 +148,39 @@ func Find(paths []string) ([]string, error) {
 // harnessName names the session and service the test harness supplies.
 const harnessName = "test"
 
-type chainFunc func(host string) ([]chain.Filter, string, error)
+// target is the filter chain for a host and the service it belongs to.
+type target struct {
+	filters    []chain.Filter
+	service    string
+	credential string
+}
+
+type chainFunc func(host string) (target, error)
+
+// upstream is what the fake upstream saw of a request.
+type upstream struct {
+	reached        bool
+	header         http.Header
+	skipCredential bool
+}
+
+// Options locate what a spec tests when the spec does not name it.
+type Options struct {
+	// TestsDir is the directory the spec was found under. Its parent is the
+	// root that conventional filter paths resolve against.
+	TestsDir string
+	// Policy is the daemon policy file that bouncer specs compile.
+	Policy string
+}
 
 // RunFile runs every case in a spec file. An error means the spec, or a
 // case's filter or policy, could not be loaded.
-func RunFile(path string) ([]Result, error) {
+//
+// A spec tests a filter when it sets filter, or when the conventional filter
+// exists: tests/ts/filters/x.test.yaml under TestsDir tests ts/filters/x.ts
+// under its parent. Otherwise it tests the policy named by config, or
+// Options.Policy.
+func RunFile(path string, opts Options) ([]Result, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path from operator config or the state dir, not the agent
 	if err != nil {
 		return nil, fmt.Errorf("read test file: %w", err)
@@ -159,10 +191,20 @@ func RunFile(path string) ([]Result, error) {
 	if err := dec.Decode(&spec); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if spec.Filter == "" && spec.Config == "" {
-		return nil, fmt.Errorf("%s: spec needs a filter or config key", path)
-	}
 	dir := filepath.Dir(path)
+	var filterPath, policyPath string
+	switch {
+	case spec.Filter != "":
+		filterPath = filepath.Join(dir, spec.Filter)
+	case conventionalFilter(path, opts.TestsDir) != "":
+		filterPath = conventionalFilter(path, opts.TestsDir)
+	case spec.Config != "":
+		policyPath = filepath.Join(dir, spec.Config)
+	case opts.Policy != "":
+		policyPath = opts.Policy
+	default:
+		return nil, fmt.Errorf("%s: spec names no filter and no policy is given", path)
+	}
 
 	results := make([]Result, 0, len(spec.Cases))
 	for i := range spec.Cases {
@@ -171,7 +213,7 @@ func RunFile(path string) ([]Result, error) {
 		if name == "" {
 			name = fmt.Sprintf("case %d", i+1)
 		}
-		result, err := runCase(&spec, c, dir)
+		result, err := runCase(&spec, c, filterPath, policyPath)
 		if err != nil {
 			return nil, fmt.Errorf("%s: case %q: %w", path, name, err)
 		}
@@ -181,7 +223,31 @@ func RunFile(path string) ([]Result, error) {
 	return results, nil
 }
 
-func runCase(spec *Spec, c *Case, dir string) (Result, error) {
+// conventionalFilter returns the filter a spec under testsDir tests by
+// convention, or "" when that file does not exist.
+func conventionalFilter(path, testsDir string) string {
+	if testsDir == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(testsDir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	for _, suffix := range []string{".test.yaml", ".test.yml"} {
+		if !strings.HasSuffix(rel, suffix) {
+			continue
+		}
+		filter := filepath.Join(filepath.Dir(testsDir), strings.TrimSuffix(rel, suffix)+".ts")
+		info, err := os.Stat(filter)
+		if err != nil || info.IsDir() {
+			return ""
+		}
+		return filter
+	}
+	return ""
+}
+
+func runCase(spec *Spec, c *Case, filterPath, policyPath string) (Result, error) {
 	if len(c.Steps) == 0 {
 		return Result{}, errors.New("case has no steps")
 	}
@@ -207,7 +273,7 @@ func runCase(spec *Spec, c *Case, dir string) (Result, error) {
 	if c.Profile != "" {
 		profile = c.Profile
 	}
-	httpChain, sshChain, err := chains(spec, c, dir, profile, env, store)
+	httpChain, sshChain, err := chains(spec, c, filterPath, policyPath, profile, env, store)
 	if err != nil {
 		return Result{}, err
 	}
@@ -238,24 +304,24 @@ func runCase(spec *Spec, c *Case, dir string) (Result, error) {
 
 // chains loads the case's filter, or compiles its policy and picks its
 // profile, and returns the filter chain lookups for HTTP and SSH.
-func chains(spec *Spec, c *Case, dir, profile string, env *chain.Env, store *kv.Store) (chainFunc, chainFunc, error) {
-	if spec.Filter != "" {
+func chains(spec *Spec, c *Case, filterPath, policyPath, profile string, env *chain.Env, store *kv.Store) (chainFunc, chainFunc, error) {
+	if filterPath != "" {
 		cfg := spec.FilterConfig
 		if c.FilterConfig != nil {
 			cfg = c.FilterConfig
 		}
-		f, err := jsfilter.Load(jsfilter.Options{Path: filepath.Join(dir, spec.Filter), Config: cfg, Env: env, KV: store})
+		f, err := jsfilter.Load(jsfilter.Options{Path: filterPath, Config: cfg, Env: env, KV: store})
 		if err != nil {
 			return nil, nil, fmt.Errorf("load filter: %w", err)
 		}
-		one := func(string) ([]chain.Filter, string, error) { return []chain.Filter{f}, harnessName, nil }
+		one := func(string) (target, error) { return target{filters: []chain.Filter{f}, service: harnessName}, nil }
 		return one, one, nil
 	}
 
 	if profile == "" {
 		return nil, nil, errors.New("no profile")
 	}
-	cfg, err := config.Load(filepath.Join(dir, spec.Config))
+	cfg, err := config.Load(policyPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load config: %w", err)
 	}
@@ -267,19 +333,19 @@ func chains(spec *Spec, c *Case, dir, profile string, env *chain.Env, store *kv.
 	if !ok {
 		return nil, nil, fmt.Errorf("profile %q not found", profile)
 	}
-	httpChain := func(host string) ([]chain.Filter, string, error) {
+	httpChain := func(host string) (target, error) {
 		svc := prof.MatchHTTP(host)
 		if svc == nil {
-			return nil, "", fmt.Errorf("no service in profile %s matches %s (it would be %sed)", prof.Name, host, prof.Unmatched)
+			return target{}, fmt.Errorf("no service in profile %s matches %s (it would be %sed)", prof.Name, host, prof.Unmatched)
 		}
-		return svc.Filters, svc.Config.Name, nil
+		return target{filters: svc.Filters, service: svc.Config.Name, credential: svc.Config.Credential}, nil
 	}
-	sshChain := func(host string) ([]chain.Filter, string, error) {
+	sshChain := func(host string) (target, error) {
 		svc := prof.MatchSSH(host)
 		if svc == nil {
-			return nil, "", fmt.Errorf("no ssh service in profile %s matches %s", prof.Name, host)
+			return target{}, fmt.Errorf("no ssh service in profile %s matches %s", prof.Name, host)
 		}
-		return svc.Filters, svc.Config.Name, nil
+		return target{filters: svc.Filters, service: svc.Config.Name, credential: svc.Config.Credential}, nil
 	}
 	return httpChain, sshChain, nil
 }
@@ -287,10 +353,10 @@ func chains(spec *Spec, c *Case, dir, profile string, env *chain.Env, store *kv.
 func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scriptedApprover) (string, error) {
 	sess := &chain.Session{ID: harnessName, Label: harnessName, Profile: profile}
 	var req *chain.Request
-	var filters []chain.Filter
-	var upstreamHeader http.Header
+	var tgt target
+	var seen upstream
 	terminal := func(r *chain.Request) (*chain.Response, error) {
-		upstreamHeader = r.Header
+		seen = upstream{reached: true, header: r.Header, skipCredential: r.SkipCredential}
 		if r.Transport == chain.TransportSSH {
 			return chain.Allowed(), nil
 		}
@@ -323,8 +389,7 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 			}
 			hostport += ":" + port
 		}
-		var service string
-		filters, service, err = httpChain(hostport)
+		tgt, err = httpChain(hostport)
 		if err != nil {
 			return "", err
 		}
@@ -341,7 +406,7 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 			h.Set(k, v)
 		}
 		req = &chain.Request{Ctx: context.Background(), Transport: chain.TransportHTTP, Session: sess, Profile: profile,
-			Service: service, Method: method, URL: u, Header: h, Body: chain.BytesBody(body)}
+			Service: tgt.service, Method: method, URL: u, Header: h, Body: chain.BytesBody(body)}
 		err = chain.CheckMethod(method)
 		if err == nil {
 			err = chain.CheckPath(u.Path)
@@ -350,17 +415,16 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 			err = chain.CheckMethodOverride(req)
 		}
 		if err != nil {
-			return check(c, chain.Deny("bouncer", err.Error()), ap, nil)
+			return check(c, chain.Deny("bouncer", err.Error()), ap, tgt, seen)
 		}
 	case c.SSH != nil:
-		var service string
 		var err error
-		filters, service, err = sshChain(c.SSH.Host)
+		tgt, err = sshChain(c.SSH.Host)
 		if err != nil {
 			return "", err
 		}
 		info := &chain.SSHInfo{Host: c.SSH.Host, User: c.SSH.User, Kind: c.SSH.Kind, Command: c.SSH.Command, Subsystem: c.SSH.Subsystem, Target: c.SSH.Target}
-		req = &chain.Request{Ctx: context.Background(), Transport: chain.TransportSSH, Session: sess, Profile: profile, Service: service, SSH: info}
+		req = &chain.Request{Ctx: context.Background(), Transport: chain.TransportSSH, Session: sess, Profile: profile, Service: tgt.service, SSH: info}
 		if info.Kind == "" {
 			switch {
 			case info.Command != "" && req.Git() != nil:
@@ -382,11 +446,12 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 		return "", errors.New("step needs a request or ssh key")
 	}
 
-	resp, _ := chain.Build(filters, terminal)(req)
-	return check(c, resp, ap, upstreamHeader)
+	resp, _ := chain.Build(tgt.filters, terminal)(req)
+	return check(c, resp, ap, tgt, seen)
 }
 
-func check(c *Step, resp *chain.Response, ap *scriptedApprover, upstreamHeader http.Header) (string, error) {
+func check(c *Step, resp *chain.Response, ap *scriptedApprover, tgt target, seen upstream) (string, error) {
+	upstreamHeader := seen.header
 	var problems []string
 	got := "allow"
 	if resp.Denial != nil {
@@ -435,6 +500,12 @@ func check(c *Step, resp *chain.Response, ap *scriptedApprover, upstreamHeader h
 				got = upstreamHeader.Get(k)
 			}
 			problems = append(problems, fmt.Sprintf("expected upstream header %s=%q, got %q", k, v, got))
+		}
+	}
+	if c.ExpectCredential != nil {
+		got := seen.reached && !seen.skipCredential && tgt.credential != ""
+		if got != *c.ExpectCredential {
+			problems = append(problems, fmt.Sprintf("expected credential=%v, got %v", *c.ExpectCredential, got))
 		}
 	}
 	return strings.Join(problems, "; "), nil

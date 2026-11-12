@@ -34,7 +34,7 @@ func TestRunFileFormat(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		results, err := RunFile(writeSpec(t, tc.spec))
+		results, err := RunFile(writeSpec(t, tc.spec), Options{})
 		if tc.wantErr != "" {
 			require.ErrorContains(t, err, tc.wantErr)
 			return
@@ -177,6 +177,38 @@ cases:
 			want: []Result{{Name: "file profile", Passed: true}, {Name: "case profile", Passed: true}},
 		})
 	})
+	t.Run("leftover paths go without the credential", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+config: policy.yaml
+profile: tunnel
+cases:
+  - name: rule path carries it, leftover does not
+    steps:
+      - request: {url: "https://api.example.com/in"}
+        expect: allow
+        expect_credential: true
+      - request: {url: "https://api.example.com/other"}
+        expect: allow
+        expect_credential: false
+`,
+			want: []Result{{Name: "rule path carries it, leftover does not", Passed: true}},
+		})
+	})
+	t.Run("credential mismatch fails the step", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+config: policy.yaml
+profile: tunnel
+cases:
+  - name: leftover
+    steps:
+      - request: {url: "https://api.example.com/other"}
+        expect_credential: true
+`,
+			want: []Result{{Name: "leftover", Step: 1, StepName: "1", Message: "expected credential=true, got false"}},
+		})
+	})
 	t.Run("config spec without a profile is an error", func(t *testing.T) {
 		tester(t, testCase{
 			spec: `
@@ -210,6 +242,90 @@ cases:
     expect: allow
 `,
 			wantErr: "field request not found",
+		})
+	})
+}
+
+func TestRunFileOptions(t *testing.T) {
+	type testCase struct {
+		spec     string // path under the tests directory
+		body     string
+		noPolicy bool
+		wantErr  string
+	}
+	const filterSpec = `
+cases:
+  - name: counter is the filter
+    steps:
+      - request: {url: "https://example.com/"}
+        expect: allow
+      - request: {url: "https://example.com/"}
+        expect: deny
+        expect_reason: over 1
+`
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		root := t.TempDir()
+		tests := filepath.Join(root, "tests")
+		filter, err := os.ReadFile(filepath.Join("testdata", "counter.ts"))
+		require.NoError(t, err)
+		files := map[string][]byte{
+			filepath.Join(root, "ts", "filters", "counter.ts"): filter,
+			filepath.Join(tests, tc.spec):                      []byte(tc.body),
+		}
+		for path, data := range files {
+			err := os.MkdirAll(filepath.Dir(path), 0o700)
+			require.NoError(t, err)
+			err = os.WriteFile(path, data, 0o600)
+			require.NoError(t, err)
+		}
+		opts := Options{TestsDir: tests, Policy: filepath.Join("testdata", "policy.yaml")}
+		if tc.noPolicy {
+			opts.Policy = ""
+		}
+		results, err := RunFile(filepath.Join(tests, tc.spec), opts)
+		if tc.wantErr != "" {
+			require.ErrorContains(t, err, tc.wantErr)
+			return
+		}
+		require.NoError(t, err)
+		require.NotEmpty(t, results)
+		for _, r := range results {
+			assert.True(t, r.Passed, "%s: step %s: %s", r.Name, r.StepName, r.Message)
+		}
+	}
+
+	t.Run("convention finds the filter for .test.yaml", func(t *testing.T) {
+		tester(t, testCase{spec: "ts/filters/counter.test.yaml", body: filterSpec})
+	})
+	t.Run("convention finds the filter for .test.yml", func(t *testing.T) {
+		tester(t, testCase{spec: "ts/filters/counter.test.yml", body: filterSpec})
+	})
+	t.Run("filter overrides the convention", func(t *testing.T) {
+		tester(t, testCase{
+			spec: "ts/filters/other.test.yaml",
+			body: "filter: ../../../ts/filters/counter.ts\n" + filterSpec,
+		})
+	})
+	t.Run("without a conventional filter the spec tests the policy", func(t *testing.T) {
+		tester(t, testCase{
+			spec: "bouncers.test.yaml",
+			body: `
+profile: closed
+cases:
+  - name: closed denies
+    steps:
+      - request: {url: "https://example.com/"}
+        expect: deny
+`,
+		})
+	})
+	t.Run("policy spec without a policy is an error", func(t *testing.T) {
+		tester(t, testCase{
+			spec:     "bouncers.test.yaml",
+			body:     "profile: open\ncases: []\n",
+			noPolicy: true,
+			wantErr:  "spec names no filter and no policy is given",
 		})
 	})
 }

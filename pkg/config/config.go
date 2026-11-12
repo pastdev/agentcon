@@ -48,12 +48,20 @@ func resolveOverlayDir(path string) string {
 }
 
 type Config struct {
-	DefaultContext string                        `json:"default_context" yaml:"default_context"`
-	Agents         map[string]AgentSpec          `json:"agents,omitempty" yaml:"agents,omitempty"`
-	Bouncers       map[string]*bouncercfg.Config `json:"bouncers,omitempty" yaml:"bouncers,omitempty"`
-	Contexts       map[string]ContextSpec        `json:"contexts" yaml:"contexts"`
-	Sidecar        SidecarSpec                   `json:"sidecar,omitempty" yaml:"sidecar,omitempty"`
-	OverlayDirs    []string                      `json:"-" yaml:"-"`
+	DefaultContext string                  `json:"default_context" yaml:"default_context"`
+	Agents         map[string]AgentSpec    `json:"agents,omitempty" yaml:"agents,omitempty"`
+	Bouncers       map[string]*BouncerSpec `json:"bouncers,omitempty" yaml:"bouncers,omitempty"`
+	Contexts       map[string]ContextSpec  `json:"contexts" yaml:"contexts"`
+	Sidecar        SidecarSpec             `json:"sidecar,omitempty" yaml:"sidecar,omitempty"`
+	OverlayDirs    []string                `json:"-" yaml:"-"`
+}
+
+// BouncerSpec is a bouncer as agentcon config holds it: the daemon policy
+// plus settings that never reach the daemon.
+type BouncerSpec struct {
+	bouncercfg.Config `yaml:",inline"`
+	// Tests is the directory of *.test.yaml specs for this bouncer.
+	Tests string `json:"tests,omitempty" yaml:"tests,omitempty"`
 }
 
 // AgentSpec is one named agent image, its binds, and the hosts it must reach.
