@@ -1,4 +1,3 @@
-filter: git-protect-branches.ts
 filter_config:
   branches: [main, foo, "release/*"]
 cases:

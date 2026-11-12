@@ -1,4 +1,3 @@
-filter: gitlab-project-scope.ts
 filter_config:
   projects: [mygroup/myproj]
   ids: {mygroup/myproj: 4242}

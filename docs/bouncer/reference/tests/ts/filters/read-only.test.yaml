@@ -1,4 +1,3 @@
-filter: read-only.ts
 filter_config:
   except: ["POST /rest/api/3/search*"]
 cases:

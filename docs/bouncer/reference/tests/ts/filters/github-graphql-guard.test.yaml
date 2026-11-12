@@ -1,4 +1,3 @@
-filter: github-graphql-guard.ts
 cases:
   - name: queries pass
     steps:

@@ -1,4 +1,3 @@
-filter: npm-no-publish.ts
 cases:
   - name: install metadata
     steps:

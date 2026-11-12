@@ -1,4 +1,3 @@
-filter: redact-response.ts
 filter_config:
   patterns: ["internal-[0-9]{6}"]
 cases:

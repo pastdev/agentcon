@@ -34,7 +34,8 @@ func TestRunFileFormat(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		results, err := RunFile(writeSpec(t, tc.spec), Options{})
+		path := writeSpec(t, tc.spec)
+		results, err := RunFile(path, Options{Policy: filepath.Join(filepath.Dir(path), "policy.yaml")})
 		if tc.wantErr != "" {
 			require.ErrorContains(t, err, tc.wantErr)
 			return
@@ -161,7 +162,6 @@ cases:
 	t.Run("case profile replaces the file's", func(t *testing.T) {
 		tester(t, testCase{
 			spec: `
-config: policy.yaml
 profile: open
 cases:
   - name: file profile
@@ -180,7 +180,6 @@ cases:
 	t.Run("leftover paths go without the credential", func(t *testing.T) {
 		tester(t, testCase{
 			spec: `
-config: policy.yaml
 profile: tunnel
 cases:
   - name: rule path carries it, leftover does not
@@ -198,7 +197,6 @@ cases:
 	t.Run("credential mismatch fails the step", func(t *testing.T) {
 		tester(t, testCase{
 			spec: `
-config: policy.yaml
 profile: tunnel
 cases:
   - name: leftover
@@ -209,10 +207,9 @@ cases:
 			want: []Result{{Name: "leftover", Step: 1, StepName: "1", Message: "expected credential=true, got false"}},
 		})
 	})
-	t.Run("config spec without a profile is an error", func(t *testing.T) {
+	t.Run("policy spec without a profile is an error", func(t *testing.T) {
 		tester(t, testCase{
 			spec: `
-config: policy.yaml
 cases:
   - name: nameless profile
     steps:
@@ -230,6 +227,16 @@ cases:
   - name: empty
 `,
 			wantErr: "case has no steps",
+		})
+	})
+	t.Run("config key fails to load", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+config: policy.yaml
+profile: open
+cases: []
+`,
+			wantErr: "field config not found",
 		})
 	})
 	t.Run("old format fails to load", func(t *testing.T) {

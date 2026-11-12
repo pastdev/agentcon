@@ -1,4 +1,3 @@
-filter: slack-channel-allowlist.ts
 filter_config:
   channels: ["C0AGENTBOT", "#agent-bot"]
 cases:

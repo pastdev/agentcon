@@ -1,4 +1,3 @@
-filter: require-approval-merge.ts
 cases:
   - name: gitlab merge, approved
     steps:

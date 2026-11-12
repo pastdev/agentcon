@@ -1,5 +1,5 @@
-# Tests for the declarative rules and filter chains in config.yaml.
-config: config.yaml
+# Tests for the rules and filter chains in bouncers.yaml.
+# Cases use the default profile unless they set profile.
 profile: default
 gitlab_project_ids:
   mygroup/myproject: 1234
@@ -131,3 +131,19 @@ cases:
       - approve: true
         ssh: {host: sandbox.dev.internal, user: agent, target: "10.0.0.5:5432"}
         expect: deny
+  - name: "locked-down: reads still work"
+    profile: locked-down
+    steps:
+      - request: {url: "https://gitlab.com/api/v4/projects/1234/issues"}
+        expect: allow
+  - name: "locked-down: writes are blocked even in scope"
+    profile: locked-down
+    steps:
+      - request: {method: POST, url: "https://gitlab.com/api/v4/projects/1234/issues", body: "{}"}
+        expect: deny
+        expect_status: 405
+  - name: "locked-down: clone works"
+    profile: locked-down
+    steps:
+      - request: {method: POST, url: "https://gitlab.com/mygroup/myproject.git/git-upload-pack"}
+        expect: allow

@@ -1,4 +1,3 @@
-filter: first-100-bytes.ts
 cases:
   - name: single-ref push to foo is caught at the start of the body
     steps:

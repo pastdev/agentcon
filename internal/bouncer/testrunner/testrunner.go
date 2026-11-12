@@ -29,11 +29,10 @@ import (
 
 // Spec is one test file. It targets either a single filter (Filter, or the
 // conventional filter for its path, plus FilterConfig) or a profile in a
-// policy (Config or Options.Policy, plus Profile).
+// the policy in Options.Policy (Profile).
 type Spec struct {
 	Filter       string         `yaml:"filter"`
 	FilterConfig map[string]any `yaml:"filter_config"`
-	Config       string         `yaml:"config"`
 	Profile      string         `yaml:"profile"`
 	// GitLabProjectIDs stubs numeric project ID resolution for config tests.
 	GitLabProjectIDs map[string]int64 `yaml:"gitlab_project_ids"`
@@ -178,8 +177,7 @@ type Options struct {
 //
 // A spec tests a filter when it sets filter, or when the conventional filter
 // exists: tests/ts/filters/x.test.yaml under TestsDir tests ts/filters/x.ts
-// under its parent. Otherwise it tests the policy named by config, or
-// Options.Policy.
+// under its parent. Otherwise it tests Options.Policy.
 func RunFile(path string, opts Options) ([]Result, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path from operator config or the state dir, not the agent
 	if err != nil {
@@ -198,8 +196,6 @@ func RunFile(path string, opts Options) ([]Result, error) {
 		filterPath = filepath.Join(dir, spec.Filter)
 	case conventionalFilter(path, opts.TestsDir) != "":
 		filterPath = conventionalFilter(path, opts.TestsDir)
-	case spec.Config != "":
-		policyPath = filepath.Join(dir, spec.Config)
 	case opts.Policy != "":
 		policyPath = opts.Policy
 	default:

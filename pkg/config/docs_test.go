@@ -1,10 +1,13 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"sort"
 	"testing"
 
+	"github.com/pastdev/agentcon/internal/bouncer/types"
+	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
 	"github.com/pastdev/agentcon/pkg/bouncertest"
 	cfgldr "github.com/pastdev/configloader/pkg/config"
 	"github.com/stretchr/testify/assert"
@@ -25,6 +28,10 @@ func TestDocsExamples(t *testing.T) {
 		}.Load(&cfg)
 		require.NoError(t, err)
 		cfg.OverlayDirs = []string{resolveOverlayDir(tc.dir)}
+
+		dts, err := os.ReadFile(filepath.Join(tc.dir, bouncercfg.TSDir, "bouncer.d.ts"))
+		require.NoError(t, err)
+		assert.Equal(t, string(types.BouncerDTS), string(dts), "bouncer.d.ts differs from internal/bouncer/types")
 
 		var contexts []string
 		for name, spec := range cfg.Contexts {

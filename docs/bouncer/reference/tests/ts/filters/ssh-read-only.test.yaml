@@ -1,4 +1,3 @@
-filter: ssh-read-only.ts
 cases:
   - name: clone
     steps:
