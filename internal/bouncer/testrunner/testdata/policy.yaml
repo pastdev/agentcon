@@ -1,0 +1,12 @@
+default_profile: open
+profiles:
+  open:
+    http:
+      - name: example
+        hosts: [example.com]
+        default: allow
+  closed:
+    http:
+      - name: example
+        hosts: [example.com]
+        default: deny

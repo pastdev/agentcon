@@ -23,7 +23,7 @@ func TestRunFile(t *testing.T) {
 				results, err := RunFile(f)
 				require.NoError(t, err)
 				for _, r := range results {
-					assert.True(t, r.Passed, "%s: %s", r.Name, r.Message)
+					assert.True(t, r.Passed, "%s: step %s: %s\n%s", r.Name, r.StepName, r.Message, r.FilterLog)
 				}
 			})
 		}

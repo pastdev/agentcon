@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -38,12 +39,23 @@ type Spec struct {
 	Cases            []Case           `yaml:"cases"`
 }
 
+// Case is isolated: it gets a fresh KV store and a freshly loaded filter or
+// compiled policy. Its steps run in order and share that state.
 type Case struct {
+	Name string `yaml:"name"`
+	// FilterConfig replaces the spec's FilterConfig when set, even to {}.
+	FilterConfig map[string]any `yaml:"filter_config"`
+	// Profile replaces the spec's Profile when not empty.
+	Profile string `yaml:"profile"`
+	Steps   []Step `yaml:"steps"`
+}
+
+type Step struct {
 	Name     string       `yaml:"name"`
 	Request  *HTTPRequest `yaml:"request"`
 	SSH      *SSHRequest  `yaml:"ssh"`
 	Upstream *Upstream    `yaml:"upstream"`
-	// Approve answers every ask() in this case. Unset means asks are denied.
+	// Approve answers every ask() in this step. Unset means asks are denied.
 	Approve *bool `yaml:"approve"`
 
 	Expect               string            `yaml:"expect"` // allow or deny
@@ -85,11 +97,16 @@ type Upstream struct {
 	Body    string            `yaml:"body"`
 }
 
-// Result of one case.
+// Result of one case. A failed case names its first failing step.
 type Result struct {
-	Name    string
-	Passed  bool
-	Message string
+	Name   string
+	Passed bool
+	// Step is the 1-based index of the failing step, 0 when passed.
+	Step     int
+	StepName string
+	Message  string
+	// FilterLog is the filter console output of the failed case.
+	FilterLog string
 }
 
 // Find expands paths (files or directories) into *.test.yaml files.
@@ -124,11 +141,13 @@ func Find(paths []string) ([]string, error) {
 	return out, nil
 }
 
-// RunFile runs every case in a spec file. Cases share one KV store, so
-// stateful filters (rate limits) can be tested as a sequence.
 // harnessName names the session and service the test harness supplies.
 const harnessName = "test"
 
+type chainFunc func(host string) ([]chain.Filter, string, error)
+
+// RunFile runs every case in a spec file. An error means the spec, or a
+// case's filter or policy, could not be loaded.
 func RunFile(path string) ([]Result, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path from operator config or the state dir, not the agent
 	if err != nil {
@@ -140,7 +159,32 @@ func RunFile(path string) ([]Result, error) {
 	if err := dec.Decode(&spec); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	if spec.Filter == "" && spec.Config == "" {
+		return nil, fmt.Errorf("%s: spec needs a filter or config key", path)
+	}
 	dir := filepath.Dir(path)
+
+	results := make([]Result, 0, len(spec.Cases))
+	for i := range spec.Cases {
+		c := &spec.Cases[i]
+		name := c.Name
+		if name == "" {
+			name = fmt.Sprintf("case %d", i+1)
+		}
+		result, err := runCase(&spec, c, dir)
+		if err != nil {
+			return nil, fmt.Errorf("%s: case %q: %w", path, name, err)
+		}
+		result.Name = name
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func runCase(spec *Spec, c *Case, dir string) (Result, error) {
+	if len(c.Steps) == 0 {
+		return Result{}, errors.New("case has no steps")
+	}
 	store, _ := kv.Open("")
 	defer func() { _ = store.Close() }()
 	approver := &scriptedApprover{}
@@ -159,68 +203,88 @@ func RunFile(path string) ([]Result, error) {
 			return 0, fmt.Errorf("no gitlab_project_ids entry for %q", p)
 		},
 	}
-
-	var httpChain, sshChain func(host string) ([]chain.Filter, string, error)
-	switch {
-	case spec.Filter != "":
-		f, err := jsfilter.Load(jsfilter.Options{Path: filepath.Join(dir, spec.Filter), Config: spec.FilterConfig, Env: env, KV: store})
-		if err != nil {
-			return nil, fmt.Errorf("load filter: %w", err)
-		}
-		one := func(string) ([]chain.Filter, string, error) { return []chain.Filter{f}, harnessName, nil }
-		httpChain, sshChain = one, one
-	case spec.Config != "":
-		cfg, err := config.Load(filepath.Join(dir, spec.Config))
-		if err != nil {
-			return nil, fmt.Errorf("load config: %w", err)
-		}
-		set, err := policy.Compile(cfg, env, store)
-		if err != nil {
-			return nil, fmt.Errorf("compile policy: %w", err)
-		}
-		prof, ok := set.Profiles[spec.Profile]
-		if !ok {
-			return nil, fmt.Errorf("%s: profile %q not found", path, spec.Profile)
-		}
-		httpChain = func(host string) ([]chain.Filter, string, error) {
-			svc := prof.MatchHTTP(host)
-			if svc == nil {
-				return nil, "", fmt.Errorf("no service in profile %s matches %s (it would be %sed)", prof.Name, host, prof.Unmatched)
-			}
-			return svc.Filters, svc.Config.Name, nil
-		}
-		sshChain = func(host string) ([]chain.Filter, string, error) {
-			svc := prof.MatchSSH(host)
-			if svc == nil {
-				return nil, "", fmt.Errorf("no ssh service in profile %s matches %s", prof.Name, host)
-			}
-			return svc.Filters, svc.Config.Name, nil
-		}
-	default:
-		return nil, fmt.Errorf("%s: spec needs a filter or config key", path)
+	profile := spec.Profile
+	if c.Profile != "" {
+		profile = c.Profile
+	}
+	httpChain, sshChain, err := chains(spec, c, dir, profile, env, store)
+	if err != nil {
+		return Result{}, err
 	}
 
-	var results []Result
-	for i, c := range spec.Cases {
-		name := c.Name
-		if name == "" {
-			name = fmt.Sprintf("case %d", i+1)
-		}
-		logs.Reset()
-		approver.answer, approver.asked = c.Approve != nil && *c.Approve, false
-		msg, err := runCase(&c, httpChain, sshChain, spec.Profile, approver)
+	for i := range c.Steps {
+		s := &c.Steps[i]
+		approver.answer, approver.asked = s.Approve != nil && *s.Approve, false
+		msg, err := runStep(s, httpChain, sshChain, profile, approver)
 		if err != nil {
 			msg = err.Error()
 		}
-		if msg != "" && logs.Len() > 0 {
-			msg += "\n    filter log:\n      " + strings.ReplaceAll(strings.TrimSpace(logs.String()), "\n", "\n      ")
+		if msg == "" {
+			continue
 		}
-		results = append(results, Result{Name: name, Passed: msg == "", Message: msg})
+		name := s.Name
+		if name == "" {
+			name = strconv.Itoa(i + 1)
+		}
+		return Result{
+			Step:      i + 1,
+			StepName:  name,
+			Message:   msg,
+			FilterLog: strings.TrimSpace(logs.String()),
+		}, nil
 	}
-	return results, nil
+	return Result{Passed: true}, nil
 }
 
-func runCase(c *Case, httpChain, sshChain func(string) ([]chain.Filter, string, error), profile string, ap *scriptedApprover) (string, error) {
+// chains loads the case's filter, or compiles its policy and picks its
+// profile, and returns the filter chain lookups for HTTP and SSH.
+func chains(spec *Spec, c *Case, dir, profile string, env *chain.Env, store *kv.Store) (chainFunc, chainFunc, error) {
+	if spec.Filter != "" {
+		cfg := spec.FilterConfig
+		if c.FilterConfig != nil {
+			cfg = c.FilterConfig
+		}
+		f, err := jsfilter.Load(jsfilter.Options{Path: filepath.Join(dir, spec.Filter), Config: cfg, Env: env, KV: store})
+		if err != nil {
+			return nil, nil, fmt.Errorf("load filter: %w", err)
+		}
+		one := func(string) ([]chain.Filter, string, error) { return []chain.Filter{f}, harnessName, nil }
+		return one, one, nil
+	}
+
+	if profile == "" {
+		return nil, nil, errors.New("no profile")
+	}
+	cfg, err := config.Load(filepath.Join(dir, spec.Config))
+	if err != nil {
+		return nil, nil, fmt.Errorf("load config: %w", err)
+	}
+	set, err := policy.Compile(cfg, env, store)
+	if err != nil {
+		return nil, nil, fmt.Errorf("compile policy: %w", err)
+	}
+	prof, ok := set.Profiles[profile]
+	if !ok {
+		return nil, nil, fmt.Errorf("profile %q not found", profile)
+	}
+	httpChain := func(host string) ([]chain.Filter, string, error) {
+		svc := prof.MatchHTTP(host)
+		if svc == nil {
+			return nil, "", fmt.Errorf("no service in profile %s matches %s (it would be %sed)", prof.Name, host, prof.Unmatched)
+		}
+		return svc.Filters, svc.Config.Name, nil
+	}
+	sshChain := func(host string) ([]chain.Filter, string, error) {
+		svc := prof.MatchSSH(host)
+		if svc == nil {
+			return nil, "", fmt.Errorf("no ssh service in profile %s matches %s", prof.Name, host)
+		}
+		return svc.Filters, svc.Config.Name, nil
+	}
+	return httpChain, sshChain, nil
+}
+
+func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scriptedApprover) (string, error) {
 	sess := &chain.Session{ID: harnessName, Label: harnessName, Profile: profile}
 	var req *chain.Request
 	var filters []chain.Filter
@@ -315,14 +379,14 @@ func runCase(c *Case, httpChain, sshChain func(string) ([]chain.Filter, string, 
 			req.Body = chain.BytesBody(buildPush(c.SSH.GitPush))
 		}
 	default:
-		return "", errors.New("case needs a request or ssh key")
+		return "", errors.New("step needs a request or ssh key")
 	}
 
 	resp, _ := chain.Build(filters, terminal)(req)
 	return check(c, resp, ap, upstreamHeader)
 }
 
-func check(c *Case, resp *chain.Response, ap *scriptedApprover, upstreamHeader http.Header) (string, error) {
+func check(c *Step, resp *chain.Response, ap *scriptedApprover, upstreamHeader http.Header) (string, error) {
 	var problems []string
 	got := "allow"
 	if resp.Denial != nil {
