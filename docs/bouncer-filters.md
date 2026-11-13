@@ -6,6 +6,7 @@ It runs inside the sidecar, in an embedded JS VM.
 
 The type surface is [`internal/bouncer/types/bouncer.d.ts`](../internal/bouncer/types/bouncer.d.ts).
 A concrete GitHub overlay that uses filters is [docs/bouncer/github](bouncer/github).
+[docs/bouncer/reference](bouncer/reference) shows every policy feature and every example filter, with tests.
 
 ## Where files live
 
@@ -17,8 +18,15 @@ Put sources under `ts/` in an `agentcon.d` overlay directory.
   claude.yaml
   contexts.yaml
   ts/
+    tsconfig.json
+    bouncer.d.ts
     filters/
       git-protect-branches.ts
+  tests/
+    bouncers.test.yaml
+    ts/
+      filters/
+        git-protect-branches.test.yaml
 ```
 
 YAML paths are relative to that overlay, starting with `ts/`.
@@ -69,8 +77,9 @@ Time spent in `next()`, `ask()`, or body reads does not count.
 
 Import from the virtual module `bouncer`.
 That module is not on disk at runtime.
-`bouncer.d.ts` is editor types in this repository.
-It is not copied into the overlay.
+For editor types, copy `bouncer.d.ts` and a `tsconfig.json` into `ts/`, as the examples do.
+`bouncer.d.ts` declares the `bouncer` module, so the `tsconfig.json` only needs `"include": ["**/*.ts"]`.
+Both files are copied into the sidecar with the rest of `ts/`, and neither is bundled.
 
 ```typescript
 import { defineFilter, deny, ask } from "bouncer";
@@ -180,8 +189,131 @@ That compiles every referenced filter against the merged overlay.
 Fix errors before `run`.
 The sidecar compiles again at start.
 
+## Test
+
+A bouncer opts into tests with a `tests` directory.
+
+```yaml
+bouncers:
+  github:
+    default_profile: default
+    tests: '{{ relativeDir "tests" }}'
+```
+
+`relativeDir` resolves against the YAML file that names it.
+A missing directory fails the config load, so copy `tests/` with the overlay or delete the `tests:` line.
+`tests` is not part of the policy the sidecar loads.
+
+Put specs in `tests/`, mirroring the overlay.
+The config loader skips subdirectories, so specs are never loaded as config.
+Every `*.test.yaml` and `*.test.yml` under `tests/` runs.
+
+### Run
+
+```bash
+agentcon bouncer test
+```
+
+That tests the bouncer of the current context, from `--context` or `default_context`.
+It runs against the policy `run` would ship, without the agent's tunnel hosts.
+The tests resolve no credentials and need no network or Docker.
+Output is [TAP 14](https://testanything.org/tap-version-14-specification.html), with one test per spec file and one subtest per case.
+A failure names the step and includes the filter log.
+The command exits nonzero when any case fails or any spec fails to load.
+
+```text
+TAP version 14
+# Subtest: tests/bouncers.test.yaml
+    1..2
+    ok 1 - tag push asks
+    not ok 2 - graphql queries carry the PAT
+      ---
+      step: 1
+      step_name: "1"
+      message: expected deny, got allow
+      ...
+not ok 1 - tests/bouncers.test.yaml
+1..1
+```
+
+### Specs
+
+A spec tests one filter or the whole bouncer.
+
+A filter spec at `tests/ts/filters/x.test.yaml` tests `ts/filters/x.ts`.
+Set `filter:` to a path relative to the spec to test another file.
+`filter_config` is the filter's `config:` block.
+
+```yaml
+filter_config: {branches: [main, master]}
+cases:
+  - name: feature branch push is allowed
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/your-org/your-repo.git/git-receive-pack
+          git_push: [{ref: refs/heads/feature}]
+        expect: allow
+  - name: release globs are protected
+    filter_config: {branches: ["release/*"]}
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/your-org/your-repo.git/git-receive-pack
+          git_push: [{ref: refs/heads/release/2.0}]
+        expect: deny
+```
+
+Any other spec tests the bouncer, such as `tests/bouncers.test.yaml`.
+`profile` names the profile its cases run against.
+
+```yaml
+profile: default
+cases:
+  - name: leftover paths go through without the PAT
+    steps:
+      - request: {url: "https://api.github.com/repos/other-org/other-repo/pulls"}
+        expect: allow
+        expect_credential: false
+```
+
+Each case is isolated, with fresh `kv` state and a freshly loaded filter or policy.
+Steps in a case run in order and share that state.
+Use several steps to test a sequence, such as a rate limit.
+A case's `filter_config` or `profile` replaces the file's.
+`filter_config: {}` runs the filter with no config.
+A step without `name` is named by its position, starting at 1.
+The first failing step ends its case.
+
+`gitlab_project_ids` maps GitLab project paths to the numeric IDs that `gitlab_project` rules resolve.
+
+A step sends one request.
+
+- `request`: `method` (default `GET`), `url`, `headers`, `body`, and `git_push`, a list of `{ref, type}` ref updates where `type` is `create` or `delete`.
+- `ssh`: `host`, `user`, `command`, `subsystem`, `target`, `kind`, and `git_push`.
+  `kind` is inferred when empty.
+- `upstream`: the fake upstream's `status`, `headers`, and `body`.
+  Default is 200 with a short body.
+- `approve`: the answer to every `ask()` in the step.
+  Unset means asks are denied.
+
+A step checks any of these.
+
+- `expect`: `allow` or `deny`.
+- `expect_reason`: text the deny reason contains.
+- `expect_status`: the response status.
+- `expect_body_contains` and `expect_body_excludes`: text the response body must or must not contain.
+- `expect_asked`: whether an `ask()` happened.
+- `expect_upstream_header`: headers the upstream received.
+- `expect_credential`: whether the request reached the upstream with its service's credential.
+  Leftover paths under `unmatched: tunnel` do not carry it.
+
 ## Starting point
 
 Copy [docs/bouncer/github](bouncer/github) into `~/.config/agentcon.d` as described in [bouncer.md](bouncer.md#github-starting-point).
 That overlay attaches `git-protect-branches.ts`, `github-graphql-guard.ts`, and `require-approval-merge.ts`.
 Edit `github_repo`, Bitwarden identity, and the GraphQL `deny` list for your repo.
+Update its tests to match, then run `agentcon bouncer test --context git`.
+
+[docs/bouncer/reference](bouncer/reference) binds a `reference` context and has tests for every example filter.
+Copy the filters and specs you want from it.
