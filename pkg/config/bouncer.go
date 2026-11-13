@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -52,6 +53,7 @@ func (c *Config) MaterializeBouncer(contextName, bouncerName string, agent Agent
 }
 
 // WriteBouncer writes the folder-layer layout for a context onto dir.
+// It replaces dir/ts, so files removed from the overlays do not linger.
 // It returns the policy file path, or "" when the context has no bouncer.
 func (c *Config) WriteBouncer(name, dir string) (string, error) {
 	spec, ok := c.Contexts[name]
@@ -68,6 +70,10 @@ func (c *Config) WriteBouncer(name, dir string) (string, error) {
 	}
 	if setup == nil {
 		return "", nil
+	}
+	err = os.RemoveAll(filepath.Join(dir, bouncercfg.TSDir))
+	if err != nil {
+		return "", fmt.Errorf("clear bouncer ts: %w", err)
 	}
 	err = bouncercfg.WriteLayout(bouncercfg.DirFS(dir), setup.PolicyYAML, setup.TSFiles)
 	if err != nil {

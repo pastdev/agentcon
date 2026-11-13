@@ -42,12 +42,17 @@ Think about the claim.
 Give pushback when it is wrong.
 Propose a next step only after we agree.
 
+Ask design questions one at a time.
+Explain each with a concrete example, such as a config snippet or command output.
+Restate referenced issues by their subject, not by number alone.
+
 Default to proposing changes and waiting for approval before applying them.
 The user may grant permission to implement a full feature at once.
 
 After implementation, ensure tests, lint, and compile succeed.
 Run smoke checks that verify end-to-end behavior when practical.
-Then use the handoff process for merge requests or other elevated actions.
+Then open the merge request through a configured credentialed tool service when one offers the action.
+Use the handoff process only for actions no such service offers.
 
 After opening a merge request, say the PR is ready for review and stop.
 Do not merge.
@@ -89,7 +94,9 @@ Group cases with a `tester` closure and one `t.Run` per case.
 ### Handoff process
 
 The agent runs in a container without credentials or elevated host access.
-Actions that need credentials or elevated access require a handoff script.
+Actions that need credentials or elevated access go through a configured credentialed tool service when one offers them.
+When the service fails, report the failure so it can be fixed instead of falling back to a handoff.
+Other such actions require a handoff script.
 Examples include `git push`, merge request creation, and Docker on the host.
 When a handoff script must name a host path, use `AGENTCON_HOST_ROOT` with the path under `/workspace`.
 

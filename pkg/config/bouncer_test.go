@@ -232,6 +232,16 @@ func TestWriteBouncer(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		dir := t.TempDir()
+		// Left by an earlier write: ts/ is replaced, state/ is kept.
+		stale := filepath.Join(dir, bouncercfg.TSDir, "lib", "stale.ts")
+		state := filepath.Join(dir, "state", "keep")
+		for _, p := range []string{stale, state} {
+			err := os.MkdirAll(filepath.Dir(p), 0o700)
+			require.NoError(t, err)
+			err = os.WriteFile(p, []byte("x"), 0o600)
+			require.NoError(t, err)
+		}
+
 		got, err := tc.cfg.WriteBouncer(tc.name, dir)
 		if tc.wantErr != "" {
 			require.ErrorContains(t, err, tc.wantErr)
@@ -251,6 +261,8 @@ func TestWriteBouncer(t *testing.T) {
 			return
 		}
 		assert.FileExists(t, filepath.Join(dir, bouncercfg.TSDir, tc.wantTS))
+		assert.NoFileExists(t, stale)
+		assert.FileExists(t, state)
 	}
 
 	overlay := t.TempDir()

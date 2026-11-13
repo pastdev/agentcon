@@ -105,8 +105,7 @@ type ContextSpec struct {
 }
 
 type Loader struct {
-	source      cobracfg.ConfigLoader[Config]
-	overlayDirs []string
+	source cobracfg.ConfigLoader[Config]
 }
 
 func (l *Loader) AddCommand(root *cobra.Command) {
@@ -118,7 +117,6 @@ func (l *Loader) AddFlags(root *cobra.Command) {
 	flags := l.source.PersistentFlags(root)
 	flags.SourceVarP(
 		func(path string) cfgldr.SourceLoader {
-			l.overlayDirs = append(l.overlayDirs, resolveOverlayDir(path))
 			return cfgldr.DirSource{
 				Path:      path,
 				Unmarshal: unmarshal,
@@ -129,7 +127,6 @@ func (l *Loader) AddFlags(root *cobra.Command) {
 		"location of one or more config directories")
 	flags.SourceVarP(
 		func(path string) cfgldr.SourceLoader {
-			l.overlayDirs = append(l.overlayDirs, resolveOverlayDir(filepath.Dir(path)))
 			return cfgldr.FileSource{
 				Path:      path,
 				Unmarshal: unmarshal,
@@ -145,7 +142,11 @@ func (l *Loader) Config() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config load: %w", err)
 	}
-	cfg.OverlayDirs = append([]string{}, l.overlayDirs...)
+	// The overlay dirs are the dirs the YAML came from, so ts/ follows -d and -c.
+	cfg.OverlayDirs = nil
+	for _, dir := range l.source.Dirs() {
+		cfg.OverlayDirs = append(cfg.OverlayDirs, resolveOverlayDir(dir))
+	}
 	return cfg, nil
 }
 
@@ -155,7 +156,6 @@ func valueTemplateUnmarshal() cfgldr.UnmarshalFunc {
 
 func NewLoader() *Loader {
 	userDir := userConfigDir()
-	overlayDirs := []string{resolveOverlayDir(SystemConfigDir)}
 	unmarshal := valueTemplateUnmarshal()
 	sources := []cfgldr.SourceLoader{
 		cfgldr.DirSource{
@@ -164,19 +164,16 @@ func NewLoader() *Loader {
 		},
 	}
 	if userDir != "" {
-		overlayDirs = append(overlayDirs, resolveOverlayDir(userDir))
 		sources = append(sources, cfgldr.DirSource{
 			Path:      userDir,
 			Unmarshal: unmarshal,
 		})
 	}
-	overlayDirs = append(overlayDirs, resolveOverlayDir(DirectoryConfigDir))
 	sources = append(sources, cfgldr.DirSource{
 		Path:      DirectoryConfigDir,
 		Unmarshal: unmarshal,
 	})
 	return &Loader{
-		overlayDirs: overlayDirs,
 		source: cobracfg.ConfigLoader[Config]{
 			DefaultSources: cfgldr.Sources[Config]{Sources: sources},
 		},
