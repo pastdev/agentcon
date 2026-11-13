@@ -27,13 +27,13 @@ func agentCfg(root string) Config {
 func bouncerCfg(root string, t *testing.T) Config {
 	t.Helper()
 	cfg := agentCfg(root)
-	cfg.Bouncers = map[string]*bouncercfg.Config{
-		"github": {
+	cfg.Bouncers = map[string]*BouncerSpec{
+		"github": {Config: bouncercfg.Config{
 			Listen: "127.0.0.1:8228",
 			Profiles: map[string]*bouncercfg.Profile{
 				"default": {Unmatched: bouncercfg.UnmatchedDeny},
 			},
-		},
+		}},
 	}
 	cfg.Contexts["pastdev"] = ContextSpec{
 		Agent:   "cursor",

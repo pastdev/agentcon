@@ -8,5 +8,5 @@
     "strict": true,
     "noEmit": true
   },
-  "include": ["*.ts", "../../types/bouncer.d.ts"]
+  "include": ["**/*.ts"]
 }

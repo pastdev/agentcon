@@ -5,10 +5,14 @@
 # A leftover bouncer.yaml loses, because later files replace slices.
 # Edit github_repo, Bitwarden email, and item names before run.
 # If your context is not named git, rename that key.
+# Copy the whole directory, tests/ included, or delete the tests: line.
+# relativeDir fails the config load when tests/ is missing.
+# Run the tests with: agentcon bouncer test --context git
 
 bouncers:
   github:
     default_profile: default
+    tests: '{{ relativeDir "tests" }}'
     credentials:
       github-pat:
         token:

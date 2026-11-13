@@ -315,10 +315,12 @@ curl --fail --location \
       '*/docs/bouncer/github'
 ```
 
-That writes `bouncers.yaml` and `ts/` next to your agent and context files.
+That writes `bouncers.yaml`, `ts/`, and `tests/` next to your agent and context files.
 It does not set `agent` or `root`.
 If your context is not named `git`, rename that key in `bouncers.yaml`.
 Add another repo by appending to each `github_repo` list, not by copying the rules.
+After editing, update `tests/` to match and run `agentcon bouncer test --context git`.
+[Test](bouncer-filters.md#test) covers the spec format.
 
 `unmatched: tunnel` splices unknown hosts.
 github.com and api.github.com are intercepted.

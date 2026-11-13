@@ -1,0 +1,21 @@
+cases:
+  - name: install metadata
+    steps:
+      - request: {url: "https://registry.npmjs.org/left-pad"}
+        expect: allow
+  - name: audit is a POST and allowed
+    steps:
+      - request: {method: POST, url: "https://registry.npmjs.org/-/npm/v1/security/advisories/bulk", body: "{}"}
+        expect: allow
+  - name: publish
+    steps:
+      - request: {method: PUT, url: "https://registry.npmjs.org/my-package", body: "{}"}
+        expect: deny
+  - name: unpublish
+    steps:
+      - request: {method: DELETE, url: "https://registry.npmjs.org/my-package/-rev/3-abc"}
+        expect: deny
+  - name: token creation
+    steps:
+      - request: {method: POST, url: "https://registry.npmjs.org/-/npm/v1/tokens", body: "{}"}
+        expect: deny

@@ -7,6 +7,7 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/bouncertest"
 	"github.com/pastdev/agentcon/pkg/run"
 	"gopkg.in/yaml.v3"
 )
@@ -75,6 +76,32 @@ func (c *Config) WriteBouncer(name, dir string) (string, error) {
 	return filepath.Join(dir, bouncercfg.FileName), nil
 }
 
+// BouncerTests returns the test suite for a context's bouncer. The policy
+// is materialized as run would ship it, without agent tunnel hosts.
+func (c *Config) BouncerTests(context string) (bouncertest.Suite, error) {
+	spec, ok := c.Contexts[context]
+	if !ok {
+		return bouncertest.Suite{}, fmt.Errorf("unknown context %q", context)
+	}
+	if spec.Bouncer == "" {
+		return bouncertest.Suite{}, fmt.Errorf("context %q has no bouncer", context)
+	}
+	setup, err := c.MaterializeBouncer(context, spec.Bouncer, AgentSpec{})
+	if err != nil {
+		return bouncertest.Suite{}, err
+	}
+	tests := c.Bouncers[spec.Bouncer].Tests
+	if tests == "" {
+		return bouncertest.Suite{}, fmt.Errorf("bouncer %q has no tests", spec.Bouncer)
+	}
+	return bouncertest.Suite{
+		Bouncer:    spec.Bouncer,
+		PolicyYAML: setup.PolicyYAML,
+		TSFiles:    setup.TSFiles,
+		TestsDir:   tests,
+	}, nil
+}
+
 func (c *Config) bouncerByName(name string) (*bouncercfg.Config, error) {
 	if name == "" {
 		return nil, nil
@@ -82,10 +109,11 @@ func (c *Config) bouncerByName(name string) (*bouncercfg.Config, error) {
 	if c == nil || c.Bouncers == nil {
 		return nil, fmt.Errorf("unknown bouncer %q", name)
 	}
-	doc, ok := c.Bouncers[name]
-	if !ok || doc == nil {
+	spec, ok := c.Bouncers[name]
+	if !ok || spec == nil {
 		return nil, fmt.Errorf("unknown bouncer %q", name)
 	}
+	doc := &spec.Config
 	err := doc.Init()
 	if err != nil {
 		return nil, fmt.Errorf("init bouncer config: %w", err)

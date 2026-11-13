@@ -1,0 +1,25 @@
+default_profile: open
+credentials:
+  tok:
+    token: {source: env, env: TESTRUNNER_TOKEN}
+profiles:
+  open:
+    http:
+      - name: example
+        hosts: [example.com]
+        default: allow
+  closed:
+    http:
+      - name: example
+        hosts: [example.com]
+        default: deny
+  tunnel:
+    unmatched: tunnel
+    http:
+      - name: api
+        hosts: [api.example.com]
+        credential: tok
+        inject: {bearer: true}
+        rules:
+          - action: allow
+            path: /in
