@@ -31,6 +31,7 @@ Put sources under `ts/` in an `agentcon.d` overlay directory.
 
 YAML paths are relative to that overlay, starting with `ts/`.
 `run` merges every overlay `ts/` tree (later directory wins) and copies the result into the sidecar.
+With `-d` or `-c`, only those directories are overlays, the same as for the YAML.
 `agentcon bouncer check` compiles the merged tree.
 
 Relative imports work.

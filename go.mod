@@ -13,7 +13,7 @@ require (
 	github.com/moby/moby/client v0.6.2
 	github.com/moby/patternmatcher v0.6.1
 	github.com/ohler55/ojg v1.26.10
-	github.com/pastdev/configloader v1.1.0
+	github.com/pastdev/configloader v1.2.0
 	github.com/rs/zerolog v1.35.0
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
