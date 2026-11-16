@@ -59,49 +59,6 @@ func writeSidecarPayload(w io.Writer, policy []byte, tsFiles map[string]string, 
 	return nil
 }
 
-func writeAgentPayload(w io.Writer, binaryPath, certPEM, bundlePEM, knownHosts string, uid, gid int) error {
-	tw := tar.NewWriter(w)
-	tfs := &tarFS{tw: tw, seen: map[string]bool{}, uid: uid, gid: gid}
-	err := tfs.writePath(tarName(agentBinPath), binaryPath, 0o755)
-	if err != nil {
-		return fmt.Errorf("write agent binary: %w", err)
-	}
-	if certPEM != "" {
-		err = tfs.WriteFile(tarName(agentCACertPath), []byte(certPEM), 0o644)
-		if err != nil {
-			return fmt.Errorf("write ca: %w", err)
-		}
-	}
-	if bundlePEM != "" {
-		err = tfs.WriteFile(tarName(agentCABundlePath), []byte(bundlePEM), 0o644)
-		if err != nil {
-			return fmt.Errorf("write ca bundle: %w", err)
-		}
-	}
-	err = tfs.WriteFile(tarName(agentKnownHosts), []byte(knownHosts), 0o644)
-	if err != nil {
-		return fmt.Errorf("write known_hosts: %w", err)
-	}
-	err = tfs.WriteFile(tarName(agentSSHConfig), []byte(fmt.Sprintf(`Host *
-  ProxyCommand "%s" bouncer ssh-connect %%h %%p %%r
-  UserKnownHostsFile "%s"
-  GlobalKnownHostsFile /dev/null
-  StrictHostKeyChecking yes
-  IdentityAgent none
-  IdentitiesOnly yes
-  PubkeyAuthentication no
-  ForwardAgent no
-`, agentBinPath, agentKnownHosts)), 0o644)
-	if err != nil {
-		return fmt.Errorf("write ssh config: %w", err)
-	}
-	err = tw.Close()
-	if err != nil {
-		return fmt.Errorf("tar close: %w", err)
-	}
-	return nil
-}
-
 func tarName(abs string) string {
 	return strings.TrimPrefix(abs, "/")
 }

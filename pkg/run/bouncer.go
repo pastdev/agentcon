@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
-	"github.com/pastdev/agentcon/internal/bouncer/envexport"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	"github.com/pastdev/agentcon/pkg/bouncer/host"
 	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
@@ -28,12 +27,6 @@ const (
 	sidecarBinPath    = optDir + "/bin/agentcon"
 	sidecarImage      = "registry.access.redhat.com/ubi10/ubi-minimal:10.2"
 	sidecarStatePath  = optDir + "/state"
-	agentBinPath      = sidecarBinPath
-	agentCACertPath   = optDir + "/ca.pem"
-	agentCABundlePath = optDir + "/ca-bundle.pem"
-	agentSSHConfig    = optDir + "/ssh/config"
-	agentKnownHosts   = optDir + "/ssh/known_hosts"
-	agentSSHClient    = "/usr/bin/ssh"
 	defaultProxyPort  = "8228"
 	defaultSSHPort    = "8229"
 )
@@ -201,7 +194,11 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	agentSpec.Name = running.ResourceName(req.Project, req.Slug, roleAgent)
 	agentSpec.Labels = sessionLabels(setup.ContextName, req.Project, req.Slug, roleAgent)
 	agentSpec.Networks = []string{agentNetName}
-	agentSpec.Env = append(agentSpec.Env, bouncerAgentEnv(session, agentIP)...)
+	agentEnv, err := bouncerAgentEnv(session, agentIP)
+	if err != nil {
+		return err
+	}
+	agentSpec.Env = append(agentSpec.Env, agentEnv...)
 
 	if req.Stderr != nil {
 		project := req.Project
@@ -373,7 +370,7 @@ func copyAgentFiles(ctx context.Context, req Request, id string, client *mgmt.Cl
 	pr, pw := io.Pipe()
 	errCh := make(chan error, 1)
 	go func() {
-		err := writeAgentPayload(pw, bin, trust.CertPEM, trust.BundlePEM, trust.SSHKnownHosts, uid, gid)
+		err := host.WriteAgentPayload(pw, host.AgentPayload{Binary: bin, Trust: trust, UID: uid, GID: gid})
 		if err != nil {
 			_ = pw.CloseWithError(err)
 			errCh <- err
@@ -393,24 +390,13 @@ func copyAgentFiles(ctx context.Context, req Request, id string, client *mgmt.Cl
 	return nil
 }
 
-func bouncerAgentEnv(session mgmt.NewSession, agentIP string) []string {
-	proxy := net.JoinHostPort(agentIP, defaultProxyPort)
-	ssh := net.JoinHostPort(agentIP, defaultSSHPort)
-	env := envexport.Build(envexport.Params{
-		ProxyAddr:    proxy,
-		SSHAddr:      ssh,
-		Token:        session.Token,
-		SessionID:    session.ID,
-		CACert:       agentCACertPath,
-		CABundle:     agentCABundlePath,
-		SSHCommand:   fmt.Sprintf(`"%s" -F "%s"`, agentSSHClient, agentSSHConfig),
-		Placeholders: session.Placeholders,
-	})
-	out := make([]string, 0, len(env.Vars))
-	for _, kv := range env.Vars {
-		out = append(out, kv[0]+"="+kv[1])
+func bouncerAgentEnv(session mgmt.NewSession, agentIP string) ([]string, error) {
+	env, err := host.AgentEnv(host.DefaultAgentLayout(), session,
+		net.JoinHostPort(agentIP, defaultProxyPort), net.JoinHostPort(agentIP, defaultSSHPort))
+	if err != nil {
+		return nil, fmt.Errorf("agent env: %w", err)
 	}
-	return out
+	return env, nil
 }
 
 func freeLocalPort() (int, error) {

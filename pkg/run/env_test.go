@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -68,25 +67,5 @@ func TestBouncerSidecarSpec(t *testing.T) {
 			wantArgs: append(slices.Clone(serve),
 				"--log", "bouncer=debug", "--log", "audit=warn", "--log-format", "json"),
 		})
-	})
-}
-
-func TestBouncerAgentEnv(t *testing.T) {
-	tester := func(t *testing.T) {
-		t.Helper()
-		env := bouncerAgentEnv(mgmt.NewSession{SessionRecord: mgmt.SessionRecord{Token: "tok"}}, "10.1.0.2")
-		got := map[string]string{}
-		for _, e := range env {
-			k, v, ok := strings.Cut(e, "=")
-			require.True(t, ok, "env %q", e)
-			got[k] = v
-		}
-		want := `"` + agentSSHClient + `" -F "` + agentSSHConfig + `"`
-		assert.Equal(t, want, got["GIT_SSH_COMMAND"])
-		assert.NotContains(t, got["GIT_SSH_COMMAND"], agentBinPath, "should invoke ssh, not agentcon")
-	}
-
-	t.Run("sets GIT_SSH_COMMAND to ssh -F", func(t *testing.T) {
-		tester(t)
 	})
 }

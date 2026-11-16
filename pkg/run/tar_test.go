@@ -13,7 +13,7 @@ import (
 func TestTarFiles(t *testing.T) {
 	tester := func(t *testing.T) {
 		t.Helper()
-		caPath := tarName(agentCACertPath)
+		caPath := "opt/agentcon/ca.pem"
 		buf, err := tarFiles(map[string][]byte{
 			caPath: []byte("cert"),
 		}, nil, 0, 0)
