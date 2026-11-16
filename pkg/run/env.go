@@ -54,10 +54,11 @@ func hostEnvCreds(policy []byte, extra []string) (map[string]string, error) {
 
 func parseEnvPairs(pairs []string) (map[string]string, error) {
 	out := map[string]string{}
-	for _, p := range pairs {
+	for i, p := range pairs {
 		k, v, ok := strings.Cut(p, "=")
 		if !ok || k == "" {
-			return nil, fmt.Errorf("sidecar env %q must be NAME=value", p)
+			// By position: a mistyped entry may hold the secret itself.
+			return nil, fmt.Errorf("sidecar env entry %d must be NAME=value", i+1)
 		}
 		out[k] = v
 	}

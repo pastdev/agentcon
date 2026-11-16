@@ -110,6 +110,10 @@ func TestParseEnvPairs(t *testing.T) {
 	t.Run("rejects a bare name", func(t *testing.T) {
 		tester(t, []string{"NOVALUE"}, "NAME=value")
 	})
+	t.Run("names a malformed entry by position, not content", func(t *testing.T) {
+		_, err := parseEnvPairs([]string{"A=1", "TOKEN:s3cret"})
+		require.EqualError(t, err, "sidecar env entry 2 must be NAME=value")
+	})
 }
 
 func TestBouncerSidecarSpec(t *testing.T) {

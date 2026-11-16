@@ -179,7 +179,8 @@ func New(opts Options) (*Daemon, error) {
 	d.env.Credential = func(ctx context.Context, name string) (string, error) {
 		sec, err := d.creds.Get(ctx, name)
 		if err != nil {
-			return "", fmt.Errorf("credential %s: %w", name, err)
+			creds.LogError(d.log.Warn(), err).Str("credential", name).Msg("credential unavailable to a filter")
+			return "", creds.Unavailable(name)
 		}
 		return sec.HTTP(), nil
 	}
@@ -197,7 +198,7 @@ func New(opts Options) (*Daemon, error) {
 func (d *Daemon) prepare(set map[string]*config.Credential, startup bool) {
 	err := d.creds.Prepare(context.Background(), set)
 	if err != nil {
-		d.log.Warn().Err(err).Msg("prepare credentials")
+		creds.LogError(d.log.Warn(), err).Msg("prepare credentials")
 	}
 	if !startup {
 		return
@@ -535,7 +536,8 @@ func (d *Daemon) resolveGitLabProject(ctx context.Context, service, host, projec
 	if svc.Credential != "" {
 		secret, err := d.creds.Get(ctx, svc.Credential)
 		if err != nil {
-			return 0, fmt.Errorf("credential %s: %w", svc.Credential, err)
+			creds.LogError(d.log.Warn(), err).Str("service", service).Msg("credential unavailable for gitlab project lookup")
+			return 0, fmt.Errorf("gitlab api: %w", creds.Unavailable(service))
 		}
 		spec := svc.Inject
 		if spec == nil {

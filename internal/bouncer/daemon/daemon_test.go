@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -469,5 +471,57 @@ func TestControlWithClient(t *testing.T) {
 
 	t.Run("round-trips the public wire types", func(t *testing.T) {
 		tester(t)
+	})
+}
+
+func TestCredentialErrorsStayInTheLog(t *testing.T) {
+	type testCase struct {
+		err  error
+		logs *lockedBuffer
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		require.Error(t, tc.err)
+		assert.NotContains(t, tc.err.Error(), "s3cret-stderr")
+		assert.Contains(t, tc.err.Error(), "is unavailable; see the bouncer log")
+		assert.Contains(t, tc.logs.String(), "s3cret-stderr")
+	}
+	newDaemon := func(t *testing.T) (*Daemon, *lockedBuffer) {
+		t.Helper()
+		if runtime.GOOS == "windows" {
+			t.Skip("uses sh")
+		}
+		dir := t.TempDir()
+		cfg := filepath.Join(dir, "config.yaml")
+		err := os.WriteFile(cfg, []byte(`default_profile: p
+prompts: {notify: false}
+credentials:
+  gl:
+    token:
+      source: command
+      command: [sh, -c, "echo s3cret-stderr >&2; exit 1"]
+profiles:
+  p:
+    http:
+      - name: gitlab
+        hosts: [gitlab.example.com]
+        credential: gl
+`), 0o600)
+		require.NoError(t, err)
+		logs := &lockedBuffer{}
+		d, err := New(Options{ConfigPath: cfg, StateDir: filepath.Join(dir, "state"), Log: zerolog.New(logs)})
+		require.NoError(t, err)
+		return d, logs
+	}
+
+	t.Run("gitlab project lookup", func(t *testing.T) {
+		d, logs := newDaemon(t)
+		_, err := d.resolveGitLabProject(t.Context(), "gitlab", "gitlab.example.com", "group/project")
+		tester(t, testCase{err: err, logs: logs})
+	})
+	t.Run("filter credential", func(t *testing.T) {
+		d, logs := newDaemon(t)
+		_, err := d.env.Credential(t.Context(), "gl")
+		tester(t, testCase{err: err, logs: logs})
 	})
 }
