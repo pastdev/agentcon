@@ -339,22 +339,29 @@ func parseContainerUser(user string) (int, int) {
 	return uid, gid
 }
 
+// linuxAgentcon is the agentcon executable copied into the sidecar and the
+// agent. explicit wins. A Linux host uses its own executable, which matches
+// the container architecture when the engine runs natively.
 func linuxAgentcon(explicit string) (string, error) {
+	return linuxAgentconFor(explicit, runtime.GOOS, runtime.GOARCH, version.Version(), os.Executable)
+}
+
+func linuxAgentconFor(explicit, goos, goarch, ver string, executable func() (string, error)) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
-	if runtime.GOOS == "linux" && runtime.GOARCH == "amd64" {
-		exe, err := os.Executable()
+	if goos == "linux" {
+		exe, err := executable()
 		if err != nil {
 			return "", fmt.Errorf("executable: %w", err)
 		}
 		return exe, nil
 	}
-	ver := version.Version()
+	asset := "agentcon-linux-" + goarch
 	if ver == "" || ver == "0.0.0" || ver == "dev" {
-		return "", fmt.Errorf("host is %s/%s; build a linux amd64 agentcon or run from a released version", runtime.GOOS, runtime.GOARCH)
+		return "", fmt.Errorf("host is %s/%s; the sidecar needs a linux agentcon, such as %s built from this source", goos, goarch, asset)
 	}
-	return "", fmt.Errorf("host is %s/%s; copy a linux amd64 agentcon into the sidecar (release %s)", runtime.GOOS, runtime.GOARCH, ver)
+	return "", fmt.Errorf("host is %s/%s; the sidecar needs a linux agentcon, such as the %s asset of release %s", goos, goarch, asset, ver)
 }
 
 func copyAgentFiles(ctx context.Context, req Request, id string, client *mgmt.Client) error {

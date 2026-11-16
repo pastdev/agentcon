@@ -93,28 +93,31 @@ jobs:
     - name: Build release artifacts version ${{ env.RELEASE_VERSION }}
       run: |
         mkdir -p "${RELEASE_DIR}"
-        for PLATFORM in windows linux darwin; do
+        for TARGET in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+          export GOOS="${TARGET%/*}"
+          export GOARCH="${TARGET#*/}"
+          export CGO_ENABLED=0
           EXTENSION=""
-          if [[ "${PLATFORM}" == "windows" ]]; then
+          if [[ "${GOOS}" == "windows" ]]; then
             EXTENSION=".exe"
           fi
-          export GOOS="${PLATFORM}"
-          export GOARCH=amd64
-          export CGO_ENABLED=0
 
-          OUT_FILE="${RELEASE_DIR}/agentcon-${PLATFORM}${EXTENSION}"
+          OUT_FILE="${RELEASE_DIR}/agentcon-${GOOS}-${GOARCH}${EXTENSION}"
           echo "Creating ${OUT_FILE} (${RELEASE_VERSION})"
           go build \
             -ldflags "-X github.com/pastdev/agentcon/pkg/version.version=${RELEASE_VERSION}" \
             -o "${OUT_FILE}" \
             ./cmd/agentcon
         done
+        # Names from before releases carried the architecture.
+        cp "${RELEASE_DIR}/agentcon-linux-amd64" "${RELEASE_DIR}/agentcon-linux"
+        cp "${RELEASE_DIR}/agentcon-darwin-amd64" "${RELEASE_DIR}/agentcon-darwin"
+        cp "${RELEASE_DIR}/agentcon-windows-amd64.exe" "${RELEASE_DIR}/agentcon-windows.exe"
+        (cd "${RELEASE_DIR}" && sha256sum agentcon-* >SHA256SUMS)
         ls -lrt "${RELEASE_DIR}"
     - name: Create release ${{ env.RELEASE_VERSION }}
       run: |
         gh release create "${RELEASE_VERSION}" \
           --title "${RELEASE_VERSION}" \
-          "${RELEASE_DIR}/agentcon-darwin" \
-          "${RELEASE_DIR}/agentcon-linux" \
-          "${RELEASE_DIR}/agentcon-windows.exe"
-
+          "${RELEASE_DIR}"/agentcon-* \
+          "${RELEASE_DIR}/SHA256SUMS"
