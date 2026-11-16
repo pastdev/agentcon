@@ -30,8 +30,20 @@ type SpecReport struct {
 	// Path is relative to the parent of the tests directory, such as
 	// tests/bouncers.test.yaml.
 	Path    string
-	Results []testrunner.Result
+	Results []Result
 	Err     error
+}
+
+// Result is one test case. A failed case names its first failing step.
+type Result struct {
+	Name   string
+	Passed bool
+	// Step is the 1-based index of the failing step, 0 when passed.
+	Step     int
+	StepName string
+	Message  string
+	// FilterLog is the filter console output of the failed case.
+	FilterLog string
 }
 
 // Failed counts failed cases plus specs that could not be loaded.
@@ -76,7 +88,18 @@ func Run(suite Suite, dir string) (Report, error) {
 			path = file
 		}
 		results, err := testrunner.RunFile(file, opts)
-		report.Specs = append(report.Specs, SpecReport{Path: path, Results: results, Err: err})
+		report.Specs = append(report.Specs, SpecReport{Path: path, Results: publicResults(results), Err: err})
 	}
 	return report, nil
+}
+
+func publicResults(in []testrunner.Result) []Result {
+	if in == nil {
+		return nil
+	}
+	out := make([]Result, 0, len(in))
+	for _, r := range in {
+		out = append(out, Result(r))
+	}
+	return out
 }

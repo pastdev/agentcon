@@ -1,4 +1,4 @@
-package bouncer
+package bouncertest
 
 import (
 	"bytes"
@@ -6,7 +6,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/pastdev/agentcon/pkg/bouncertest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -18,9 +17,10 @@ type diagnostic struct {
 	FilterLog string `yaml:"filter_log,omitempty"`
 }
 
-// writeTAP writes report as TAP 14, with one test per spec file and one
-// subtest per case.
-func writeTAP(w io.Writer, report bouncertest.Report) error {
+// WriteTAP writes report as TAP 14, with one test per spec file and one
+// subtest per case. A failed case carries its step, message, and filter log
+// in a YAML diagnostic block. Use Report.Failed for the pass/fail result.
+func WriteTAP(w io.Writer, report Report) error {
 	var b bytes.Buffer
 	b.WriteString("TAP version 14\n")
 	for i, spec := range report.Specs {
