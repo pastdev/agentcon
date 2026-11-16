@@ -13,8 +13,8 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
 	"github.com/pastdev/agentcon/internal/bouncer/envexport"
-	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
+	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
 	"github.com/pastdev/agentcon/pkg/container"
 	"github.com/pastdev/agentcon/pkg/log"
 	"github.com/pastdev/agentcon/pkg/version"
@@ -163,11 +163,11 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("wait for bouncer: %w", err)
 	}
-	err = client.PutEnv(envVars)
+	err = client.PutEnv(ctx, envVars)
 	if err != nil {
 		return fmt.Errorf("put env credentials: %w", err)
 	}
-	err = client.PutProvided(provided)
+	err = client.PutProvided(ctx, provided)
 	if err != nil {
 		return fmt.Errorf("put host credentials: %w", err)
 	}
@@ -194,7 +194,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("wait for bouncer: %w", err)
 	}
 
-	session, err := client.CreateSession(req.Slug, "", "agentcon", "")
+	session, err := client.CreateSession(ctx, req.Slug, "", "agentcon", "")
 	if err != nil {
 		return fmt.Errorf("bouncer session: %w", err)
 	}
@@ -373,7 +373,7 @@ func copyAgentFiles(ctx context.Context, req Request, id string, client *mgmt.Cl
 	if err != nil {
 		return fmt.Errorf("linux binary: %w", err)
 	}
-	trust, err := client.Trust()
+	trust, err := client.Trust(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch bouncer CA: %w", err)
 	}
@@ -401,7 +401,7 @@ func copyAgentFiles(ctx context.Context, req Request, id string, client *mgmt.Cl
 	return nil
 }
 
-func bouncerAgentEnv(session daemon.NewSession, agentIP string) []string {
+func bouncerAgentEnv(session mgmt.NewSession, agentIP string) []string {
 	proxy := net.JoinHostPort(agentIP, defaultProxyPort)
 	ssh := net.JoinHostPort(agentIP, defaultSSHPort)
 	env := envexport.Build(envexport.Params{
@@ -436,7 +436,7 @@ func waitUntilServing(ctx context.Context, client *mgmt.Client) error {
 		if ctx.Err() != nil {
 			return fmt.Errorf("wait bouncer: %w", ctx.Err())
 		}
-		_, err := client.Status()
+		_, err := client.Status(ctx)
 		if err == nil {
 			return nil
 		}
@@ -454,7 +454,7 @@ func notifyPrompts(ctx context.Context, client *mgmt.Client, stderr io.Writer) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			list, err := client.Prompts()
+			list, err := client.Prompts(ctx)
 			if err != nil {
 				continue
 			}

@@ -12,8 +12,8 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/app"
 	"github.com/pastdev/agentcon/internal/bouncer/approval"
-	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 	"github.com/pastdev/agentcon/pkg/term"
 )
 
@@ -69,7 +69,7 @@ func waitReady(ctx context.Context, client *mgmt.Client, stdin io.Reader, stderr
 		if ctx.Err() != nil {
 			return fmt.Errorf("wait bouncer: %w", ctx.Err())
 		}
-		status, err := client.Status()
+		status, err := client.Status(ctx)
 		if err != nil {
 			time.Sleep(200 * time.Millisecond)
 			continue
@@ -82,7 +82,7 @@ func waitReady(ctx context.Context, client *mgmt.Client, stdin io.Reader, stderr
 		}
 		if status.PendingPrompts > 0 {
 			deadline = time.Now().Add(timeout)
-			list, err := client.Prompts()
+			list, err := client.Prompts(ctx)
 			if err != nil {
 				time.Sleep(200 * time.Millisecond)
 				continue

@@ -30,10 +30,11 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/kv"
 	"github.com/pastdev/agentcon/internal/bouncer/notify"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/proxy"
 	"github.com/pastdev/agentcon/internal/bouncer/sshproxy"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 // Options configure a daemon.
@@ -106,17 +107,16 @@ type SessionRecord struct {
 
 func (s *SessionRecord) expired() bool { return !s.Expires.IsZero() && time.Now().After(s.Expires) }
 
-// NewSession is the control API's reply to session creation: everything a
-// client needs to build the agent's environment without parsing the config.
-type NewSession struct {
-	SessionRecord
-	ProxyAddr string `json:"proxy_addr"`
-	SSHAddr   string `json:"ssh_addr"`
-	// Placeholders maps environment variable names to placeholder values.
-	Placeholders map[string]string `json:"placeholders"`
-	// SSHHosts lists every configured SSH service host pattern, the only
-	// hosts the generated known_hosts trusts the bouncer SSH CA for.
-	SSHHosts []string `json:"ssh_hosts"`
+// wire is the record as the control API sends it.
+func (s *SessionRecord) wire() mgmt.SessionRecord {
+	return mgmt.SessionRecord{
+		ID:      s.ID,
+		Label:   s.Label,
+		Profile: s.Profile,
+		Token:   s.Token,
+		Created: s.Created,
+		Expires: s.Expires,
+	}
 }
 
 // Runtime describes a running daemon; written to the state dir so clients

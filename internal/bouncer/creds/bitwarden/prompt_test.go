@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 func TestBrokerPrompter(t *testing.T) {

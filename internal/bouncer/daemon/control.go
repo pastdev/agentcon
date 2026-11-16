@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 // Control serves the /_bouncer/ API used by the CLI. Every call requires
@@ -26,11 +27,11 @@ func (d *Daemon) Control() http.Handler {
 		if startupErr != nil {
 			errText = startupErr.Error()
 		}
-		writeJSON(w, map[string]any{
-			"config": cfg.Path, "profiles": profiles, "default_profile": cfg.DefaultProfile,
-			"sessions": len(d.listSessions()), "pending_prompts": len(d.Prompts.List()),
-			"ca": d.CA.CertPath(), "ca_bundle": d.CA.BundlePath(),
-			"ready": done && startupErr == nil, "error": errText,
+		writeJSON(w, mgmt.Status{
+			Config: cfg.Path, Profiles: profiles, DefaultProfile: cfg.DefaultProfile,
+			Sessions: len(d.listSessions()), PendingPrompts: len(d.Prompts.List()),
+			CA: d.CA.CertPath(), CABundle: d.CA.BundlePath(),
+			Ready: done && startupErr == nil, Error: errText,
 		})
 	})
 	mux.HandleFunc("POST /_bouncer/sessions", func(w http.ResponseWriter, r *http.Request) {
@@ -52,10 +53,15 @@ func (d *Daemon) Control() http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		writeJSON(w, NewSession{SessionRecord: *rec, ProxyAddr: d.proxyAddr, SSHAddr: d.sshAddr, Placeholders: d.Placeholders(), SSHHosts: d.SSHHosts()})
+		writeJSON(w, mgmt.NewSession{SessionRecord: rec.wire(), ProxyAddr: d.proxyAddr, SSHAddr: d.sshAddr, Placeholders: d.Placeholders(), SSHHosts: d.SSHHosts()})
 	})
 	mux.HandleFunc("GET /_bouncer/sessions", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, d.listSessions())
+		recs := d.listSessions()
+		out := make([]mgmt.SessionRecord, 0, len(recs))
+		for i := range recs {
+			out = append(out, recs[i].wire())
+		}
+		writeJSON(w, out)
 	})
 	mux.HandleFunc("DELETE /_bouncer/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if !d.EndSession(r.PathValue("id")) {
@@ -98,10 +104,10 @@ func (d *Daemon) Control() http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, map[string]any{
-			"cert_pem":        string(d.CA.CertPEM()),
-			"bundle_pem":      string(bundle),
-			"ssh_known_hosts": d.CA.SSHKnownHostsLine(d.SSHHosts()),
+		writeJSON(w, mgmt.Trust{
+			CertPEM:       string(d.CA.CertPEM()),
+			BundlePEM:     string(bundle),
+			SSHKnownHosts: d.CA.SSHKnownHostsLine(d.SSHHosts()),
 		})
 	})
 	mux.HandleFunc("POST /_bouncer/reload", func(w http.ResponseWriter, _ *http.Request) {

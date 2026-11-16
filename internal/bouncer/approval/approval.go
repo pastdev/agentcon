@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 // Manager raises confirm questions on a prompt broker. It coalesces

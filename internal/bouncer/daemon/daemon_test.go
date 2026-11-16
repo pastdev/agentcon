@@ -15,7 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 func newTestDaemon(t *testing.T) *Daemon {
@@ -414,5 +415,59 @@ func TestStartupStatus(t *testing.T) {
 			decline:   true,
 			wantError: "declined",
 		})
+	})
+}
+
+func TestControlWithClient(t *testing.T) {
+	tester := func(t *testing.T) {
+		t.Helper()
+		dir := t.TempDir()
+		cfg := filepath.Join(dir, "config.yaml")
+		err := os.WriteFile(cfg, []byte("default_profile: p\nprofiles:\n  p: {}\n"), 0o600)
+		require.NoError(t, err)
+		state := filepath.Join(dir, "state")
+		d, err := New(Options{ConfigPath: cfg, StateDir: state})
+		require.NoError(t, err)
+		token, err := os.ReadFile(AdminTokenPath(state))
+		require.NoError(t, err)
+		srv := httptest.NewServer(d.Control())
+		t.Cleanup(srv.Close)
+		c := mgmt.New(srv.URL, strings.TrimSpace(string(token)))
+		ctx := t.Context()
+
+		created, err := c.CreateSession(ctx, "deadbeef", "", "test", "1h")
+		require.NoError(t, err)
+		assert.Equal(t, "deadbeef", created.ID)
+		assert.Equal(t, "test", created.Label)
+		assert.Equal(t, "p", created.Profile)
+		assert.NotEmpty(t, created.Token)
+		assert.False(t, created.Expires.IsZero())
+
+		list, err := c.Sessions(ctx)
+		require.NoError(t, err)
+		require.Len(t, list, 1)
+		assert.Equal(t, created.ID, list[0].ID)
+		assert.Empty(t, list[0].Token, "listing must not reveal session tokens")
+
+		st, err := c.Status(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, cfg, st.Config)
+		assert.Equal(t, []string{"p"}, st.Profiles)
+		assert.Equal(t, 1, st.Sessions)
+
+		trust, err := c.Trust(ctx)
+		require.NoError(t, err)
+		assert.Contains(t, trust.CertPEM, "BEGIN CERTIFICATE")
+		assert.Contains(t, trust.BundlePEM, trust.CertPEM)
+
+		err = c.EndSession(ctx, "deadbeef")
+		require.NoError(t, err)
+		list, err = c.Sessions(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, list)
+	}
+
+	t.Run("round-trips the public wire types", func(t *testing.T) {
+		tester(t)
 	})
 }

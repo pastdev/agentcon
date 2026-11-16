@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/pastdev/agentcon/internal/bouncer/approval"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 	"github.com/pastdev/agentcon/pkg/term"
 )
 

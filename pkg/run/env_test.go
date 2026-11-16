@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pastdev/agentcon/internal/bouncer/daemon"
+	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -176,7 +176,7 @@ func TestBouncerSidecarSpec(t *testing.T) {
 func TestBouncerAgentEnv(t *testing.T) {
 	tester := func(t *testing.T) {
 		t.Helper()
-		env := bouncerAgentEnv(daemon.NewSession{SessionRecord: daemon.SessionRecord{Token: "tok"}}, "10.1.0.2")
+		env := bouncerAgentEnv(mgmt.NewSession{SessionRecord: mgmt.SessionRecord{Token: "tok"}}, "10.1.0.2")
 		got := map[string]string{}
 		for _, e := range env {
 			k, v, ok := strings.Cut(e, "=")

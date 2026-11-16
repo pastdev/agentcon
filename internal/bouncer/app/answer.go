@@ -9,14 +9,14 @@ import (
 	"strings"
 
 	"github.com/pastdev/agentcon/internal/bouncer/approval"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 	"github.com/pastdev/agentcon/pkg/term"
 )
 
 // PromptAnswerer is the part of the control API that settles prompts.
 type PromptAnswerer interface {
-	AnswerPrompt(id string, a prompt.Answer) error
-	DeclinePrompt(id string) error
+	AnswerPrompt(ctx context.Context, id string, a prompt.Answer) error
+	DeclinePrompt(ctx context.Context, id string) error
 }
 
 // AnswerAtTerminal shows one pending prompt, reads the human's reply, and
@@ -25,7 +25,7 @@ func AnswerAtTerminal(ctx context.Context, c PromptAnswerer, in *os.File, out io
 	a, readErr := readAnswer(ctx, in, out, p)
 	declined := errors.Is(readErr, term.ErrInterrupted) || (readErr == nil && p.Kind != prompt.KindConfirm && a.Value == "")
 	if declined {
-		err := c.DeclinePrompt(p.ID)
+		err := c.DeclinePrompt(ctx, p.ID)
 		if err != nil {
 			return fmt.Errorf("decline prompt %s: %w", p.ID, err)
 		}
@@ -35,7 +35,7 @@ func AnswerAtTerminal(ctx context.Context, c PromptAnswerer, in *os.File, out io
 	if readErr != nil {
 		return readErr
 	}
-	err := c.AnswerPrompt(p.ID, a)
+	err := c.AnswerPrompt(ctx, p.ID, a)
 	if err != nil {
 		return fmt.Errorf("answer prompt %s: %w", p.ID, err)
 	}

@@ -19,8 +19,8 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/pastdev/agentcon/internal/bouncer/creds/bitwarden"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 // KeyringService is the service name under which secrets are stored in the OS keyring.

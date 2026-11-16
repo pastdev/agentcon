@@ -8,7 +8,7 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/app"
 	"github.com/pastdev/agentcon/internal/bouncer/approval"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 	"github.com/spf13/cobra"
 )
 
@@ -17,12 +17,12 @@ func promptsCmd() *cobra.Command {
 		Use:   "prompts",
 		Short: "List pending prompts",
 		Args:  cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := dial()
 			if err != nil {
 				return err
 			}
-			list, err := c.Prompts()
+			list, err := c.Prompts(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("prompts: %w", err)
 			}
@@ -52,7 +52,7 @@ func answerCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			list, err := c.Prompts()
+			list, err := c.Prompts(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("prompts: %w", err)
 			}
@@ -71,12 +71,12 @@ func declineCmd() *cobra.Command {
 		Use:   "decline ID",
 		Short: "Refuse to answer a pending prompt",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := dial()
 			if err != nil {
 				return err
 			}
-			return c.DeclinePrompt(args[0])
+			return c.DeclinePrompt(cmd.Context(), args[0])
 		},
 	}
 }
@@ -91,12 +91,12 @@ func approveCmd(allow bool) *cobra.Command {
 		Use:   use,
 		Short: short,
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := dial()
 			if err != nil {
 				return err
 			}
-			return c.AnswerPrompt(args[0], prompt.Answer{Allow: allow, Remember: session})
+			return c.AnswerPrompt(cmd.Context(), args[0], prompt.Answer{Allow: allow, Remember: session})
 		},
 	}
 	cmd.Flags().BoolVarP(&session, "session", "s", false, "apply to identical requests for the rest of the session")
@@ -108,12 +108,12 @@ func sessionsCmd() *cobra.Command {
 		Use:   "sessions",
 		Short: "List agent sessions",
 		Args:  cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := dial()
 			if err != nil {
 				return err
 			}
-			list, err := c.Sessions()
+			list, err := c.Sessions(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("sessions: %w", err)
 			}
@@ -129,12 +129,12 @@ func sessionsCmd() *cobra.Command {
 		Use:   "end ID",
 		Short: "Revoke a session",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := dial()
 			if err != nil {
 				return err
 			}
-			return c.EndSession(args[0])
+			return c.EndSession(cmd.Context(), args[0])
 		},
 	})
 	return cmd

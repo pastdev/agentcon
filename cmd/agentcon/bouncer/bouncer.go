@@ -6,9 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
+	"github.com/pastdev/agentcon/internal/bouncer/mgmtdial"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
 	pkgcfg "github.com/pastdev/agentcon/pkg/config"
 	"github.com/spf13/cobra"
 )
@@ -155,7 +156,7 @@ func bouncerLoader() func() (*bouncercfg.Config, error) {
 
 func dial() (*mgmt.Client, error) {
 	if fileFlag != "" || stateFlag != "" {
-		c, err := mgmt.Dial(stateDir, configPath)
+		c, err := mgmtdial.Dial(stateDir, configPath)
 		if err != nil {
 			return nil, fmt.Errorf("dial bouncer: %w", err)
 		}
@@ -165,7 +166,7 @@ func dial() (*mgmt.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("working directory: %w", err)
 	}
-	c, err := mgmt.DialContext(homeDir, running.Query{
+	c, err := mgmtdial.DialContext(homeDir, running.Query{
 		Context: contextName,
 		Project: projectFlag,
 		Slug:    slugFlag,

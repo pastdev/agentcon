@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

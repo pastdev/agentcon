@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 // Prompter supplies the master password and, when the server asks, a

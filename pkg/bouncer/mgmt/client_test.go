@@ -1,18 +1,14 @@
 package mgmt
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
-	"github.com/pastdev/agentcon/internal/bouncer/daemon"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
-	"github.com/pastdev/agentcon/internal/bouncer/running"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,15 +51,15 @@ func TestClient(t *testing.T) {
 			token:   "secret",
 			check: func(t *testing.T, c *Client) {
 				t.Helper()
-				st, err := c.Status()
+				st, err := c.Status(t.Context())
 				require.NoError(t, err)
 				assert.True(t, st.Ready)
 				assert.Equal(t, "/tmp/c.yaml", st.Config)
-				err = c.AnswerPrompt("abc", prompt.Answer{Allow: true})
+				err = c.AnswerPrompt(t.Context(), "abc", prompt.Answer{Allow: true})
 				require.NoError(t, err)
-				err = c.AnswerPrompt("def", prompt.Answer{Value: "123456"})
+				err = c.AnswerPrompt(t.Context(), "def", prompt.Answer{Value: "123456"})
 				require.NoError(t, err)
-				err = c.DeclinePrompt("ghi")
+				err = c.DeclinePrompt(t.Context(), "ghi")
 				require.NoError(t, err)
 			},
 		})
@@ -76,7 +72,7 @@ func TestClient(t *testing.T) {
 			token: "t",
 			check: func(t *testing.T, c *Client) {
 				t.Helper()
-				err := c.EndSession("missing")
+				err := c.EndSession(t.Context(), "missing")
 				require.ErrorContains(t, err, "no such session")
 			},
 		})
@@ -94,7 +90,7 @@ func TestClient(t *testing.T) {
 			token:   "secret",
 			check: func(t *testing.T, c *Client) {
 				t.Helper()
-				err := c.PutEnv(map[string]string{"SMOKE_TOKEN": "s3cret"})
+				err := c.PutEnv(t.Context(), map[string]string{"SMOKE_TOKEN": "s3cret"})
 				require.NoError(t, err)
 			},
 		})
@@ -112,7 +108,7 @@ func TestClient(t *testing.T) {
 			token:   "secret",
 			check: func(t *testing.T, c *Client) {
 				t.Helper()
-				err := c.PutProvided(map[string]string{"tok": "from-file"})
+				err := c.PutProvided(t.Context(), map[string]string{"tok": "from-file"})
 				require.NoError(t, err)
 			},
 		})
@@ -126,96 +122,27 @@ func TestClient(t *testing.T) {
 			token: "t",
 			check: func(t *testing.T, c *Client) {
 				t.Helper()
-				got, err := c.Trust()
+				got, err := c.Trust(t.Context())
 				require.NoError(t, err)
 				assert.Equal(t, Trust{CertPEM: "CERT", BundlePEM: "BUNDLE"}, got)
 			},
 		})
 	})
-}
-
-func TestDial(t *testing.T) {
-	type testCase struct {
-		stateDir   string
-		configPath string
-		wantErr    string
-		after      func(*testing.T, *Client)
-	}
-	tester := func(t *testing.T, tc testCase) {
-		t.Helper()
-		c, err := Dial(tc.stateDir, tc.configPath)
-		if tc.wantErr != "" {
-			require.ErrorContains(t, err, tc.wantErr)
-			return
-		}
-		require.NoError(t, err)
-		if tc.after != nil {
-			tc.after(t, c)
-		}
-	}
-
-	t.Run("dials from host.json", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "/_bouncer/reload", r.URL.Path)
-			w.WriteHeader(http.StatusNoContent)
-		}))
-		t.Cleanup(srv.Close)
-
-		state := t.TempDir()
-		addr := strings.TrimPrefix(srv.URL, "http://")
-		err := os.WriteFile(filepath.Join(state, "host.json"), []byte(`{"control_addr":"`+addr+`"}`), 0o600)
-		require.NoError(t, err)
-		err = os.WriteFile(daemon.AdminTokenPath(state), []byte("tok\n"), 0o600)
-		require.NoError(t, err)
+	t.Run("stops when the context ends", func(t *testing.T) {
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
 		tester(t, testCase{
-			stateDir:   state,
-			configPath: filepath.Join(state, "missing.yaml"),
-			after: func(t *testing.T, c *Client) {
+			handler: http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				<-release
+			}),
+			token: "t",
+			check: func(t *testing.T, c *Client) {
 				t.Helper()
-				err := c.Reload()
-				require.NoError(t, err)
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				_, err := c.Status(ctx)
+				require.ErrorIs(t, err, context.Canceled)
 			},
 		})
-	})
-	t.Run("rejects a missing admin token", func(t *testing.T) {
-		state := t.TempDir()
-		err := os.WriteFile(filepath.Join(state, "host.json"), []byte(`{"control_addr":"127.0.0.1:1"}`), 0o600)
-		require.NoError(t, err)
-		tester(t, testCase{stateDir: state, wantErr: "admin token"})
-	})
-}
-
-func TestDialContext(t *testing.T) {
-	type testCase struct {
-		home  string
-		query running.Query
-	}
-	tester := func(t *testing.T, tc testCase) {
-		t.Helper()
-		c, err := DialContext(tc.home, tc.query, "", "")
-		require.NoError(t, err)
-		err = c.Reload()
-		require.NoError(t, err)
-	}
-
-	t.Run("uses a running record", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "Bearer from-record", r.Header.Get("Authorization"))
-			assert.Equal(t, "/_bouncer/reload", r.URL.Path)
-			w.WriteHeader(http.StatusNoContent)
-		}))
-		t.Cleanup(srv.Close)
-
-		home := t.TempDir()
-		addr := strings.TrimPrefix(srv.URL, "http://")
-		err := running.Write(home, running.Record{
-			Context:     "foo",
-			Slug:        "deadbeef",
-			ControlAddr: addr,
-			Token:       "from-record",
-			PID:         1,
-		})
-		require.NoError(t, err)
-		tester(t, testCase{home: home, query: running.Query{Slug: "deadbeef"}})
 	})
 }

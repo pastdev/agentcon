@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 type fakeAnswerer struct {
@@ -17,12 +17,12 @@ type fakeAnswerer struct {
 	declined bool
 }
 
-func (f *fakeAnswerer) AnswerPrompt(_ string, a prompt.Answer) error {
+func (f *fakeAnswerer) AnswerPrompt(_ context.Context, _ string, a prompt.Answer) error {
 	f.answered = &a
 	return nil
 }
 
-func (f *fakeAnswerer) DeclinePrompt(string) error {
+func (f *fakeAnswerer) DeclinePrompt(context.Context, string) error {
 	f.declined = true
 	return nil
 }
