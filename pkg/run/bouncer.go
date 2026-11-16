@@ -179,7 +179,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	}
 	defer func() { _ = running.Remove(req.Home, req.Slug) }()
 
-	err = waitReady(ctx, client, req.Stdin, req.Stderr, readyTimeout)
+	err = host.WaitReady(ctx, client, host.PromptOptions{Stdin: req.Stdin, Stderr: req.Stderr, Hint: host.AgentconHint})
 	if err != nil {
 		return fmt.Errorf("wait for bouncer: %w", err)
 	}
@@ -211,7 +211,9 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		_, _ = fmt.Fprintf(req.Stderr, "agentcon session %s project %s\n", req.Slug, project)
 	}
 
-	go notifyPrompts(ctx, client, req.Stderr)
+	notifyCtx, stopNotify := context.WithCancel(ctx)
+	defer stopNotify()
+	go host.NotifyPrompts(notifyCtx, client, host.PromptOptions{Stderr: req.Stderr, Hint: host.AgentconHint})
 
 	id, err := req.Runtime.Create(ctx, agentSpec)
 	if err != nil {
@@ -433,28 +435,4 @@ func waitUntilServing(ctx context.Context, client *mgmt.Client) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("timed out waiting for bouncer management API")
-}
-
-func notifyPrompts(ctx context.Context, client *mgmt.Client, stderr io.Writer) {
-	seen := map[string]bool{}
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			list, err := client.Prompts(ctx)
-			if err != nil {
-				continue
-			}
-			for _, p := range list {
-				if seen[p.ID] {
-					continue
-				}
-				seen[p.ID] = true
-				_, _ = fmt.Fprintln(stderr, promptHint(p))
-			}
-		}
-	}
 }

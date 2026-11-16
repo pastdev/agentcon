@@ -6,8 +6,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/pastdev/agentcon/internal/bouncer/app"
 	"github.com/pastdev/agentcon/internal/bouncer/approval"
+	"github.com/pastdev/agentcon/pkg/bouncer/host"
 	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 	"github.com/spf13/cobra"
 )
@@ -58,7 +58,7 @@ func answerCmd() *cobra.Command {
 			}
 			for _, p := range list {
 				if p.ID == args[0] {
-					return app.AnswerAtTerminal(cmd.Context(), c, os.Stdin, os.Stderr, p)
+					return host.AnswerAtTerminal(cmd.Context(), c, os.Stdin, os.Stderr, p)
 				}
 			}
 			return fmt.Errorf("no pending prompt %s", args[0])
@@ -150,7 +150,7 @@ func checkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			got, err := app.Check(svc)
+			got, err := host.Check(svc)
 			if err != nil {
 				return fmt.Errorf("check: %w", err)
 			}
