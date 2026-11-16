@@ -1,4 +1,4 @@
-package run
+package host
 
 import (
 	"context"
@@ -10,13 +10,12 @@ import (
 	"testing"
 
 	"github.com/pastdev/agentcon/internal/bouncer/creds"
-	"github.com/pastdev/agentcon/pkg/container"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zalando/go-keyring"
 )
 
-func TestHostProvidedCreds(t *testing.T) {
+func TestProvidedCreds(t *testing.T) {
 	type testCase struct {
 		policy      string
 		extra       map[string]string
@@ -29,7 +28,7 @@ func TestHostProvidedCreds(t *testing.T) {
 		if tc.skipWindows != "" && runtime.GOOS == "windows" {
 			t.Skip(tc.skipWindows)
 		}
-		got, err := hostProvidedCreds(context.Background(), []byte(tc.policy), tc.extra)
+		got, err := providedCreds(context.Background(), []byte(tc.policy), tc.extra)
 		if tc.wantErr != "" {
 			require.ErrorContains(t, err, tc.wantErr)
 			return
@@ -119,7 +118,7 @@ credentials:
 			wantErr: "tok",
 		})
 	})
-	t.Run("reads a file password and leaves env username to hostEnvCreds", func(t *testing.T) {
+	t.Run("reads a file password and leaves env username to envCreds", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "secret")
 		err := os.WriteFile(path, []byte("from-file\n"), 0o600)
@@ -139,7 +138,7 @@ credentials:
 			policy: policy,
 			want:   map[string]string{"login.password": "from-file"},
 		})
-		env, err := hostEnvCreds([]byte(policy), nil)
+		env, err := envCreds([]byte(policy), nil)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]string{"SMOKE_USER": "alice"}, env)
 	})
@@ -180,7 +179,7 @@ credentials:
 	})
 }
 
-func TestHostSSHAuthSock(t *testing.T) {
+func TestSSHAuthSock(t *testing.T) {
 	type testCase struct {
 		policy  string
 		want    string
@@ -188,7 +187,7 @@ func TestHostSSHAuthSock(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		got, err := hostSSHAuthSock([]byte(tc.policy))
+		got, err := sshAuthSock([]byte(tc.policy))
 		if len(tc.wantErr) > 0 {
 			require.Error(t, err)
 			found := slices.ContainsFunc(tc.wantErr, func(s string) bool {
@@ -242,28 +241,4 @@ credentials:
 			want: sock,
 		})
 	})
-}
-
-func TestWithSSHAuthSock(t *testing.T) {
-	tester := func(t *testing.T) {
-		t.Helper()
-		spec := withSSHAuthSock(containerSpecEnvOnly(), "/tmp/agent.sock")
-		assert.Equal(t, []container.Mount{{Source: "/tmp/agent.sock", Target: sidecarSSHAuthSock}}, spec.Mounts)
-		assert.Contains(t, spec.Env, "SSH_AUTH_SOCK="+sidecarSSHAuthSock)
-	}
-
-	t.Run("binds the socket and sets SSH_AUTH_SOCK", func(t *testing.T) {
-		tester(t)
-	})
-}
-
-func containerSpecEnvOnly() container.Spec {
-	return bouncerSidecarSpec(
-		Request{Image: testImage, User: testUser},
-		sidecarImage,
-		nil,
-		externalNet{name: "ext-net", subnet: "10.2.0.0/16", hostPort: 18228, controlAddr: "127.0.0.1:18228"},
-		"agent-net",
-		"10.1.0.0/16",
-	)
 }

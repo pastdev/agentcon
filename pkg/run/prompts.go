@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/pastdev/agentcon/internal/bouncer/app"
@@ -20,37 +18,6 @@ import (
 // readyTimeout bounds the wait for the sidecar while nothing is pending.
 // Pending prompts restart it, since each prompt expires on its own.
 const readyTimeout = 2 * time.Minute
-
-// checkPromptable refuses a policy whose Bitwarden vaults need a master
-// password that nothing could supply: the sidecar has no terminal, and
-// prompts.cli: false stops agentcon run from answering.
-func checkPromptable(policy []byte) error {
-	cfg, err := parsePolicyCredentials(policy)
-	if err != nil {
-		return err
-	}
-	if cfg.Prompts.CLIEnabled() {
-		return nil
-	}
-	var names []string
-	for name, c := range cfg.Credentials {
-		if c == nil {
-			continue
-		}
-		for _, slot := range c.Slots() {
-			if slot.Source != nil && slot.Source.Source == "bitwarden" && slot.Source.PasswordEnv == "" {
-				names = append(names, name)
-				break
-			}
-		}
-	}
-	if len(names) == 0 {
-		return nil
-	}
-	sort.Strings(names)
-	return fmt.Errorf("credentials %s use bitwarden without password_env, and prompts.cli: false leaves nothing to ask for the master password",
-		strings.Join(names, ", "))
-}
 
 // waitReady waits for the sidecar to finish preparing credentials. Prompts
 // it raises meanwhile are answered at this terminal. Without a terminal,

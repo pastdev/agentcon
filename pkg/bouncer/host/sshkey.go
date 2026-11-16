@@ -1,4 +1,4 @@
-package run
+package host
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
@@ -31,7 +32,7 @@ func unlockHostSSHKeys(values map[string]string, sshNames map[string]struct{}, p
 }
 
 func sshKeyCredentialNames(policy []byte) (map[string]struct{}, error) {
-	cfg, err := parsePolicyCredentials(policy)
+	cfg, err := parsePolicy(policy)
 	if err != nil {
 		return nil, err
 	}
@@ -84,17 +85,17 @@ func unlockSSHKey(pemData string, prompt func(name string) (string, error), name
 	return "", fmt.Errorf("ssh key passphrase rejected")
 }
 
-func readSSHKeyPassphrase(ctx context.Context, req Request, name string) (string, error) {
+func readSSHKeyPassphrase(ctx context.Context, stdin io.Reader, stderr io.Writer, name string) (string, error) {
 	fd := -1
-	if f, ok := req.Stdin.(*os.File); ok {
+	if f, ok := stdin.(*os.File); ok {
 		fd = int(f.Fd())
 	}
 	if fd < 0 || !term.IsTerminal(fd) {
 		return "", fmt.Errorf("encrypted ssh key %s needs a passphrase (run from a terminal)", name)
 	}
-	_, _ = fmt.Fprintf(req.Stderr, "SSH key passphrase for %s: ", name)
+	_, _ = fmt.Fprintf(stderr, "SSH key passphrase for %s: ", name)
 	pw, err := term.New(fd).ReadLine(ctx, nil)
-	_, _ = fmt.Fprintln(req.Stderr)
+	_, _ = fmt.Fprintln(stderr)
 	if err != nil {
 		return "", fmt.Errorf("read ssh key passphrase: %w", err)
 	}

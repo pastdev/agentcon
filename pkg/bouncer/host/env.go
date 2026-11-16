@@ -1,4 +1,4 @@
-package run
+package host
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func hostEnvCreds(policy []byte, extra []string) (map[string]string, error) {
+func envCreds(policy []byte, extra []string) (map[string]string, error) {
 	overlay, err := parseEnvPairs(extra)
 	if err != nil {
 		return nil, err

@@ -14,6 +14,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
 	"github.com/pastdev/agentcon/internal/bouncer/envexport"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
+	"github.com/pastdev/agentcon/pkg/bouncer/host"
 	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
 	"github.com/pastdev/agentcon/pkg/container"
 	"github.com/pastdev/agentcon/pkg/log"
@@ -39,7 +40,8 @@ const (
 
 func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) error {
 	setup := req.Bouncer
-	err := checkPromptable(setup.PolicyYAML)
+	// Before the image, so an unanswerable policy fails fast.
+	err := host.CheckPromptable(setup.PolicyYAML)
 	if err != nil {
 		return fmt.Errorf("bouncer policy: %w", err)
 	}
@@ -54,27 +56,15 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("sidecar image: %w", err)
 	}
-	envVars, err := hostEnvCreds(setup.PolicyYAML, req.SidecarEnv)
-	if err != nil {
-		return fmt.Errorf("host env credentials: %w", err)
-	}
-	provided, err := hostProvidedCreds(ctx, setup.PolicyYAML, req.Provided)
-	if err != nil {
-		return fmt.Errorf("host credentials: %w", err)
-	}
-	sshNames, err := sshKeyCredentialNames(setup.PolicyYAML)
-	if err != nil {
-		return fmt.Errorf("ssh credentials: %w", err)
-	}
-	err = unlockHostSSHKeys(provided, sshNames, func(name string) (string, error) {
-		return readSSHKeyPassphrase(ctx, req, name)
+	creds, err := host.PrepareCredentials(ctx, host.CredentialOptions{
+		Policy:   setup.PolicyYAML,
+		Env:      req.SidecarEnv,
+		Provided: req.Provided,
+		Stdin:    req.Stdin,
+		Stderr:   req.Stderr,
 	})
 	if err != nil {
-		return fmt.Errorf("ssh key: %w", err)
-	}
-	sshSock, err := hostSSHAuthSock(setup.PolicyYAML)
-	if err != nil {
-		return fmt.Errorf("ssh-agent: %w", err)
+		return fmt.Errorf("prepare credentials: %w", err)
 	}
 
 	labels := sessionLabels(setup.ContextName, req.Project, req.Slug, roleBouncer)
@@ -136,7 +126,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("inspect agent network: %w", err)
 	}
 
-	sidecarSpec := withSSHAuthSock(bouncerSidecarSpec(req, image, labels, ext, agentNetName, agentNet.Subnet), sshSock)
+	sidecarSpec := withSSHAuthSock(bouncerSidecarSpec(req, image, labels, ext, agentNetName, agentNet.Subnet), creds.SSHAuthSock)
 	sidecarSpec.Mounts, err = translateMounts(sidecarSpec.Mounts, req.DooD)
 	if err != nil {
 		return fmt.Errorf("sidecar mounts: %w", err)
@@ -163,11 +153,11 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("wait for bouncer: %w", err)
 	}
-	err = client.PutEnv(ctx, envVars)
+	err = client.PutEnv(ctx, creds.Env)
 	if err != nil {
 		return fmt.Errorf("put env credentials: %w", err)
 	}
-	err = client.PutProvided(ctx, provided)
+	err = client.PutProvided(ctx, creds.Provided)
 	if err != nil {
 		return fmt.Errorf("put host credentials: %w", err)
 	}
@@ -295,9 +285,9 @@ func withSSHAuthSock(spec container.Spec, sock string) container.Spec {
 	}
 	spec.Mounts = append(spec.Mounts, container.Mount{
 		Source: sock,
-		Target: sidecarSSHAuthSock,
+		Target: host.SidecarSSHAuthSock,
 	})
-	spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+sidecarSSHAuthSock)
+	spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+host.SidecarSSHAuthSock)
 	return spec
 }
 
