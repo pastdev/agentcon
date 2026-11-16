@@ -209,6 +209,10 @@ credentials:
     export_env: [GH_TOKEN]
 ```
 
+A failed command reports only its executable and exit status, such as `gh: exit status 1`.
+Its stderr, capped at 4 KiB, goes to the operator's terminal and the bouncer log, never to the agent.
+Stderr can contain secrets, so treat both as sensitive.
+
 ### ssh-agent
 
 Valid only on `private_key`.
@@ -405,6 +409,8 @@ That includes trusting the CAs your network presents and passing your image scan
 
 The image does not need agentcon.
 `run` copies its static binary to `/opt/agentcon` and makes it the entrypoint.
+On a Linux host, that binary is the running `agentcon`.
+Other hosts need a Linux build that matches the container architecture, such as the `agentcon-linux-arm64` release asset.
 The container runs as the host UID with group `0`, not as root, so install trust when the image is built.
 
 ### Trusting a TLS inspection CA
@@ -610,6 +616,34 @@ The SSH config `ProxyCommand` is `agentcon bouncer ssh-connect`.
 
 Extra hosts belong on the sidecar only.
 The agent reaches the outside through the proxy.
+
+## Embedding
+
+Go programs that run the sidecar themselves can reuse these steps instead of calling the management API by hand.
+Creating the containers stays with the caller.
+
+| Package | Use |
+|---|---|
+| `pkg/bouncer/host` | `Check`, `CheckPromptable`, `PrepareCredentials`, `WaitReady`, `NotifyPrompts`, `AnswerAtTerminal`, `AgentLayout`, `WriteAgentPayload`, `AgentEnv` |
+| `pkg/bouncer/mgmt` | the [management API](#management-api) client |
+| `pkg/bouncer/prompt` | pending prompts and answers |
+| `pkg/bouncer/envexport` | the agent environment from session values |
+| `pkg/bouncer/crederr` | `CommandError` and its operator-only stderr |
+| `pkg/bouncertest` | `Run` policy tests and `WriteTAP` |
+
+In order:
+
+1. `host.Check` and `host.CheckPromptable` reject a bad policy before slow setup.
+2. `host.PrepareCredentials` resolves host-side values.
+   It never changes its inputs and returns nothing on error.
+3. Create the sidecar, and bind `Credentials.SSHAuthSock` at `host.SidecarSSHAuthSock` when it is set.
+4. `mgmt.New`, then `PutEnv` and `PutProvided` with the prepared maps.
+5. `host.WaitReady` answers prompts at a terminal until the sidecar is ready.
+6. `CreateSession` and `Trust`, then `host.WriteAgentPayload` and `host.AgentEnv` for the agent container.
+7. Run `host.NotifyPrompts` under a context cancelled when the agent exits.
+
+`AgentLayout` paths are Linux paths in the agent container.
+`Normalize` fills empty fields from `DefaultAgentLayout` and rejects relative, unclean, overlapping, or hard-to-quote paths.
 
 ## Agent tunnels
 
