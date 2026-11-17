@@ -164,3 +164,72 @@ func (l *lockedBuffer) String() string {
 	defer l.mu.Unlock()
 	return l.b.String()
 }
+
+func TestWaitReadyDeadline(t *testing.T) {
+	type testCase struct {
+		// delay is how long the status handler waits before answering
+		// ready. Zero stalls until the request ends.
+		delay   time.Duration
+		timeout time.Duration
+		// cancelAfter cancels the caller's context. Zero never cancels.
+		cancelAfter time.Duration
+		wantErr     error
+		wantText    string
+		// within bounds how long WaitReady may take.
+		within time.Duration
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			wait := time.After(tc.delay)
+			if tc.delay == 0 {
+				wait = nil
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-release:
+				return
+			case <-wait:
+			}
+			_ = json.NewEncoder(w).Encode(mgmt.Status{Ready: true})
+		}))
+		t.Cleanup(func() {
+			close(release)
+			srv.Close()
+		})
+		ctx := t.Context()
+		if tc.cancelAfter > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(ctx)
+			time.AfterFunc(tc.cancelAfter, cancel)
+		}
+		// No client timeout, so only WaitReady's own deadline bounds a poll.
+		c := mgmt.New(srv.URL, "t", mgmt.WithTimeout(0))
+		start := time.Now()
+		err := WaitReady(ctx, c, PromptOptions{Timeout: tc.timeout})
+		elapsed := time.Since(start)
+		require.Error(t, err)
+		if tc.wantErr != nil {
+			require.ErrorIs(t, err, tc.wantErr)
+		}
+		if tc.wantText != "" {
+			require.ErrorContains(t, err, tc.wantText)
+		}
+		assert.Less(t, elapsed, tc.within)
+	}
+
+	t.Run("times out on a ready reply that comes after the deadline", func(t *testing.T) {
+		tester(t, testCase{delay: 800 * time.Millisecond, timeout: 100 * time.Millisecond,
+			wantText: "timed out", within: 500 * time.Millisecond})
+	})
+	t.Run("times out on a stalled reply", func(t *testing.T) {
+		tester(t, testCase{timeout: 100 * time.Millisecond,
+			wantText: "timed out", within: 500 * time.Millisecond})
+	})
+	t.Run("stops when the context ends during a poll", func(t *testing.T) {
+		tester(t, testCase{timeout: time.Minute, cancelAfter: 50 * time.Millisecond,
+			wantErr: context.Canceled, within: 180 * time.Millisecond})
+	})
+}

@@ -17,6 +17,9 @@ import (
 // DefaultReadyTimeout bounds WaitReady while nothing is pending.
 const DefaultReadyTimeout = 2 * time.Minute
 
+// pollInterval is how often WaitReady polls.
+const pollInterval = 200 * time.Millisecond
+
 // notifyInterval is how often NotifyPrompts polls.
 const notifyInterval = 2 * time.Second
 
@@ -93,13 +96,20 @@ func WaitReady(ctx context.Context, c *mgmt.Client, o PromptOptions) error {
 	}
 	hinted := map[string]bool{}
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	for {
 		if ctx.Err() != nil {
 			return fmt.Errorf("wait bouncer: %w", ctx.Err())
 		}
-		status, err := c.Status(ctx)
+		if !time.Now().Before(deadline) {
+			break
+		}
+		// Each request ends at the idle deadline, so a slow or stalled
+		// daemon cannot hold WaitReady past it.
+		pollCtx, cancel := context.WithDeadline(ctx, deadline)
+		status, err := c.Status(pollCtx)
+		cancel()
 		if err != nil {
-			time.Sleep(200 * time.Millisecond)
+			pause(ctx, deadline)
 			continue
 		}
 		if status.Error != "" {
@@ -110,9 +120,11 @@ func WaitReady(ctx context.Context, c *mgmt.Client, o PromptOptions) error {
 		}
 		if status.PendingPrompts > 0 {
 			deadline = time.Now().Add(timeout)
-			list, err := c.Prompts(ctx)
+			pollCtx, cancel = context.WithDeadline(ctx, deadline)
+			list, err := c.Prompts(pollCtx)
+			cancel()
 			if err != nil {
-				time.Sleep(200 * time.Millisecond)
+				pause(ctx, deadline)
 				continue
 			}
 			for _, p := range list {
@@ -123,6 +135,8 @@ func WaitReady(ctx context.Context, c *mgmt.Client, o PromptOptions) error {
 					}
 					continue
 				}
+				// The caller's context, not the idle deadline: a human may
+				// take longer than the deadline to answer.
 				err = AnswerAtTerminal(ctx, c, tty, stderr, p)
 				if errors.Is(err, io.EOF) || ctx.Err() != nil {
 					return fmt.Errorf("answer bouncer prompt: %w", err)
@@ -133,7 +147,7 @@ func WaitReady(ctx context.Context, c *mgmt.Client, o PromptOptions) error {
 				}
 			}
 		}
-		time.Sleep(200 * time.Millisecond)
+		pause(ctx, deadline)
 	}
 	return fmt.Errorf("timed out waiting for the bouncer to be ready")
 }
@@ -163,5 +177,20 @@ func NotifyPrompts(ctx context.Context, c *mgmt.Client, o PromptOptions) {
 				_, _ = fmt.Fprintln(stderr, o.hint(p))
 			}
 		}
+	}
+}
+
+// pause waits one poll interval, or less when the deadline comes first or
+// ctx ends.
+func pause(ctx context.Context, deadline time.Time) {
+	wait := min(pollInterval, time.Until(deadline))
+	if wait <= 0 {
+		return
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
 	}
 }
