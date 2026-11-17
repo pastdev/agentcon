@@ -211,7 +211,8 @@ func (s *Server) prepare(ctx context.Context, p *Preamble) (*conn, error) {
 
 	signers, err := s.Creds.SSHSigners(ctx, svc.Config.Credential)
 	if err != nil {
-		return cn, fmt.Errorf("ssh signers: %w", err)
+		creds.LogError(s.Log.Warn(), err).Str("service", svc.Config.Name).Msg("credential unavailable")
+		return cn, fmt.Errorf("ssh signers: %w", creds.Unavailable(svc.Config.Name))
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	hkcb, algos, err := hostKeyCallback(svc.Config, addr)

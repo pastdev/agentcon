@@ -8,14 +8,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
+	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 func newTestDaemon(t *testing.T) *Daemon {
@@ -414,5 +417,165 @@ func TestStartupStatus(t *testing.T) {
 			decline:   true,
 			wantError: "declined",
 		})
+	})
+}
+
+func TestControlWithClient(t *testing.T) {
+	tester := func(t *testing.T) {
+		t.Helper()
+		dir := t.TempDir()
+		cfg := filepath.Join(dir, "config.yaml")
+		err := os.WriteFile(cfg, []byte("default_profile: p\nprofiles:\n  p: {}\n"), 0o600)
+		require.NoError(t, err)
+		state := filepath.Join(dir, "state")
+		d, err := New(Options{ConfigPath: cfg, StateDir: state})
+		require.NoError(t, err)
+		token, err := os.ReadFile(AdminTokenPath(state))
+		require.NoError(t, err)
+		srv := httptest.NewServer(d.Control())
+		t.Cleanup(srv.Close)
+		c := mgmt.New(srv.URL, strings.TrimSpace(string(token)))
+		ctx := t.Context()
+
+		created, err := c.CreateSession(ctx, "deadbeef", "", "test", "1h")
+		require.NoError(t, err)
+		assert.Equal(t, "deadbeef", created.ID)
+		assert.Equal(t, "test", created.Label)
+		assert.Equal(t, "p", created.Profile)
+		assert.NotEmpty(t, created.Token)
+		assert.False(t, created.Expires.IsZero())
+
+		list, err := c.Sessions(ctx)
+		require.NoError(t, err)
+		require.Len(t, list, 1)
+		assert.Equal(t, created.ID, list[0].ID)
+		assert.Empty(t, list[0].Token, "listing must not reveal session tokens")
+
+		st, err := c.Status(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, cfg, st.Config)
+		assert.Equal(t, []string{"p"}, st.Profiles)
+		assert.Equal(t, 1, st.Sessions)
+
+		trust, err := c.Trust(ctx)
+		require.NoError(t, err)
+		assert.Contains(t, trust.CertPEM, "BEGIN CERTIFICATE")
+		assert.Contains(t, trust.BundlePEM, trust.CertPEM)
+
+		err = c.EndSession(ctx, "deadbeef")
+		require.NoError(t, err)
+		list, err = c.Sessions(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, list)
+	}
+
+	t.Run("round-trips the public wire types", func(t *testing.T) {
+		tester(t)
+	})
+}
+
+func TestCredentialErrorsStayInTheLog(t *testing.T) {
+	type testCase struct {
+		err  error
+		logs *lockedBuffer
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		require.Error(t, tc.err)
+		assert.NotContains(t, tc.err.Error(), "s3cret-stderr")
+		assert.Contains(t, tc.err.Error(), "is unavailable; see the bouncer log")
+		assert.Contains(t, tc.logs.String(), "s3cret-stderr")
+	}
+	newDaemon := func(t *testing.T) (*Daemon, *lockedBuffer) {
+		t.Helper()
+		if runtime.GOOS == "windows" {
+			t.Skip("uses sh")
+		}
+		dir := t.TempDir()
+		cfg := filepath.Join(dir, "config.yaml")
+		err := os.WriteFile(cfg, []byte(`default_profile: p
+prompts: {notify: false}
+credentials:
+  gl:
+    token:
+      source: command
+      command: [sh, -c, "echo s3cret-stderr >&2; exit 1"]
+profiles:
+  p:
+    http:
+      - name: gitlab
+        hosts: [gitlab.example.com]
+        credential: gl
+`), 0o600)
+		require.NoError(t, err)
+		logs := &lockedBuffer{}
+		d, err := New(Options{ConfigPath: cfg, StateDir: filepath.Join(dir, "state"), Log: zerolog.New(logs)})
+		require.NoError(t, err)
+		return d, logs
+	}
+
+	t.Run("gitlab project lookup", func(t *testing.T) {
+		d, logs := newDaemon(t)
+		_, err := d.resolveGitLabProject(t.Context(), "gitlab", "gitlab.example.com", "group/project")
+		tester(t, testCase{err: err, logs: logs})
+	})
+	t.Run("filter credential", func(t *testing.T) {
+		d, logs := newDaemon(t)
+		_, err := d.env.Credential(t.Context(), "gl")
+		tester(t, testCase{err: err, logs: logs})
+	})
+}
+
+func TestClientClearsCredentials(t *testing.T) {
+	type testCase struct {
+		cred string
+		put  func(c *mgmt.Client, ctx context.Context, values map[string]string) error
+		set  map[string]string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		dir := t.TempDir()
+		cfg := filepath.Join(dir, "config.yaml")
+		err := os.WriteFile(cfg, []byte(`default_profile: p
+prompts: {notify: false}
+credentials:
+  from-env:
+    token:
+      source: env
+      env: AGENTCON_TEST_CLEAR_ENV
+  from-provided:
+    token:
+      source: provided
+profiles:
+  p: {}
+`), 0o600)
+		require.NoError(t, err)
+		state := filepath.Join(dir, "state")
+		d, err := New(Options{ConfigPath: cfg, StateDir: state})
+		require.NoError(t, err)
+		token, err := os.ReadFile(AdminTokenPath(state))
+		require.NoError(t, err)
+		srv := httptest.NewServer(d.Control())
+		t.Cleanup(srv.Close)
+		c := mgmt.New(srv.URL, strings.TrimSpace(string(token)))
+		ctx := t.Context()
+
+		err = tc.put(c, ctx, tc.set)
+		require.NoError(t, err)
+		sec, err := d.creds.Get(ctx, tc.cred)
+		require.NoError(t, err)
+		assert.Equal(t, "s3cret", sec.Token)
+
+		err = tc.put(c, ctx, map[string]string{})
+		require.NoError(t, err)
+		_, err = d.creds.Get(ctx, tc.cred)
+		require.Error(t, err, "the cleared value must not still resolve")
+	}
+
+	t.Run("env overlay", func(t *testing.T) {
+		tester(t, testCase{cred: "from-env", put: (*mgmt.Client).PutEnv, set: map[string]string{"AGENTCON_TEST_CLEAR_ENV": "s3cret"}})
+	})
+	t.Run("provided values", func(t *testing.T) {
+		tester(t, testCase{cred: "from-provided", put: (*mgmt.Client).PutProvided, set: map[string]string{"from-provided.token": "s3cret"}})
 	})
 }

@@ -15,19 +15,27 @@ Any Linux image that honors the [workspace contract](#workspace-contract) can re
 ### 1. Install the CLI
 
 `agentcon` is a self-contained binary.
-[Pre-built releases](https://github.com/pastdev/agentcon/releases) cover linux, darwin, and windows.
+[Pre-built releases](https://github.com/pastdev/agentcon/releases) cover linux and darwin on amd64 and arm64, and windows on amd64.
 
 ```bash
 binary="${HOME}/.local/bin/agentcon"
-platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+arch="$(uname -m)"
+case "${arch}" in
+  x86_64) arch=amd64 ;;
+  aarch64) arch=arm64 ;;
+esac
 mkdir -p "$(dirname "${binary}")"
 curl \
   --fail \
   --location \
   --output "${binary}" \
-  "https://github.com/pastdev/agentcon/releases/latest/download/agentcon-${platform}"
+  "https://github.com/pastdev/agentcon/releases/latest/download/agentcon-${os}-${arch}"
 chmod 0755 "${binary}"
 ```
+
+Each release has a `SHA256SUMS` file in `sha256sum -c` format.
+Assets without an architecture, such as `agentcon-linux`, are the amd64 builds under their older names.
 
 Add `~/.local/bin` to `PATH` if it is not already there.
 See [docs/development.md](docs/development.md) to build from source.

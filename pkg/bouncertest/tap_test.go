@@ -1,11 +1,10 @@
-package bouncer
+package bouncertest_test
 
 import (
 	"bytes"
 	"errors"
 	"testing"
 
-	"github.com/pastdev/agentcon/internal/bouncer/testrunner"
 	"github.com/pastdev/agentcon/pkg/bouncertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +18,7 @@ func TestWriteTAP(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		var b bytes.Buffer
-		err := writeTAP(&b, tc.report)
+		err := bouncertest.WriteTAP(&b, tc.report)
 		require.NoError(t, err)
 		assert.Equal(t, tc.want, b.String())
 	}
@@ -27,7 +26,7 @@ func TestWriteTAP(t *testing.T) {
 	t.Run("passing specs", func(t *testing.T) {
 		tester(t, testCase{
 			report: bouncertest.Report{Specs: []bouncertest.SpecReport{
-				{Path: "tests/bouncers.test.yaml", Results: []testrunner.Result{
+				{Path: "tests/bouncers.test.yaml", Results: []bouncertest.Result{
 					{Name: "tag push asks", Passed: true},
 					{Name: "merge asks", Passed: true},
 				}},
@@ -45,7 +44,7 @@ ok 1 - tests/bouncers.test.yaml
 	t.Run("failing step with a filter log", func(t *testing.T) {
 		tester(t, testCase{
 			report: bouncertest.Report{Specs: []bouncertest.SpecReport{
-				{Path: "tests/bouncers.test.yaml", Results: []testrunner.Result{
+				{Path: "tests/bouncers.test.yaml", Results: []bouncertest.Result{
 					{Name: "tag push asks", Passed: true},
 					{
 						Name:      "leftover paths",
@@ -78,7 +77,7 @@ not ok 1 - tests/bouncers.test.yaml
 		tester(t, testCase{
 			report: bouncertest.Report{Specs: []bouncertest.SpecReport{
 				{Path: "tests/a.test.yaml", Err: errors.New(`tests/a.test.yaml: field request not found`)},
-				{Path: "tests/b.test.yaml", Results: []testrunner.Result{{Name: "allowed", Passed: true}}},
+				{Path: "tests/b.test.yaml", Results: []bouncertest.Result{{Name: "allowed", Passed: true}}},
 			}},
 			want: `TAP version 14
 not ok 1 - tests/a.test.yaml

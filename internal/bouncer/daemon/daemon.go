@@ -30,10 +30,11 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/kv"
 	"github.com/pastdev/agentcon/internal/bouncer/notify"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/internal/bouncer/proxy"
 	"github.com/pastdev/agentcon/internal/bouncer/sshproxy"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 // Options configure a daemon.
@@ -106,17 +107,16 @@ type SessionRecord struct {
 
 func (s *SessionRecord) expired() bool { return !s.Expires.IsZero() && time.Now().After(s.Expires) }
 
-// NewSession is the control API's reply to session creation: everything a
-// client needs to build the agent's environment without parsing the config.
-type NewSession struct {
-	SessionRecord
-	ProxyAddr string `json:"proxy_addr"`
-	SSHAddr   string `json:"ssh_addr"`
-	// Placeholders maps environment variable names to placeholder values.
-	Placeholders map[string]string `json:"placeholders"`
-	// SSHHosts lists every configured SSH service host pattern, the only
-	// hosts the generated known_hosts trusts the bouncer SSH CA for.
-	SSHHosts []string `json:"ssh_hosts"`
+// wire is the record as the control API sends it.
+func (s *SessionRecord) wire() mgmt.SessionRecord {
+	return mgmt.SessionRecord{
+		ID:      s.ID,
+		Label:   s.Label,
+		Profile: s.Profile,
+		Token:   s.Token,
+		Created: s.Created,
+		Expires: s.Expires,
+	}
 }
 
 // Runtime describes a running daemon; written to the state dir so clients
@@ -179,7 +179,8 @@ func New(opts Options) (*Daemon, error) {
 	d.env.Credential = func(ctx context.Context, name string) (string, error) {
 		sec, err := d.creds.Get(ctx, name)
 		if err != nil {
-			return "", fmt.Errorf("credential %s: %w", name, err)
+			creds.LogError(d.log.Warn(), err).Str("credential", name).Msg("credential unavailable to a filter")
+			return "", creds.Unavailable(name)
 		}
 		return sec.HTTP(), nil
 	}
@@ -197,7 +198,7 @@ func New(opts Options) (*Daemon, error) {
 func (d *Daemon) prepare(set map[string]*config.Credential, startup bool) {
 	err := d.creds.Prepare(context.Background(), set)
 	if err != nil {
-		d.log.Warn().Err(err).Msg("prepare credentials")
+		creds.LogError(d.log.Warn(), err).Msg("prepare credentials")
 	}
 	if !startup {
 		return
@@ -535,7 +536,8 @@ func (d *Daemon) resolveGitLabProject(ctx context.Context, service, host, projec
 	if svc.Credential != "" {
 		secret, err := d.creds.Get(ctx, svc.Credential)
 		if err != nil {
-			return 0, fmt.Errorf("credential %s: %w", svc.Credential, err)
+			creds.LogError(d.log.Warn(), err).Str("service", service).Msg("credential unavailable for gitlab project lookup")
+			return 0, fmt.Errorf("gitlab api: %w", creds.Unavailable(service))
 		}
 		spec := svc.Inject
 		if spec == nil {

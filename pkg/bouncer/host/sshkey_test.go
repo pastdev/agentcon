@@ -1,4 +1,4 @@
-package run
+package host
 
 import (
 	"crypto/ed25519"

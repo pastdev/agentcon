@@ -19,8 +19,9 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/pastdev/agentcon/internal/bouncer/creds/bitwarden"
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/bouncer/crederr"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 // KeyringService is the service name under which secrets are stored in the OS keyring.
@@ -365,15 +366,15 @@ func (s *Store) fetchPayload(ctx context.Context, credName string, src *config.V
 		ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, src.Command[0], src.Command[1:]...) //nolint:gosec // command source runs what the operator configured
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
+		stderr := &cappedBuffer{max: crederr.MaxStderr}
+		cmd.Stderr = stderr
 		out, err := cmd.Output()
 		if err != nil {
-			msg := strings.TrimSpace(stderr.String())
-			if msg != "" {
-				return "", fmt.Errorf("%s: %w: %s", src.Command[0], err, msg)
+			return "", &crederr.CommandError{
+				Name:   src.Command[0],
+				Err:    err,
+				Stderr: strings.TrimSpace(stderr.String()),
 			}
-			return "", fmt.Errorf("%s: %w", src.Command[0], err)
 		}
 		return strings.TrimRight(string(out), "\r\n"), nil
 	case "bitwarden":
@@ -442,4 +443,40 @@ func agentSigners(name string, src *config.ValueSource) ([]ssh.Signer, error) {
 	}
 	_ = conn.Close()
 	return nil, fmt.Errorf("credential %q: no agent key with fingerprint %s", name, src.Fingerprint)
+}
+
+// cappedBuffer keeps the first max bytes written and discards the rest, so
+// a noisy command cannot grow memory without bound.
+type cappedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if room := b.max - b.buf.Len(); room > 0 {
+		b.buf.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
+func (b *cappedBuffer) String() string {
+	return b.buf.String()
+}
+
+// LogError adds err to ev, with a failed command's stderr as its own field.
+// Use it only for the daemon log, never for text the agent receives.
+func LogError(ev *zerolog.Event, err error) *zerolog.Event {
+	ev = ev.Err(err)
+	stderr := crederr.Stderr(err)
+	if stderr != "" {
+		ev = ev.Str("stderr", stderr)
+	}
+	return ev
+}
+
+// Unavailable is the error to give the agent when credential name could not
+// be fetched. Source errors can carry password-manager output, so it holds
+// only the name. Log the source error with LogError.
+func Unavailable(name string) error {
+	return fmt.Errorf("credential for %s is unavailable; see the bouncer log", name)
 }

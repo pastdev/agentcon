@@ -5,112 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pastdev/agentcon/internal/bouncer/daemon"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestHostEnvCreds(t *testing.T) {
-	type testCase struct {
-		policy  string
-		extra   []string
-		setenv  map[string]string
-		want    map[string]string
-		wantErr []string
-	}
-	tester := func(t *testing.T, tc testCase) {
-		t.Helper()
-		for k, v := range tc.setenv {
-			t.Setenv(k, v)
-		}
-		got, err := hostEnvCreds([]byte(tc.policy), tc.extra)
-		if len(tc.wantErr) > 0 {
-			require.Error(t, err)
-			for _, s := range tc.wantErr {
-				require.ErrorContains(t, err, s)
-			}
-			return
-		}
-		require.NoError(t, err)
-		assert.Equal(t, tc.want, got)
-	}
-
-	t.Run("reads from the process environment", func(t *testing.T) {
-		tester(t, testCase{
-			policy: `
-credentials:
-  tok:
-    token:
-      source: env
-      env: SMOKE_TOKEN
-`,
-			setenv: map[string]string{"SMOKE_TOKEN": "from-os"},
-			want:   map[string]string{"SMOKE_TOKEN": "from-os"},
-		})
-	})
-	t.Run("lets extra pairs win over the process environment", func(t *testing.T) {
-		tester(t, testCase{
-			policy: `
-credentials:
-  tok:
-    token:
-      source: env
-      env: SMOKE_TOKEN
-`,
-			setenv: map[string]string{"SMOKE_TOKEN": "from-os"},
-			extra:  []string{"SMOKE_TOKEN=from-extra"},
-			want:   map[string]string{"SMOKE_TOKEN": "from-extra"},
-		})
-	})
-	t.Run("reports every missing env slot", func(t *testing.T) {
-		tester(t, testCase{
-			policy: `
-credentials:
-  tok:
-    token:
-      source: env
-      env: SMOKE_TOKEN
-  other:
-    token:
-      source: env
-      env: OTHER_TOKEN
-`,
-			setenv:  map[string]string{"SMOKE_TOKEN": ""},
-			wantErr: []string{"SMOKE_TOKEN", "OTHER_TOKEN"},
-		})
-	})
-	t.Run("skips non-env sources", func(t *testing.T) {
-		tester(t, testCase{
-			policy: `
-credentials:
-  bw:
-    token:
-      source: bitwarden
-      email: user@example.com
-      item: GitLab
-      path: $.login.password
-`,
-			extra: []string{"UNUSED=1"},
-			want:  map[string]string{},
-		})
-	})
-}
-
-func TestParseEnvPairs(t *testing.T) {
-	tester := func(t *testing.T, pairs []string, wantErr string) {
-		t.Helper()
-		_, err := parseEnvPairs(pairs)
-		if wantErr == "" {
-			require.NoError(t, err)
-			return
-		}
-		require.ErrorContains(t, err, wantErr)
-	}
-
-	t.Run("rejects a bare name", func(t *testing.T) {
-		tester(t, []string{"NOVALUE"}, "NAME=value")
-	})
-}
 
 func TestBouncerSidecarSpec(t *testing.T) {
 	type testCase struct {
@@ -170,25 +67,5 @@ func TestBouncerSidecarSpec(t *testing.T) {
 			wantArgs: append(slices.Clone(serve),
 				"--log", "bouncer=debug", "--log", "audit=warn", "--log-format", "json"),
 		})
-	})
-}
-
-func TestBouncerAgentEnv(t *testing.T) {
-	tester := func(t *testing.T) {
-		t.Helper()
-		env := bouncerAgentEnv(daemon.NewSession{SessionRecord: daemon.SessionRecord{Token: "tok"}}, "10.1.0.2")
-		got := map[string]string{}
-		for _, e := range env {
-			k, v, ok := strings.Cut(e, "=")
-			require.True(t, ok, "env %q", e)
-			got[k] = v
-		}
-		want := `"` + agentSSHClient + `" -F "` + agentSSHConfig + `"`
-		assert.Equal(t, want, got["GIT_SSH_COMMAND"])
-		assert.NotContains(t, got["GIT_SSH_COMMAND"], agentBinPath, "should invoke ssh, not agentcon")
-	}
-
-	t.Run("sets GIT_SSH_COMMAND to ssh -F", func(t *testing.T) {
-		tester(t)
 	})
 }

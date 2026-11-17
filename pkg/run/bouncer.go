@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/pastdev/agentcon/internal/bouncer/daemon"
-	"github.com/pastdev/agentcon/internal/bouncer/envexport"
-	"github.com/pastdev/agentcon/internal/bouncer/mgmt"
 	"github.com/pastdev/agentcon/internal/bouncer/running"
+	"github.com/pastdev/agentcon/pkg/bouncer/host"
+	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
 	"github.com/pastdev/agentcon/pkg/container"
 	"github.com/pastdev/agentcon/pkg/log"
 	"github.com/pastdev/agentcon/pkg/version"
@@ -27,19 +27,14 @@ const (
 	sidecarBinPath    = optDir + "/bin/agentcon"
 	sidecarImage      = "registry.access.redhat.com/ubi10/ubi-minimal:10.2"
 	sidecarStatePath  = optDir + "/state"
-	agentBinPath      = sidecarBinPath
-	agentCACertPath   = optDir + "/ca.pem"
-	agentCABundlePath = optDir + "/ca-bundle.pem"
-	agentSSHConfig    = optDir + "/ssh/config"
-	agentKnownHosts   = optDir + "/ssh/known_hosts"
-	agentSSHClient    = "/usr/bin/ssh"
 	defaultProxyPort  = "8228"
 	defaultSSHPort    = "8229"
 )
 
 func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) error {
 	setup := req.Bouncer
-	err := checkPromptable(setup.PolicyYAML)
+	// Before the image, so an unanswerable policy fails fast.
+	err := host.CheckPromptable(setup.PolicyYAML)
 	if err != nil {
 		return fmt.Errorf("bouncer policy: %w", err)
 	}
@@ -54,27 +49,15 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("sidecar image: %w", err)
 	}
-	envVars, err := hostEnvCreds(setup.PolicyYAML, req.SidecarEnv)
-	if err != nil {
-		return fmt.Errorf("host env credentials: %w", err)
-	}
-	provided, err := hostProvidedCreds(ctx, setup.PolicyYAML, req.Provided)
-	if err != nil {
-		return fmt.Errorf("host credentials: %w", err)
-	}
-	sshNames, err := sshKeyCredentialNames(setup.PolicyYAML)
-	if err != nil {
-		return fmt.Errorf("ssh credentials: %w", err)
-	}
-	err = unlockHostSSHKeys(provided, sshNames, func(name string) (string, error) {
-		return readSSHKeyPassphrase(ctx, req, name)
+	creds, err := host.PrepareCredentials(ctx, host.CredentialOptions{
+		Policy:   setup.PolicyYAML,
+		Env:      req.SidecarEnv,
+		Provided: req.Provided,
+		Stdin:    req.Stdin,
+		Stderr:   req.Stderr,
 	})
 	if err != nil {
-		return fmt.Errorf("ssh key: %w", err)
-	}
-	sshSock, err := hostSSHAuthSock(setup.PolicyYAML)
-	if err != nil {
-		return fmt.Errorf("ssh-agent: %w", err)
+		return fmt.Errorf("prepare credentials: %w", err)
 	}
 
 	labels := sessionLabels(setup.ContextName, req.Project, req.Slug, roleBouncer)
@@ -136,7 +119,7 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		return fmt.Errorf("inspect agent network: %w", err)
 	}
 
-	sidecarSpec := withSSHAuthSock(bouncerSidecarSpec(req, image, labels, ext, agentNetName, agentNet.Subnet), sshSock)
+	sidecarSpec := withSSHAuthSock(bouncerSidecarSpec(req, image, labels, ext, agentNetName, agentNet.Subnet), creds.SSHAuthSock)
 	sidecarSpec.Mounts, err = translateMounts(sidecarSpec.Mounts, req.DooD)
 	if err != nil {
 		return fmt.Errorf("sidecar mounts: %w", err)
@@ -163,11 +146,11 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	if err != nil {
 		return fmt.Errorf("wait for bouncer: %w", err)
 	}
-	err = client.PutEnv(envVars)
+	err = client.PutEnv(ctx, creds.Env)
 	if err != nil {
 		return fmt.Errorf("put env credentials: %w", err)
 	}
-	err = client.PutProvided(provided)
+	err = client.PutProvided(ctx, creds.Provided)
 	if err != nil {
 		return fmt.Errorf("put host credentials: %w", err)
 	}
@@ -189,12 +172,12 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	}
 	defer func() { _ = running.Remove(req.Home, req.Slug) }()
 
-	err = waitReady(ctx, client, req.Stdin, req.Stderr, readyTimeout)
+	err = host.WaitReady(ctx, client, host.PromptOptions{Stdin: req.Stdin, Stderr: req.Stderr, Hint: host.AgentconHint})
 	if err != nil {
 		return fmt.Errorf("wait for bouncer: %w", err)
 	}
 
-	session, err := client.CreateSession(req.Slug, "", "agentcon", "")
+	session, err := client.CreateSession(ctx, req.Slug, "", "agentcon", "")
 	if err != nil {
 		return fmt.Errorf("bouncer session: %w", err)
 	}
@@ -211,7 +194,11 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 	agentSpec.Name = running.ResourceName(req.Project, req.Slug, roleAgent)
 	agentSpec.Labels = sessionLabels(setup.ContextName, req.Project, req.Slug, roleAgent)
 	agentSpec.Networks = []string{agentNetName}
-	agentSpec.Env = append(agentSpec.Env, bouncerAgentEnv(session, agentIP)...)
+	agentEnv, err := bouncerAgentEnv(session, agentIP)
+	if err != nil {
+		return err
+	}
+	agentSpec.Env = append(agentSpec.Env, agentEnv...)
 
 	if req.Stderr != nil {
 		project := req.Project
@@ -221,7 +208,9 @@ func runWithBouncer(ctx context.Context, req Request, agentSpec container.Spec) 
 		_, _ = fmt.Fprintf(req.Stderr, "agentcon session %s project %s\n", req.Slug, project)
 	}
 
-	go notifyPrompts(ctx, client, req.Stderr)
+	notifyCtx, stopNotify := context.WithCancel(ctx)
+	defer stopNotify()
+	go host.NotifyPrompts(notifyCtx, client, host.PromptOptions{Stderr: req.Stderr, Hint: host.AgentconHint})
 
 	id, err := req.Runtime.Create(ctx, agentSpec)
 	if err != nil {
@@ -295,9 +284,9 @@ func withSSHAuthSock(spec container.Spec, sock string) container.Spec {
 	}
 	spec.Mounts = append(spec.Mounts, container.Mount{
 		Source: sock,
-		Target: sidecarSSHAuthSock,
+		Target: host.SidecarSSHAuthSock,
 	})
-	spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+sidecarSSHAuthSock)
+	spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+host.SidecarSSHAuthSock)
 	return spec
 }
 
@@ -350,22 +339,29 @@ func parseContainerUser(user string) (int, int) {
 	return uid, gid
 }
 
+// linuxAgentcon is the agentcon executable copied into the sidecar and the
+// agent. explicit wins. A Linux host uses its own executable, which matches
+// the container architecture when the engine runs natively.
 func linuxAgentcon(explicit string) (string, error) {
+	return linuxAgentconFor(explicit, runtime.GOOS, runtime.GOARCH, version.Version(), os.Executable)
+}
+
+func linuxAgentconFor(explicit, goos, goarch, ver string, executable func() (string, error)) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
-	if runtime.GOOS == "linux" && runtime.GOARCH == "amd64" {
-		exe, err := os.Executable()
+	if goos == "linux" {
+		exe, err := executable()
 		if err != nil {
 			return "", fmt.Errorf("executable: %w", err)
 		}
 		return exe, nil
 	}
-	ver := version.Version()
+	asset := "agentcon-linux-" + goarch
 	if ver == "" || ver == "0.0.0" || ver == "dev" {
-		return "", fmt.Errorf("host is %s/%s; build a linux amd64 agentcon or run from a released version", runtime.GOOS, runtime.GOARCH)
+		return "", fmt.Errorf("host is %s/%s; the sidecar needs a linux agentcon, such as %s built from this source", goos, goarch, asset)
 	}
-	return "", fmt.Errorf("host is %s/%s; copy a linux amd64 agentcon into the sidecar (release %s)", runtime.GOOS, runtime.GOARCH, ver)
+	return "", fmt.Errorf("host is %s/%s; the sidecar needs a linux agentcon, such as the %s asset of release %s", goos, goarch, asset, ver)
 }
 
 func copyAgentFiles(ctx context.Context, req Request, id string, client *mgmt.Client) error {
@@ -373,7 +369,7 @@ func copyAgentFiles(ctx context.Context, req Request, id string, client *mgmt.Cl
 	if err != nil {
 		return fmt.Errorf("linux binary: %w", err)
 	}
-	trust, err := client.Trust()
+	trust, err := client.Trust(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch bouncer CA: %w", err)
 	}
@@ -381,7 +377,7 @@ func copyAgentFiles(ctx context.Context, req Request, id string, client *mgmt.Cl
 	pr, pw := io.Pipe()
 	errCh := make(chan error, 1)
 	go func() {
-		err := writeAgentPayload(pw, bin, trust.CertPEM, trust.BundlePEM, trust.SSHKnownHosts, uid, gid)
+		err := host.WriteAgentPayload(pw, host.AgentPayload{Binary: bin, Trust: trust, UID: uid, GID: gid})
 		if err != nil {
 			_ = pw.CloseWithError(err)
 			errCh <- err
@@ -401,24 +397,13 @@ func copyAgentFiles(ctx context.Context, req Request, id string, client *mgmt.Cl
 	return nil
 }
 
-func bouncerAgentEnv(session daemon.NewSession, agentIP string) []string {
-	proxy := net.JoinHostPort(agentIP, defaultProxyPort)
-	ssh := net.JoinHostPort(agentIP, defaultSSHPort)
-	env := envexport.Build(envexport.Params{
-		ProxyAddr:    proxy,
-		SSHAddr:      ssh,
-		Token:        session.Token,
-		SessionID:    session.ID,
-		CACert:       agentCACertPath,
-		CABundle:     agentCABundlePath,
-		SSHCommand:   fmt.Sprintf(`"%s" -F "%s"`, agentSSHClient, agentSSHConfig),
-		Placeholders: session.Placeholders,
-	})
-	out := make([]string, 0, len(env.Vars))
-	for _, kv := range env.Vars {
-		out = append(out, kv[0]+"="+kv[1])
+func bouncerAgentEnv(session mgmt.NewSession, agentIP string) ([]string, error) {
+	env, err := host.AgentEnv(host.DefaultAgentLayout(), session,
+		net.JoinHostPort(agentIP, defaultProxyPort), net.JoinHostPort(agentIP, defaultSSHPort))
+	if err != nil {
+		return nil, fmt.Errorf("agent env: %w", err)
 	}
-	return out
+	return env, nil
 }
 
 func freeLocalPort() (int, error) {
@@ -436,35 +421,11 @@ func waitUntilServing(ctx context.Context, client *mgmt.Client) error {
 		if ctx.Err() != nil {
 			return fmt.Errorf("wait bouncer: %w", ctx.Err())
 		}
-		_, err := client.Status()
+		_, err := client.Status(ctx)
 		if err == nil {
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("timed out waiting for bouncer management API")
-}
-
-func notifyPrompts(ctx context.Context, client *mgmt.Client, stderr io.Writer) {
-	seen := map[string]bool{}
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			list, err := client.Prompts()
-			if err != nil {
-				continue
-			}
-			for _, p := range list {
-				if seen[p.ID] {
-					continue
-				}
-				seen[p.ID] = true
-				_, _ = fmt.Fprintln(stderr, promptHint(p))
-			}
-		}
-	}
 }

@@ -358,3 +358,42 @@ func TestParseContainerUser(t *testing.T) {
 		tester(t, testCase{user: "", wantUID: 0, wantGID: 0})
 	})
 }
+
+func TestLinuxAgentconFor(t *testing.T) {
+	type testCase struct {
+		explicit string
+		goos     string
+		goarch   string
+		ver      string
+		want     string
+		wantErr  string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		got, err := linuxAgentconFor(tc.explicit, tc.goos, tc.goarch, tc.ver, func() (string, error) { return "/usr/local/bin/agentcon", nil })
+		if tc.wantErr != "" {
+			require.EqualError(t, err, tc.wantErr)
+			return
+		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
+	}
+
+	t.Run("prefers the explicit binary", func(t *testing.T) {
+		tester(t, testCase{explicit: "/tmp/agentcon-linux-arm64", goos: "darwin", goarch: "arm64", want: "/tmp/agentcon-linux-arm64"})
+	})
+	t.Run("uses itself on linux amd64", func(t *testing.T) {
+		tester(t, testCase{goos: "linux", goarch: "amd64", want: "/usr/local/bin/agentcon"})
+	})
+	t.Run("uses itself on linux arm64", func(t *testing.T) {
+		tester(t, testCase{goos: "linux", goarch: "arm64", want: "/usr/local/bin/agentcon"})
+	})
+	t.Run("names the release asset on other hosts", func(t *testing.T) {
+		tester(t, testCase{goos: "darwin", goarch: "arm64", ver: "v0.3.0",
+			wantErr: "host is darwin/arm64; the sidecar needs a linux agentcon, such as the agentcon-linux-arm64 asset of release v0.3.0"})
+	})
+	t.Run("names the asset to build from source", func(t *testing.T) {
+		tester(t, testCase{goos: "windows", goarch: "amd64", ver: "dev",
+			wantErr: "host is windows/amd64; the sidecar needs a linux agentcon, such as agentcon-linux-amd64 built from this source"})
+	})
+}

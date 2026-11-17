@@ -38,9 +38,9 @@ func testCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("bouncer tests: %w", err)
 			}
-			err = writeTAP(cmd.OutOrStdout(), report)
+			err = bouncertest.WriteTAP(cmd.OutOrStdout(), report)
 			if err != nil {
-				return err
+				return fmt.Errorf("print results: %w", err)
 			}
 			if failed := report.Failed(); failed > 0 {
 				return fmt.Errorf("%d failed", failed)

@@ -13,8 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/pastdev/agentcon/internal/bouncer/prompt"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
+	"github.com/pastdev/agentcon/pkg/bouncer/crederr"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 func tokenCred(name string, src config.ValueSource) *config.Credential {
@@ -71,11 +72,6 @@ func TestGet(t *testing.T) {
 		c2 := tokenCred("x", config.ValueSource{Source: "command", Command: []string{"sh", "-c", "printf other"}})
 		s.Update(map[string]*config.Credential{"x": c2})
 		tester(t, testCase{store: s, name: "x", wantToken: "other"})
-	})
-	t.Run("includes stderr from a failed command", func(t *testing.T) {
-		s := NewStore(map[string]*config.Credential{"x": tokenCred("x", config.ValueSource{Source: "command",
-			Command: []string{"sh", "-c", "echo vault locked >&2; exit 1"}})})
-		tester(t, testCase{store: s, name: "x", skipWin: "uses sh", wantErr: "vault locked"})
 	})
 	t.Run("reads an env source", func(t *testing.T) {
 		t.Setenv("BOUNCER_TEST_SECRET", "s3cret")
@@ -211,5 +207,41 @@ func TestBasicPass(t *testing.T) {
 
 	t.Run("uses the password slot", func(t *testing.T) {
 		tester(t, testCase{s: Secret{Password: "p", Token: "t"}, want: "p"})
+	})
+}
+
+func TestCommandError(t *testing.T) {
+	type testCase struct {
+		script     string
+		wantStderr string
+		wantLen    int
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		if runtime.GOOS == "windows" {
+			t.Skip("uses sh")
+		}
+		s := NewStore(map[string]*config.Credential{"x": tokenCred("x", config.ValueSource{Source: "command",
+			Command: []string{"sh", "-c", tc.script}})})
+		_, err := s.Get(context.Background(), "x")
+		var ce *crederr.CommandError
+		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, "sh", ce.Name)
+		assert.Contains(t, err.Error(), "sh: exit status 1")
+		assert.NotContains(t, err.Error(), "-c", "arguments stay out of the error text")
+		if tc.wantStderr != "" {
+			assert.Equal(t, tc.wantStderr, crederr.Stderr(err))
+			assert.NotContains(t, err.Error(), tc.wantStderr)
+		}
+		if tc.wantLen != 0 {
+			assert.Len(t, crederr.Stderr(err), tc.wantLen)
+		}
+	}
+
+	t.Run("keeps stderr out of the error text", func(t *testing.T) {
+		tester(t, testCase{script: "echo vault locked >&2; exit 1", wantStderr: "vault locked"})
+	})
+	t.Run("caps stderr", func(t *testing.T) {
+		tester(t, testCase{script: "head -c 10000 /dev/zero | tr '\\0' x >&2; exit 1", wantLen: crederr.MaxStderr})
 	})
 }
