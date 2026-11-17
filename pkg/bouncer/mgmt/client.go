@@ -146,21 +146,23 @@ func (c *Client) EndSession(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/_bouncer/sessions/"+url.PathEscape(id), nil, nil)
 }
 
-// PutEnv replaces the daemon's source: env overlay.
+// PutEnv replaces the daemon's source: env overlay. An empty map clears it.
 func (c *Client) PutEnv(ctx context.Context, vars map[string]string) error {
-	if len(vars) == 0 {
-		return nil
-	}
-	return c.do(ctx, http.MethodPut, "/_bouncer/credentials/sources/env", vars, nil)
+	return c.do(ctx, http.MethodPut, "/_bouncer/credentials/sources/env", nonNil(vars), nil)
 }
 
 // PutProvided replaces host-resolved secrets (file, keyring, command,
-// provided) keyed by credential name.
+// provided) keyed by credential name. An empty map clears them.
 func (c *Client) PutProvided(ctx context.Context, values map[string]string) error {
-	if len(values) == 0 {
-		return nil
+	return c.do(ctx, http.MethodPut, "/_bouncer/credentials/provided", nonNil(values), nil)
+}
+
+// nonNil sends a nil map as {} rather than null.
+func nonNil(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
 	}
-	return c.do(ctx, http.MethodPut, "/_bouncer/credentials/provided", values, nil)
+	return m
 }
 
 // Reload reloads the daemon's policy.

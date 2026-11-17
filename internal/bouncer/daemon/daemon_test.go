@@ -525,3 +525,57 @@ profiles:
 		tester(t, testCase{err: err, logs: logs})
 	})
 }
+
+func TestClientClearsCredentials(t *testing.T) {
+	type testCase struct {
+		cred string
+		put  func(c *mgmt.Client, ctx context.Context, values map[string]string) error
+		set  map[string]string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		dir := t.TempDir()
+		cfg := filepath.Join(dir, "config.yaml")
+		err := os.WriteFile(cfg, []byte(`default_profile: p
+prompts: {notify: false}
+credentials:
+  from-env:
+    token:
+      source: env
+      env: AGENTCON_TEST_CLEAR_ENV
+  from-provided:
+    token:
+      source: provided
+profiles:
+  p: {}
+`), 0o600)
+		require.NoError(t, err)
+		state := filepath.Join(dir, "state")
+		d, err := New(Options{ConfigPath: cfg, StateDir: state})
+		require.NoError(t, err)
+		token, err := os.ReadFile(AdminTokenPath(state))
+		require.NoError(t, err)
+		srv := httptest.NewServer(d.Control())
+		t.Cleanup(srv.Close)
+		c := mgmt.New(srv.URL, strings.TrimSpace(string(token)))
+		ctx := t.Context()
+
+		err = tc.put(c, ctx, tc.set)
+		require.NoError(t, err)
+		sec, err := d.creds.Get(ctx, tc.cred)
+		require.NoError(t, err)
+		assert.Equal(t, "s3cret", sec.Token)
+
+		err = tc.put(c, ctx, map[string]string{})
+		require.NoError(t, err)
+		_, err = d.creds.Get(ctx, tc.cred)
+		require.Error(t, err, "the cleared value must not still resolve")
+	}
+
+	t.Run("env overlay", func(t *testing.T) {
+		tester(t, testCase{cred: "from-env", put: (*mgmt.Client).PutEnv, set: map[string]string{"AGENTCON_TEST_CLEAR_ENV": "s3cret"}})
+	})
+	t.Run("provided values", func(t *testing.T) {
+		tester(t, testCase{cred: "from-provided", put: (*mgmt.Client).PutProvided, set: map[string]string{"from-provided.token": "s3cret"}})
+	})
+}

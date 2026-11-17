@@ -113,6 +113,33 @@ func TestClient(t *testing.T) {
 			},
 		})
 	})
+	t.Run("sends empty replacements so they clear old values", func(t *testing.T) {
+		var bodies []string
+		record := func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, r.URL.Path+" "+string(body))
+			w.WriteHeader(http.StatusNoContent)
+		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("PUT /_bouncer/credentials/sources/env", record)
+		mux.HandleFunc("PUT /_bouncer/credentials/provided", record)
+		tester(t, testCase{
+			handler: mux,
+			check: func(t *testing.T, c *Client) {
+				t.Helper()
+				require.NoError(t, c.PutEnv(t.Context(), map[string]string{"A": "1"}))
+				require.NoError(t, c.PutEnv(t.Context(), map[string]string{}))
+				require.NoError(t, c.PutProvided(t.Context(), map[string]string{"x.token": "1"}))
+				require.NoError(t, c.PutProvided(t.Context(), nil))
+				assert.Equal(t, []string{
+					`/_bouncer/credentials/sources/env {"A":"1"}`,
+					`/_bouncer/credentials/sources/env {}`,
+					`/_bouncer/credentials/provided {"x.token":"1"}`,
+					`/_bouncer/credentials/provided {}`,
+				}, bodies)
+			},
+		})
+	})
 	t.Run("returns the trust bundle", func(t *testing.T) {
 		tester(t, testCase{
 			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
