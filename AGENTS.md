@@ -51,6 +51,7 @@ The user may grant permission to implement a full feature at once.
 
 After implementation, ensure tests, lint, and compile succeed.
 Run smoke checks that verify end-to-end behavior when practical.
+When a smoke check needs a handoff, finish it before opening the merge request.
 Then open the merge request through a configured credentialed tool service when one offers the action.
 Use the handoff process only for actions no such service offers.
 
@@ -113,6 +114,8 @@ Do not redirect the full script transcript into the result file.
 Put only the fields needed for the next agent step into the result file.
 Prefer streaming long-running command output to the terminal as it runs.
 A typical pattern is piping through `tee` for the user display only.
+End the script with one plain line that states the outcome, such as `SMOKE PASSED` or `SMOKE FAILED: <reason>`.
+Keep output from deliberately triggered failures out of the terminal, or label it as expected where it appears.
 
 After the user runs the script, they will say when results are ready to read.
 Do not put passwords, keys, tokens, or other secrets in the result file.
