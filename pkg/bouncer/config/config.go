@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -126,6 +127,50 @@ type BitwardenAccount struct {
 // password. It is also the default keyring account for that password.
 func BitwardenKey(account string) string {
 	return "bitwarden." + account
+}
+
+// BitwardenVault is the canonical identity of the vault an email and server
+// reach: the normalized email with the API and identity bases. Accounts
+// with the same vault share one master password and one unlock.
+func BitwardenVault(email, server string) (string, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return "", fmt.Errorf("email is empty")
+	}
+	apiBase, identityBase, err := BitwardenEndpoints(server)
+	if err != nil {
+		return "", err
+	}
+	return email + "\n" + apiBase + "\n" + identityBase, nil
+}
+
+// BitwardenEndpoints maps a configured server to the API and identity bases.
+// An empty server is Bitwarden cloud, and the cloud's other names map to the
+// same bases. Any other URL is treated as a self-hosted vault, whose API
+// lives at <server>/api and identity at <server>/identity (the same split
+// rbw uses). The host is lowercased, and the path keeps its case.
+func BitwardenEndpoints(server string) (apiBase, identityBase string, err error) {
+	raw := strings.TrimRight(strings.TrimSpace(server), "/")
+	switch strings.ToLower(raw) {
+	case "", "bitwarden.com", "https://bitwarden.com", "http://bitwarden.com",
+		"https://vault.bitwarden.com", "https://api.bitwarden.com", "https://identity.bitwarden.com":
+		return "https://api.bitwarden.com", "https://identity.bitwarden.com", nil
+	case "bitwarden.eu", "https://bitwarden.eu", "https://vault.bitwarden.eu",
+		"https://api.bitwarden.eu", "https://identity.bitwarden.eu":
+		return "https://api.bitwarden.eu", "https://identity.bitwarden.eu", nil
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, perr := url.Parse(raw)
+	if perr != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", "", fmt.Errorf("invalid bitwarden server %q", server)
+	}
+	base := u.Scheme + "://" + strings.ToLower(u.Host)
+	if p := strings.TrimRight(u.Path, "/"); p != "" {
+		base += p
+	}
+	return base + "/api", base + "/identity", nil
 }
 
 // BitwardenAccounts returns the accounts that creds' source: bitwarden
@@ -984,11 +1029,13 @@ func (c *Config) initBitwarden() error {
 			return fmt.Errorf("bitwarden account %q: empty", name)
 		}
 		a.Name = name
-		email := strings.ToLower(strings.TrimSpace(a.Email))
-		if email == "" {
+		if strings.TrimSpace(a.Email) == "" {
 			return fmt.Errorf("bitwarden account %q: requires email", name)
 		}
-		vault := email + "\n" + strings.ToLower(strings.TrimRight(strings.TrimSpace(a.Server), "/"))
+		vault, err := BitwardenVault(a.Email, a.Server)
+		if err != nil {
+			return fmt.Errorf("bitwarden account %q: %w", name, err)
+		}
 		if prev, ok := vaults[vault]; ok {
 			return fmt.Errorf("bitwarden accounts %q and %q use the same email and server", prev, name)
 		}

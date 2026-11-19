@@ -112,39 +112,6 @@ func TestDecryptString(t *testing.T) {
 	})
 }
 
-func TestEndpoints(t *testing.T) {
-	type testCase struct {
-		server  string
-		wantAPI string
-		wantID  string
-		wantErr bool
-	}
-	tester := func(t *testing.T, tc testCase) {
-		t.Helper()
-		api, id, err := endpoints(tc.server)
-		if tc.wantErr {
-			require.Error(t, err)
-			return
-		}
-		require.NoError(t, err)
-		assert.Equal(t, tc.wantAPI, api)
-		assert.Equal(t, tc.wantID, id)
-	}
-
-	t.Run("uses the default cloud endpoints", func(t *testing.T) {
-		tester(t, testCase{server: "", wantAPI: "https://api.bitwarden.com", wantID: "https://identity.bitwarden.com"})
-	})
-	t.Run("uses the eu cloud endpoints", func(t *testing.T) {
-		tester(t, testCase{server: "https://vault.bitwarden.eu/", wantAPI: "https://api.bitwarden.eu", wantID: "https://identity.bitwarden.eu"})
-	})
-	t.Run("uses self-hosted api and identity paths", func(t *testing.T) {
-		tester(t, testCase{server: "https://vault.example.com/bw", wantAPI: "https://vault.example.com/bw/api", wantID: "https://vault.example.com/bw/identity"})
-	})
-	t.Run("rejects userinfo in the server url", func(t *testing.T) {
-		tester(t, testCase{server: "https://user:pass@vault.example.com", wantErr: true}) //nolint:gosec // fake credentials the test expects to be rejected
-	})
-}
-
 func TestDecodeBW(t *testing.T) {
 	type testCase struct {
 		body []byte

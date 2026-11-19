@@ -428,6 +428,23 @@ credentials:
 			wantErr: `bitwarden accounts "a" and "b" use the same email and server`,
 		})
 	})
+	t.Run("rejects cloud aliases of one vault", func(t *testing.T) {
+		tester(t, testCase{
+			yaml:    "bitwarden:\n  a: {email: user@example.com}\n  b: {email: user@example.com, server: https://vault.bitwarden.com}\n",
+			wantErr: `bitwarden accounts "a" and "b" use the same email and server`,
+		})
+	})
+	t.Run("allows self-hosted paths that differ only in case", func(t *testing.T) {
+		tester(t, testCase{
+			yaml: "bitwarden:\n  a: {email: user@example.com, server: https://vault.example.test/Team}\n  b: {email: user@example.com, server: https://vault.example.test/team}\n",
+		})
+	})
+	t.Run("rejects an invalid server", func(t *testing.T) {
+		tester(t, testCase{
+			yaml:    "bitwarden:\n  a: {email: user@example.com, server: ftp://vault.example.test}\n",
+			wantErr: `bitwarden account "a": invalid bitwarden server "ftp://vault.example.test"`,
+		})
+	})
 	t.Run("rejects an account without email", func(t *testing.T) {
 		tester(t, testCase{
 			yaml:    "bitwarden:\n  a: {server: https://vault.example.com}\n",
@@ -471,4 +488,40 @@ credentials:
 			})
 		})
 	}
+}
+
+func TestBitwardenEndpoints(t *testing.T) {
+	type testCase struct {
+		server  string
+		wantAPI string
+		wantID  string
+		wantErr bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		api, id, err := BitwardenEndpoints(tc.server)
+		if tc.wantErr {
+			require.Error(t, err)
+			return
+		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantAPI, api)
+		assert.Equal(t, tc.wantID, id)
+	}
+
+	t.Run("uses the default cloud endpoints", func(t *testing.T) {
+		tester(t, testCase{server: "", wantAPI: "https://api.bitwarden.com", wantID: "https://identity.bitwarden.com"})
+	})
+	t.Run("uses the eu cloud endpoints", func(t *testing.T) {
+		tester(t, testCase{server: "https://vault.bitwarden.eu/", wantAPI: "https://api.bitwarden.eu", wantID: "https://identity.bitwarden.eu"})
+	})
+	t.Run("uses self-hosted api and identity paths", func(t *testing.T) {
+		tester(t, testCase{server: "https://vault.example.com/bw", wantAPI: "https://vault.example.com/bw/api", wantID: "https://vault.example.com/bw/identity"})
+	})
+	t.Run("lowercases the host and keeps the path case", func(t *testing.T) {
+		tester(t, testCase{server: "https://Vault.Example.com/Team/", wantAPI: "https://vault.example.com/Team/api", wantID: "https://vault.example.com/Team/identity"})
+	})
+	t.Run("rejects userinfo in the server url", func(t *testing.T) {
+		tester(t, testCase{server: "https://user:pass@vault.example.com", wantErr: true}) //nolint:gosec // fake credentials the test expects to be rejected
+	})
 }

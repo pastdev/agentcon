@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pastdev/agentcon/pkg/bouncer/config"
 	"github.com/rs/zerolog"
 )
 
@@ -223,15 +224,11 @@ func (v *Vaults) ensure(ctx context.Context, a Account) (*unlocked, error) {
 }
 
 func accountKey(a Account) (string, error) {
-	email := normalizeEmail(a.Email)
-	if email == "" {
-		return "", errors.New("email is empty")
-	}
-	apiBase, identityBase, err := endpoints(a.Server)
+	key, err := config.BitwardenVault(a.Email, a.Server)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("vault identity: %w", err)
 	}
-	return email + "\n" + apiBase + "\n" + identityBase, nil
+	return key, nil
 }
 
 func normalizeEmail(s string) string {
@@ -248,7 +245,7 @@ func (a Account) label() string {
 
 func (v *Vaults) unlock(ctx context.Context, a Account) (*unlocked, error) {
 	email := normalizeEmail(a.Email)
-	apiBase, identityBase, err := endpoints(a.Server)
+	apiBase, identityBase, err := config.BitwardenEndpoints(a.Server)
 	if err != nil {
 		return nil, fmt.Errorf("bitwarden: %w", err)
 	}

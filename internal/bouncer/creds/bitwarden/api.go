@@ -26,34 +26,6 @@ const (
 	authBodyLimit = 1 << 20
 )
 
-// endpoints maps a configured server to the API and identity bases.
-// An empty server is Bitwarden cloud. Any other URL is treated as a
-// self-hosted vault, whose API lives at <server>/api and identity at
-// <server>/identity (the same split rbw uses).
-func endpoints(server string) (apiBase, identityBase string, err error) {
-	raw := strings.TrimRight(strings.TrimSpace(server), "/")
-	switch strings.ToLower(raw) {
-	case "", "bitwarden.com", "https://bitwarden.com", "http://bitwarden.com",
-		"https://vault.bitwarden.com", "https://api.bitwarden.com", "https://identity.bitwarden.com":
-		return "https://api.bitwarden.com", "https://identity.bitwarden.com", nil
-	case "bitwarden.eu", "https://bitwarden.eu", "https://vault.bitwarden.eu",
-		"https://api.bitwarden.eu", "https://identity.bitwarden.eu":
-		return "https://api.bitwarden.eu", "https://identity.bitwarden.eu", nil
-	}
-	if !strings.Contains(raw, "://") {
-		raw = "https://" + raw
-	}
-	u, perr := url.Parse(raw)
-	if perr != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", "", fmt.Errorf("invalid bitwarden server %q", server)
-	}
-	base := u.Scheme + "://" + u.Host
-	if p := strings.TrimRight(u.Path, "/"); p != "" {
-		base += p
-	}
-	return base + "/api", base + "/identity", nil
-}
-
 func cliDeviceType() string {
 	// Bitwarden CLI device types, matching client_id "cli".
 	switch runtime.GOOS {
