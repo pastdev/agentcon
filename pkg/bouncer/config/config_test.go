@@ -449,7 +449,18 @@ credentials:
 	t.Run("rejects a key colliding with a credential slot", func(t *testing.T) {
 		tester(t, testCase{
 			yaml:    "bitwarden:\n  token: {email: a@b.c}\ncredentials:\n  bitwarden:\n    token: {source: env, env: X}\n",
-			wantErr: `provided key bitwarden.token collides`,
+			wantErr: `bitwarden account "token": provided key bitwarden.token collides with credential "bitwarden" slot token`,
+		})
+	})
+	t.Run("rejects a dotted key colliding with a credential slot", func(t *testing.T) {
+		tester(t, testCase{
+			yaml:    "bitwarden:\n  work.token: {email: a@b.c}\ncredentials:\n  bitwarden.work:\n    token: {source: env, env: X}\n",
+			wantErr: `bitwarden account "work.token": provided key bitwarden.work.token collides with credential "bitwarden.work" slot token`,
+		})
+	})
+	t.Run("allows an account beside a dotted credential", func(t *testing.T) {
+		tester(t, testCase{
+			yaml: "bitwarden:\n  work: {email: a@b.c}\ncredentials:\n  bitwarden.work:\n    token: {source: env, env: X}\n",
 		})
 	})
 	for _, field := range []string{"email: a@b.c", "server: https://vault.example.com", "password_env: BW_MASTER"} {

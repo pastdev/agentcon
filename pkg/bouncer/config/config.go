@@ -968,6 +968,15 @@ func (s *ValueSource) check(dir string) error {
 // email and server, because one vault has one master password, and an
 // account's provided key may not collide with a credential slot key.
 func (c *Config) initBitwarden() error {
+	// Names may contain dots, so account work.token and credential
+	// bitwarden.work slot token share a key. Compare the serialized keys.
+	type credSlot struct{ cred, slot string }
+	slots := map[string]credSlot{}
+	for name, cr := range c.Credentials {
+		for _, slot := range cr.Slots() {
+			slots[ProvidedKey(name, slot.Name)] = credSlot{cred: name, slot: slot.Name}
+		}
+	}
 	vaults := map[string]string{}
 	for _, name := range slices.Sorted(maps.Keys(c.Bitwarden)) {
 		a := c.Bitwarden[name]
@@ -995,8 +1004,8 @@ func (c *Config) initBitwarden() error {
 				return fmt.Errorf("bitwarden account %q password: %w", name, err)
 			}
 		}
-		if cred, ok := c.Credentials["bitwarden"]; ok && cred.Slot(name) != nil {
-			return fmt.Errorf("bitwarden account %q: provided key %s collides with credential %q slot %s", name, BitwardenKey(name), "bitwarden", name)
+		if slot, ok := slots[BitwardenKey(name)]; ok {
+			return fmt.Errorf("bitwarden account %q: provided key %s collides with credential %q slot %s", name, BitwardenKey(name), slot.cred, slot.slot)
 		}
 	}
 	return nil
