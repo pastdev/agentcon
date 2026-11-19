@@ -84,6 +84,43 @@ profiles:
 			wantErr: "tok",
 		})
 	})
+	bitwardenProvided := func(t *testing.T, provided map[string]string, wantErr string) {
+		t.Helper()
+		dir := t.TempDir()
+		cfg := filepath.Join(dir, "config.yaml")
+		// The unreachable server keeps the background unlock off the network.
+		err := os.WriteFile(cfg, []byte(`
+default_profile: p
+bitwarden:
+  work:
+    email: user@example.com
+    server: http://127.0.0.1:1
+    password: {source: provided}
+credentials:
+  bw:
+    token:
+      source: bitwarden
+      account: work
+      item: GitLab
+      path: $.login.password
+profiles:
+  p: {}
+`), 0o600)
+		require.NoError(t, err)
+		tester(t, testCase{
+			opts:    Options{ConfigPath: cfg, StateDir: filepath.Join(dir, "state"), Provided: provided},
+			wantErr: wantErr,
+		})
+	}
+	t.Run("accepts a provided bitwarden account password", func(t *testing.T) {
+		bitwardenProvided(t, map[string]string{"bitwarden.work": "fake-test-password"}, "")
+	})
+	t.Run("rejects a missing bitwarden account password", func(t *testing.T) {
+		bitwardenProvided(t, map[string]string{}, "have no value: bitwarden.work")
+	})
+	t.Run("rejects an unknown bitwarden account", func(t *testing.T) {
+		bitwardenProvided(t, map[string]string{"bitwarden.work": "x", "bitwarden.home": "x"}, "not in the config: bitwarden.home")
+	})
 }
 
 func TestCreateSession(t *testing.T) {
@@ -330,12 +367,15 @@ func TestStartupStatus(t *testing.T) {
 		if tc.prelogin != nil {
 			srv := httptest.NewServer(tc.prelogin)
 			t.Cleanup(srv.Close)
-			config += `credentials:
+			config += `bitwarden:
+  work:
+    email: user@example.com
+    server: ` + srv.URL + `
+credentials:
   bw:
     token:
       source: bitwarden
-      email: user@example.com
-      server: ` + srv.URL + `
+      account: work
       item: GitLab
       path: $.login.password
 `
@@ -417,6 +457,146 @@ func TestStartupStatus(t *testing.T) {
 			decline:   true,
 			wantError: "declined",
 		})
+	})
+}
+
+func TestStartupRetriesAfterPut(t *testing.T) {
+	type status struct {
+		Ready bool   `json:"ready"`
+		Error string `json:"error"`
+	}
+	type testCase struct {
+		// duringPrepare sends the value while the first startup preparation
+		// is still waiting on prelogin. Otherwise it is sent after that
+		// preparation has failed.
+		duringPrepare bool
+		// provided sends the password as a provided value instead of env.
+		provided bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		// Each prelogin waits for one send on gate, so the test controls
+		// when every preparation attempt proceeds.
+		entered := make(chan struct{}, 4)
+		gate := make(chan struct{})
+		bw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/identity/accounts/prelogin" {
+				http.NotFound(w, r)
+				return
+			}
+			entered <- struct{}{}
+			<-gate
+			_, _ = io.WriteString(w, `{"kdf":0,"kdfIterations":1000}`)
+		}))
+		t.Cleanup(bw.Close)
+		// Runs before bw.Close so a failed test does not leave it waiting.
+		t.Cleanup(func() { close(gate) })
+		dir := t.TempDir()
+		source, path, body, notSet := "{source: env, env: BOUNCER_TEST_BW_MASTER}",
+			"/_bouncer/credentials/sources/env", `{"BOUNCER_TEST_BW_MASTER":"fake-test-password"}`,
+			"BOUNCER_TEST_BW_MASTER is not set"
+		if tc.provided {
+			source, path, body, notSet = "{source: provided}",
+				"/_bouncer/credentials/provided", `{"bitwarden.work":"fake-test-password"}`,
+				"no value provided"
+		}
+		cfg := filepath.Join(dir, "config.yaml")
+		err := os.WriteFile(cfg, []byte(`default_profile: p
+profiles:
+  p: {}
+prompts: {notify: false}
+bitwarden:
+  work:
+    email: user@example.com
+    server: `+bw.URL+`
+    password: `+source+`
+credentials:
+  bw:
+    token:
+      source: bitwarden
+      account: work
+      item: GitLab
+      path: $.login.password
+`), 0o600)
+		require.NoError(t, err)
+		state := filepath.Join(dir, "state")
+		d, err := New(Options{ConfigPath: cfg, StateDir: state})
+		require.NoError(t, err)
+		token, err := os.ReadFile(AdminTokenPath(state))
+		require.NoError(t, err)
+		srv := httptest.NewServer(d.Control())
+		t.Cleanup(srv.Close)
+		do := func(method, path, body string) *http.Response {
+			t.Helper()
+			req, err := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = resp.Body.Close() })
+			return resp
+		}
+		get := func() status {
+			t.Helper()
+			var st status
+			err := json.NewDecoder(do(http.MethodGet, "/_bouncer/status", "").Body).Decode(&st)
+			require.NoError(t, err)
+			return st
+		}
+		waitFor := func(what string, ok func(status) bool) status {
+			t.Helper()
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				st := get()
+				if ok(st) {
+					return st
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("waiting for %s, status %+v", what, st)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		put := func() {
+			t.Helper()
+			resp := do(http.MethodPut, path, body)
+			require.Equal(t, http.StatusNoContent, resp.StatusCode)
+		}
+
+		<-entered
+		if tc.duringPrepare {
+			put()
+			gate <- struct{}{}
+		} else {
+			gate <- struct{}{}
+			st := waitFor("startup to fail", func(st status) bool { return st.Error != "" })
+			require.Contains(t, st.Error, notSet)
+			put()
+			st = get()
+			assert.False(t, st.Ready, "ready before the retry finished")
+			assert.Empty(t, st.Error, "stale startup error after the value arrived")
+		}
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("startup preparation did not retry")
+		}
+		gate <- struct{}{}
+		st := waitFor("startup to finish", func(st status) bool { return st.Error != "" })
+		assert.NotContains(t, st.Error, notSet, "the retry read the new value")
+	}
+
+	t.Run("retries a failed startup", func(t *testing.T) {
+		tester(t, testCase{})
+	})
+	t.Run("retries a startup that fails while env arrives", func(t *testing.T) {
+		tester(t, testCase{duringPrepare: true})
+	})
+	t.Run("retries a failed startup after provided values", func(t *testing.T) {
+		tester(t, testCase{provided: true})
+	})
+	t.Run("retries a startup that fails while provided values arrive", func(t *testing.T) {
+		tester(t, testCase{duringPrepare: true, provided: true})
 	})
 }
 

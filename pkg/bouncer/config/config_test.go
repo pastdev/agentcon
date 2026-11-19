@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -150,11 +151,14 @@ profiles:
 		tester(t, testCase{
 			path: "x.yaml",
 			yaml: `
+bitwarden:
+  work:
+    email: User@Example.com
 credentials:
   gl:
     token:
       source: bitwarden
-      email: User@Example.com
+      account: work
       item: GitLab
       path: $.login.password
 `,
@@ -163,21 +167,23 @@ credentials:
 				src := cfg.Credentials["gl"].Token
 				require.NotNil(t, src)
 				assert.Equal(t, "GitLab", src.Item)
-				assert.Equal(t, "User@Example.com", src.Email)
+				require.NotNil(t, src.Bitwarden)
+				assert.Equal(t, "work", src.Bitwarden.Name)
+				assert.Equal(t, "User@Example.com", src.Bitwarden.Email)
 				assert.Equal(t, "$.login.password", src.Path)
 			},
 		})
 	})
 	t.Run("requires bitwarden item", func(t *testing.T) {
 		tester(t, testCase{
-			yaml:    "credentials:\n  gl:\n    token: {source: bitwarden, email: a@b.c}\n",
+			yaml:    "bitwarden:\n  w: {email: a@b.c}\ncredentials:\n  gl:\n    token: {source: bitwarden, account: w}\n",
 			path:    "x.yaml",
 			wantErr: true,
 		})
 	})
 	t.Run("requires bitwarden path", func(t *testing.T) {
 		tester(t, testCase{
-			yaml:    "credentials:\n  gl:\n    token: {source: bitwarden, email: a@b.c, item: GitLab}\n",
+			yaml:    "bitwarden:\n  w: {email: a@b.c}\ncredentials:\n  gl:\n    token: {source: bitwarden, account: w, item: GitLab}\n",
 			path:    "x.yaml",
 			wantErr: true,
 		})
@@ -186,6 +192,9 @@ credentials:
 		tester(t, testCase{
 			path: "x.yaml",
 			yaml: `
+bitwarden:
+  work:
+    email: User@Example.com
 credentials:
   deploy:
     private_key:
@@ -194,12 +203,12 @@ credentials:
   gl:
     username:
       source: bitwarden
-      email: User@Example.com
+      account: work
       item: GitLab
       path: $.login.username
     password:
       source: bitwarden
-      email: User@Example.com
+      account: work
       item: GitLab
       path: $.login.password
 `,
@@ -359,4 +368,96 @@ profiles:
 			})
 		}
 	})
+}
+
+func TestBitwardenAccounts(t *testing.T) {
+	type testCase struct {
+		yaml    string
+		want    []string
+		wantErr string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		cfg, err := Parse([]byte(tc.yaml), "/tmp/cfg/x.yaml")
+		if tc.wantErr != "" {
+			require.ErrorContains(t, err, tc.wantErr)
+			return
+		}
+		require.NoError(t, err)
+		var got []string
+		for _, a := range BitwardenAccounts(cfg.Credentials) {
+			got = append(got, a.Name)
+		}
+		assert.Equal(t, tc.want, got)
+	}
+	slot := func(account string) string {
+		return "      source: bitwarden\n      account: " + account + "\n      item: GitLab\n      path: $.login.password\n"
+	}
+
+	t.Run("lists used accounts once, sorted", func(t *testing.T) {
+		tester(t, testCase{
+			yaml: `
+bitwarden:
+  work: {email: work@example.com, password: {source: env, env: BW_WORK}}
+  home: {email: home@example.com, password: {source: command, command: [rbw, get, master]}}
+  unused: {email: unused@example.com}
+credentials:
+  a:
+    username:
+` + slot("work") + `    password:
+` + slot("work") + `  b:
+    token:
+` + slot("home"),
+			want: []string{"home", "work"},
+		})
+	})
+	t.Run("resolves a file password against the config dir", func(t *testing.T) {
+		cfg, err := Parse([]byte("bitwarden:\n  w: {email: a@b.c, password: {source: file, file: master}}\n"), "/tmp/cfg/x.yaml")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join("/tmp/cfg", "master"), cfg.Bitwarden["w"].Password.File)
+	})
+	t.Run("rejects an unknown account", func(t *testing.T) {
+		tester(t, testCase{
+			yaml:    "credentials:\n  gl:\n    token:\n" + slot("missing"),
+			wantErr: `credential "gl" token: unknown bitwarden account "missing"`,
+		})
+	})
+	t.Run("rejects accounts sharing a vault", func(t *testing.T) {
+		tester(t, testCase{
+			yaml:    "bitwarden:\n  a: {email: User@Example.com, server: https://vault.example.com/}\n  b: {email: user@example.com, server: https://Vault.example.com}\n",
+			wantErr: `bitwarden accounts "a" and "b" use the same email and server`,
+		})
+	})
+	t.Run("rejects an account without email", func(t *testing.T) {
+		tester(t, testCase{
+			yaml:    "bitwarden:\n  a: {server: https://vault.example.com}\n",
+			wantErr: `bitwarden account "a": requires email`,
+		})
+	})
+	t.Run("rejects an unsupported password source", func(t *testing.T) {
+		tester(t, testCase{
+			yaml:    "bitwarden:\n  a: {email: a@b.c, password: {source: ssh-agent}}\n",
+			wantErr: `bitwarden account "a" password: source "ssh-agent" is not supported`,
+		})
+	})
+	t.Run("rejects an incomplete password source", func(t *testing.T) {
+		tester(t, testCase{
+			yaml:    "bitwarden:\n  a: {email: a@b.c, password: {source: env}}\n",
+			wantErr: `bitwarden account "a" password: source env requires env`,
+		})
+	})
+	t.Run("rejects a key colliding with a credential slot", func(t *testing.T) {
+		tester(t, testCase{
+			yaml:    "bitwarden:\n  token: {email: a@b.c}\ncredentials:\n  bitwarden:\n    token: {source: env, env: X}\n",
+			wantErr: `provided key bitwarden.token collides`,
+		})
+	})
+	for _, field := range []string{"email: a@b.c", "server: https://vault.example.com", "password_env: BW_MASTER"} {
+		t.Run("rejects the removed slot field "+strings.Fields(field)[0], func(t *testing.T) {
+			tester(t, testCase{
+				yaml:    "bitwarden:\n  w: {email: a@b.c}\ncredentials:\n  gl:\n    token:\n" + slot("w") + "      " + field + "\n",
+				wantErr: "no longer takes email, server, or password_env",
+			})
+		})
+	}
 }

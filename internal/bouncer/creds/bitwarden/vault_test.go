@@ -324,9 +324,8 @@ func TestGet(t *testing.T) {
 	t.Run("looks up items and reuses an unlocked vault", func(t *testing.T) {
 		srv, fake := startVault(t, false)
 		dir := t.TempDir()
-		t.Setenv("BW_MASTER", testPassword)
 		v := New(Options{StateDir: dir, Prompt: &memPrompt{}})
-		q := Query{Account: Account{Email: "User@Example.com", Server: srv.URL, PasswordEnv: "BW_MASTER"}, Item: "GitLab", Folder: "Work"}
+		q := Query{Account: Account{Email: "User@Example.com", Server: srv.URL, Password: fixedPassword(testPassword)}, Item: "GitLab", Folder: "Work"}
 		tester(t, testCase{v: v, q: q, want: "gl-token"})
 		tester(t, testCase{v: v, q: q, want: "gl-token"})
 		fake.mu.Lock()
@@ -416,13 +415,14 @@ func TestGet(t *testing.T) {
 		defer fake.mu.Unlock()
 		assert.Equal(t, 2, fake.logins, "logins")
 	})
-	t.Run("does not stick a failed password env", func(t *testing.T) {
+	t.Run("does not stick a failed account password", func(t *testing.T) {
 		srv, _ := startVault(t, false)
 		v := New(Options{StateDir: t.TempDir(), Prompt: &memPrompt{}})
-		t.Setenv("BW_MASTER", "nope")
-		q := Query{Account: Account{Email: testEmail, Server: srv.URL, PasswordEnv: "BW_MASTER"}, Item: "sandbox", Field: "private_key"}
+		pw := "nope"
+		password := func(context.Context) (string, error) { return pw, nil }
+		q := Query{Account: Account{Email: testEmail, Server: srv.URL, Password: password}, Item: "sandbox", Field: "private_key"}
 		tester(t, testCase{v: v, q: q, wantErr: "incorrect"})
-		t.Setenv("BW_MASTER", testPassword)
+		pw = testPassword
 		tester(t, testCase{v: v, q: q, wantContains: "BEGIN OPENSSH PRIVATE KEY"})
 	})
 	t.Run("prompts for new device verification", func(t *testing.T) {
@@ -474,23 +474,43 @@ func TestGet(t *testing.T) {
 
 func TestUnlock(t *testing.T) {
 	type testCase struct {
-		accounts []Account
+		password func(context.Context) (string, error)
+		prompt   Prompter
 		wantErr  string
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		v := New(Options{StateDir: t.TempDir()})
-		err := v.Unlock(context.Background(), tc.accounts)
+		srv, _ := startVault(t, false)
+		v := New(Options{StateDir: t.TempDir(), Prompt: tc.prompt})
+		err := v.Unlock(context.Background(), []Account{{Email: testEmail, Server: srv.URL, Password: tc.password}})
+		if tc.wantErr == "" {
+			require.NoError(t, err)
+			return
+		}
 		require.ErrorContains(t, err, tc.wantErr)
 	}
 
-	t.Run("rejects conflicting password env values", func(t *testing.T) {
+	t.Run("unlocks with the account password", func(t *testing.T) {
+		tester(t, testCase{password: fixedPassword(testPassword)})
+	})
+	t.Run("reports a password lookup error", func(t *testing.T) {
 		tester(t, testCase{
-			accounts: []Account{
-				{Email: "User@Example.com", PasswordEnv: "ONE"},
-				{Email: "user@example.com", PasswordEnv: "TWO"},
-			},
-			wantErr: "conflicting password_env",
+			password: func(context.Context) (string, error) { return "", errors.New("not set") },
+			wantErr:  "master password: not set",
 		})
 	})
+	t.Run("rejects an empty password", func(t *testing.T) {
+		tester(t, testCase{password: fixedPassword(""), wantErr: "master password is empty"})
+	})
+	t.Run("tries the account password once without prompting", func(t *testing.T) {
+		// The prompt holds the right password, so falling back to it would unlock.
+		tester(t, testCase{password: fixedPassword("nope"), prompt: &memPrompt{passwords: []string{testPassword}}, wantErr: "incorrect"})
+	})
+	t.Run("needs a password or a prompt", func(t *testing.T) {
+		tester(t, testCase{wantErr: "nothing can ask for it"})
+	})
+}
+
+func fixedPassword(pw string) func(context.Context) (string, error) {
+	return func(context.Context) (string, error) { return pw, nil }
 }

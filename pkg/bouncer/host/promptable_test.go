@@ -20,25 +20,30 @@ func TestCheckPromptable(t *testing.T) {
 		}
 		require.ErrorContains(t, err, tc.wantErr)
 	}
-	bitwarden := func(extra string) string {
-		return `credentials:
+	bitwarden := func(password string) string {
+		return `bitwarden:
+  work:
+    email: user@example.com
+` + password + `  unused:
+    email: unused@example.com
+credentials:
   bw:
     token:
       source: bitwarden
-      email: user@example.com
+      account: work
       item: GitLab
       path: $.login.password
-` + extra
+`
 	}
 
 	t.Run("allows bitwarden when run can answer", func(t *testing.T) {
 		tester(t, testCase{policy: bitwarden("")})
 	})
-	t.Run("refuses bitwarden nothing can unlock", func(t *testing.T) {
-		tester(t, testCase{policy: "prompts: {cli: false}\n" + bitwarden(""), wantErr: "credentials bw use bitwarden without password_env"})
+	t.Run("refuses an account nothing can unlock", func(t *testing.T) {
+		tester(t, testCase{policy: "prompts: {cli: false}\n" + bitwarden(""), wantErr: "bitwarden accounts work have no password"})
 	})
-	t.Run("allows password_env without the cli", func(t *testing.T) {
-		tester(t, testCase{policy: "prompts: {cli: false}\n" + bitwarden("      password_env: BW_MASTER\n")})
+	t.Run("allows an account password without the cli", func(t *testing.T) {
+		tester(t, testCase{policy: "prompts: {cli: false}\n" + bitwarden("    password: {source: env, env: BW_MASTER}\n")})
 	})
 	t.Run("allows no cli without bitwarden", func(t *testing.T) {
 		tester(t, testCase{policy: "prompts: {cli: false}\n"})

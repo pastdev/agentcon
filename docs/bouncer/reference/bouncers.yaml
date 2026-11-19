@@ -19,6 +19,17 @@ bouncers:
       terminal: true   # prompt in the `bouncer serve` terminal
       cli: true        # allow `bouncer answer/approve/deny/decline` and `agentcon run` to answer
 
+    # Bitwarden accounts that source: bitwarden slots name.
+    # Each vault is synced and unlocked once for this process.
+    # bitwarden:
+    #   me:
+    #     email: me@example.com
+    #     # server: https://vault.example.com
+    #     # Without password, the bouncer prompts for the master password.
+    #     # password:                    # env, file, keyring, command, or provided
+    #     #   source: command
+    #     #   command: [rbw, get, bitwarden-master]
+
     # Where secrets come from. The agent only ever sees placeholders.
     # Each credential is a composite of slots (token, username, password, private_key).
     # Each slot is a source plus optional JSONPath on the source payload.
@@ -48,12 +59,10 @@ bouncers:
         export_env: [SLACK_TOKEN]
       # gitlab-bw:
       #   token:
-      #     source: bitwarden            # synced and unlocked for this process
-      #     email: me@example.com
+      #     source: bitwarden
+      #     account: me                  # a key of the bitwarden map above
       #     item: GitLab                 # name or id; folder disambiguates
       #     path: $.login.password       # decrypted cipher JSON
-      #     # server: https://vault.example.com
-      #     # password_env: BITWARDEN_MASTER_PASSWORD
       #   export_env: [GITLAB_TOKEN]
 
     profiles:

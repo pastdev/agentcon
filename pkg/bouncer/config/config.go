@@ -13,10 +13,12 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -68,10 +70,12 @@ type Config struct {
 	DefaultProfile string `yaml:"default_profile"`
 	// AnonymousProfile, if set, applies to proxy clients that don't present a
 	// session token. Empty means such clients are rejected.
-	AnonymousProfile string                 `yaml:"anonymous_profile"`
-	Prompts          Prompts                `yaml:"prompts"`
-	Credentials      map[string]*Credential `yaml:"credentials"`
-	Profiles         map[string]*Profile    `yaml:"profiles"`
+	AnonymousProfile string  `yaml:"anonymous_profile"`
+	Prompts          Prompts `yaml:"prompts"`
+	// Bitwarden holds the accounts that source: bitwarden slots name.
+	Bitwarden   map[string]*BitwardenAccount `yaml:"bitwarden"`
+	Credentials map[string]*Credential       `yaml:"credentials"`
+	Profiles    map[string]*Profile          `yaml:"profiles"`
 
 	// Dir is the directory containing the config file; relative paths resolve against it.
 	Dir string `yaml:"-"`
@@ -102,6 +106,44 @@ func (a Prompts) TimeoutOrDefault() time.Duration {
 		return 2 * time.Minute
 	}
 	return a.Timeout.D
+}
+
+// BitwardenAccount is one Bitwarden login. Its vault is synced and unlocked
+// once and shared by every slot that names it.
+type BitwardenAccount struct {
+	Email string `yaml:"email"`
+	// Server is the vault base URL. Empty means bitwarden.com.
+	Server string `yaml:"server"`
+	// Password is the master password: env, file, keyring, command, or
+	// provided. agentcon run resolves it on the host and PUTs the value.
+	// Nil means the bouncer prompts for it.
+	Password *ValueSource `yaml:"password"`
+
+	Name string `yaml:"-"`
+}
+
+// BitwardenKey is the PUT / provided-map key for an account's master
+// password. It is also the default keyring account for that password.
+func BitwardenKey(account string) string {
+	return "bitwarden." + account
+}
+
+// BitwardenAccounts returns the accounts that creds' source: bitwarden
+// slots use, once each and sorted by name. Init must have run.
+func BitwardenAccounts(creds map[string]*Credential) []*BitwardenAccount {
+	byName := map[string]*BitwardenAccount{}
+	for _, c := range creds {
+		for _, slot := range c.Slots() {
+			if slot.Source.Bitwarden != nil {
+				byName[slot.Source.Bitwarden.Name] = slot.Source.Bitwarden
+			}
+		}
+	}
+	out := make([]*BitwardenAccount, 0, len(byName))
+	for _, name := range slices.Sorted(maps.Keys(byName)) {
+		out = append(out, byName[name])
+	}
+	return out
 }
 
 // Credential is a composite of named slots. The agent never sees slot
@@ -142,17 +184,24 @@ type ValueSource struct {
 	File string `yaml:"file"`
 	// Account (source: keyring) overrides the keyring account name (default: credential name).
 	// agentcon run reads the host keyring and PUTs the value.
+	// Account (source: bitwarden) names an entry in the top-level bitwarden map.
 	Account string `yaml:"account"`
 	// Fingerprint (source: ssh-agent) selects a key from the agent by SHA256 fingerprint.
 	// agentcon run bind-mounts SSH_AUTH_SOCK into the sidecar.
 	Fingerprint string `yaml:"fingerprint"`
-	// Email, Server, Item, Folder, PasswordEnv (source: bitwarden) select
-	// an item. The vault is synced and unlocked once per email and server.
-	Email       string `yaml:"email"`
-	Server      string `yaml:"server"`
-	Item        string `yaml:"item"`
-	Folder      string `yaml:"folder"`
-	PasswordEnv string `yaml:"password_env"`
+	// Item, Folder (source: bitwarden) select an item in Account's vault.
+	Item   string `yaml:"item"`
+	Folder string `yaml:"folder"`
+
+	// Bitwarden is the account Account names (source: bitwarden), set by
+	// Init.
+	Bitwarden *BitwardenAccount `yaml:"-"`
+
+	// RemovedEmail, RemovedServer, and RemovedPasswordEnv are decoded only to
+	// reject them with a pointer to the top-level bitwarden map.
+	RemovedEmail       string `yaml:"email,omitempty"`
+	RemovedServer      string `yaml:"server,omitempty"`
+	RemovedPasswordEnv string `yaml:"password_env,omitempty"`
 }
 
 // Slot is one named ValueSource on a credential.
@@ -538,6 +587,10 @@ func (c *Config) normalize() error {
 	if c.Profiles == nil {
 		c.Profiles = map[string]*Profile{}
 	}
+	err := c.initBitwarden()
+	if err != nil {
+		return err
+	}
 	for name, cr := range c.Credentials {
 		if cr == nil {
 			return fmt.Errorf("credential %q: empty", name)
@@ -551,6 +604,13 @@ func (c *Config) normalize() error {
 			err := slot.Source.init(name, slot.Name, c.Dir)
 			if err != nil {
 				return err
+			}
+			if slot.Source.Source == "bitwarden" {
+				acct, ok := c.Bitwarden[slot.Source.Account]
+				if !ok {
+					return fmt.Errorf("credential %q %s: unknown bitwarden account %q", name, slot.Name, slot.Source.Account)
+				}
+				slot.Source.Bitwarden = acct
 			}
 		}
 	}
@@ -862,31 +922,82 @@ func (s *ValueSource) init(cred, slot, dir string) error {
 	if s.Source == "ssh-agent" && slot != SlotPrivateKey {
 		return fmt.Errorf("credential %q %s: source ssh-agent is only valid on private_key", cred, slot)
 	}
+	err := s.check(dir)
+	if err != nil {
+		return fmt.Errorf("credential %q %s: %w", cred, slot, err)
+	}
+	return nil
+}
+
+// check validates the fields its source needs and resolves file paths
+// against dir.
+func (s *ValueSource) check(dir string) error {
 	switch s.Source {
 	case "keyring", "provided":
 	case "ssh-agent":
 	case "command":
 		if len(s.Command) == 0 {
-			return fmt.Errorf("credential %q %s: source command requires command", cred, slot)
+			return fmt.Errorf("source command requires command")
 		}
 	case "env":
 		if s.Env == "" {
-			return fmt.Errorf("credential %q %s: source env requires env", cred, slot)
+			return fmt.Errorf("source env requires env")
 		}
 	case "file":
 		if s.File == "" {
-			return fmt.Errorf("credential %q %s: source file requires file", cred, slot)
+			return fmt.Errorf("source file requires file")
 		}
 		s.File = expandPath(s.File, dir)
 	case "bitwarden":
-		if strings.TrimSpace(s.Email) == "" || strings.TrimSpace(s.Item) == "" {
-			return fmt.Errorf("credential %q %s: source bitwarden requires email and item", cred, slot)
+		if s.RemovedEmail != "" || s.RemovedServer != "" || s.RemovedPasswordEnv != "" {
+			return fmt.Errorf("source bitwarden no longer takes email, server, or password_env; define them in the top-level bitwarden map and set account")
+		}
+		if strings.TrimSpace(s.Account) == "" || strings.TrimSpace(s.Item) == "" {
+			return fmt.Errorf("source bitwarden requires account and item")
 		}
 		if strings.TrimSpace(s.Path) == "" {
-			return fmt.Errorf("credential %q %s: source bitwarden requires path", cred, slot)
+			return fmt.Errorf("source bitwarden requires path")
 		}
 	default:
-		return fmt.Errorf("credential %q %s: unknown source %q (want keyring, command, env, file, ssh-agent, bitwarden, provided)", cred, slot, s.Source)
+		return fmt.Errorf("unknown source %q (want keyring, command, env, file, ssh-agent, bitwarden, provided)", s.Source)
+	}
+	return nil
+}
+
+// initBitwarden validates the bitwarden map. Two accounts may not share an
+// email and server, because one vault has one master password, and an
+// account's provided key may not collide with a credential slot key.
+func (c *Config) initBitwarden() error {
+	vaults := map[string]string{}
+	for _, name := range slices.Sorted(maps.Keys(c.Bitwarden)) {
+		a := c.Bitwarden[name]
+		if a == nil {
+			return fmt.Errorf("bitwarden account %q: empty", name)
+		}
+		a.Name = name
+		email := strings.ToLower(strings.TrimSpace(a.Email))
+		if email == "" {
+			return fmt.Errorf("bitwarden account %q: requires email", name)
+		}
+		vault := email + "\n" + strings.ToLower(strings.TrimRight(strings.TrimSpace(a.Server), "/"))
+		if prev, ok := vaults[vault]; ok {
+			return fmt.Errorf("bitwarden accounts %q and %q use the same email and server", prev, name)
+		}
+		vaults[vault] = name
+		if a.Password != nil {
+			switch a.Password.Source {
+			case "env", "file", "keyring", "command", "provided":
+			default:
+				return fmt.Errorf("bitwarden account %q password: source %q is not supported (want env, file, keyring, command, provided)", name, a.Password.Source)
+			}
+			err := a.Password.check(c.Dir)
+			if err != nil {
+				return fmt.Errorf("bitwarden account %q password: %w", name, err)
+			}
+		}
+		if cred, ok := c.Credentials["bitwarden"]; ok && cred.Slot(name) != nil {
+			return fmt.Errorf("bitwarden account %q: provided key %s collides with credential %q slot %s", name, BitwardenKey(name), "bitwarden", name)
+		}
 	}
 	return nil
 }

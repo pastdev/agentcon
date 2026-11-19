@@ -104,39 +104,66 @@ Bitwarden requires `path` because the payload is the whole decrypted cipher JSON
 ### bitwarden
 
 The sidecar unlocks the vault.
-Identity stays in the YAML.
-The sidecar raises a [prompt](#prompts) for the master password, and another for a verification code when the account asks for one.
-`agentcon run` answers them at its terminal and starts the agent once every vault is unlocked.
-The master password is asked for up to three times.
+Accounts are defined once, in the top-level `bitwarden` map, and slots name one with `account`.
+Each account's vault is synced and unlocked once, and every slot that names it shares that vault.
 
-Required: `email`, `item`, `path`.
-Optional: `server` (default bitwarden.com), `folder` (unset), `password_env` (unset, so the sidecar prompts).
+Account fields:
+Required: `email`.
+Optional: `server` (default bitwarden.com), `password` (unset, so the sidecar prompts).
+Two accounts may not share an email and server.
+
+`password` is a value source for the master password: `env`, `file`, `keyring`, `command`, or `provided`.
+`agentcon run` resolves it on the host, once per account, and PUTs it to the sidecar.
+An `env` password is PUT with the `source: env` values.
+The others are PUT as `bitwarden.<account>`, for example `bitwarden.agent`.
+That key is also the default keyring account for a `keyring` password.
+The master password never reaches the policy file or the container environment.
+A configured password is tried once.
+
+Without `password`, the sidecar raises a [prompt](#prompts) for the master password.
+`agentcon run` answers it at its terminal and starts the agent once every vault is unlocked.
+The master password is asked for up to three times.
+Either way, the sidecar raises another prompt for a verification code when the account asks for one.
+
+Slot fields:
+Required: `account`, `item`, `path`.
+Optional: `folder` (unset).
 
 The named item must already exist in that account's vault.
 `path` must select exactly one string from the decrypted cipher JSON.
 Examples: `$.notes`, `$.login.password`, `$.login.username`, `$.sshKey.privateKey`, `$.fields[?(@.name=='API Key')].value`.
 
 ```yaml
+bitwarden:
+  agent:
+    email: you@example.com
+    password:
+      source: command
+      command: [rbw, get, agent-vault-master]
 credentials:
   github-pat:
     token:
       source: bitwarden
-      email: you@example.com
+      account: agent
       item: pat-github-agent
       path: $.notes
     export_env: [GH_TOKEN, GITHUB_TOKEN]
   gitlab-login:
     username:
       source: bitwarden
-      email: you@example.com
+      account: agent
       item: GitLab
       path: $.login.username
     password:
       source: bitwarden
-      email: you@example.com
+      account: agent
       item: GitLab
       path: $.login.password
 ```
+
+Through v0.3.0, slots set `email`, `server`, and `password_env` themselves.
+Those slot fields are now rejected.
+Move them to an account, and replace `password_env: NAME` with `password: {source: env, env: NAME}`.
 
 ### env
 
@@ -389,7 +416,7 @@ prompts:
 ```
 
 `cli: false` stops `agentcon run` and the `agentcon bouncer` commands from answering.
-`agentcon run` refuses a policy with `cli: false` when a Bitwarden credential has no `password_env`, because nothing could unlock it.
+`agentcon run` refuses a policy with `cli: false` when a Bitwarden account it uses has no `password`, because nothing could unlock it.
 
 ## Sidecar image
 
@@ -514,6 +541,7 @@ curl -fsS \
 For each `source: env` slot, read the named variable on the host.
 For each `file`, `keyring`, `command`, or `provided` slot, resolve the secret on the host.
 PUT keys are `credential.slot` (for example `github-pat.token` and `deploy.private_key`).
+Resolve the `password` of each Bitwarden account a slot uses the same way, keyed `bitwarden.<account>`, or with the env values for `source: env`.
 If a `private_key` slot is passphrase-protected, prompt on the host TTY and PUT the unlocked PEM.
 Other slots are not parsed as keys.
 Fail on the host if any are missing.
@@ -536,6 +564,8 @@ curl -fsS -X PUT \
 The daemon stores both maps in memory.
 `source: env` lookups use the overlay first, then `os.LookupEnv`.
 Lookups for other sources use the provided overlay first, then the configured source.
+Bitwarden account passwords follow the same order.
+If startup unlock failed, the env PUT starts it again, and status reports not ready until it finishes.
 
 Bitwarden slots fetch the decrypted cipher JSON.
 `path` is required.

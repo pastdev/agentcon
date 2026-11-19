@@ -94,6 +94,9 @@ type Daemon struct {
 	startupMu   sync.Mutex
 	startupDone bool
 	startupErr  error
+	// startupRerun asks a running startup preparation to try again if it
+	// fails, because values it may need arrived while it ran.
+	startupRerun bool
 }
 
 // SessionRecord is a registered agent session.
@@ -196,16 +199,43 @@ func New(opts Options) (*Daemon, error) {
 // through d.Prompts when needed. It runs in the background so the control
 // API is up to answer. startup records the result for status.
 func (d *Daemon) prepare(set map[string]*config.Credential, startup bool) {
-	err := d.creds.Prepare(context.Background(), set)
-	if err != nil {
-		creds.LogError(d.log.Warn(), err).Msg("prepare credentials")
+	for {
+		err := d.creds.Prepare(context.Background(), set)
+		if err != nil {
+			creds.LogError(d.log.Warn(), err).Msg("prepare credentials")
+		}
+		if !startup {
+			return
+		}
+		d.startupMu.Lock()
+		rerun := err != nil && d.startupRerun
+		d.startupRerun = false
+		if !rerun {
+			d.startupDone, d.startupErr = true, err
+		}
+		d.startupMu.Unlock()
+		if !rerun {
+			return
+		}
 	}
-	if !startup {
+}
+
+// retryStartup gives a failed startup preparation another try after new
+// env or provided values arrive, such as a Bitwarden account password.
+// A preparation still running retries once if it fails. Status reports
+// not ready until the retry finishes.
+func (d *Daemon) retryStartup() {
+	d.startupMu.Lock()
+	defer d.startupMu.Unlock()
+	if !d.startupDone {
+		d.startupRerun = true
 		return
 	}
-	d.startupMu.Lock()
-	d.startupDone, d.startupErr = true, err
-	d.startupMu.Unlock()
+	if d.startupErr == nil {
+		return
+	}
+	d.startupDone, d.startupErr = false, nil
+	go d.prepare(d.Config().Credentials, true)
 }
 
 // Startup reports whether the credential preparation started by New has
@@ -224,18 +254,22 @@ func (d *Daemon) Config() *config.Config {
 }
 
 // checkProvided ensures startup-provided secrets and the config agree:
-// every provided name is a configured credential. When opts.Provided is
-// non-nil, every source: provided credential must also have a value.
+// every provided name is a configured credential slot or Bitwarden account.
+// When opts.Provided is non-nil, every source: provided credential and
+// account password must also have a value.
 // A nil map (the sidecar) skips that check so host values can be PUT after
 // serve is up.
 func (d *Daemon) checkProvided(cfg *config.Config) error {
 	var unknown, missing []string
 	for key := range d.opts.Provided {
 		cred, slot, ok := strings.Cut(key, ".")
-		c, have := cfg.Credentials[cred]
-		if !ok || !have || c.Slot(slot) == nil {
-			unknown = append(unknown, key)
+		if c, have := cfg.Credentials[cred]; ok && have && c.Slot(slot) != nil {
+			continue
 		}
+		if _, have := cfg.Bitwarden[slot]; ok && have && key == config.BitwardenKey(slot) {
+			continue
+		}
+		unknown = append(unknown, key)
 	}
 	if d.opts.Provided != nil {
 		for name, c := range cfg.Credentials {
@@ -250,6 +284,15 @@ func (d *Daemon) checkProvided(cfg *config.Config) error {
 				if _, ok := d.opts.Provided[key]; !ok {
 					missing = append(missing, key)
 				}
+			}
+		}
+		for _, a := range config.BitwardenAccounts(cfg.Credentials) {
+			if a.Password == nil || a.Password.Source != "provided" {
+				continue
+			}
+			key := config.BitwardenKey(a.Name)
+			if _, ok := d.opts.Provided[key]; !ok {
+				missing = append(missing, key)
 			}
 		}
 	}

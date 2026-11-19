@@ -130,6 +130,7 @@ func (d *Daemon) Control() http.Handler {
 			}
 		}
 		d.creds.SetProvided(body)
+		d.retryStartup()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("PUT /_bouncer/credentials/sources/env", func(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +146,7 @@ func (d *Daemon) Control() http.Handler {
 			}
 		}
 		d.creds.SetEnv(body)
+		d.retryStartup()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
