@@ -3,7 +3,7 @@
 # Does not set agent or root.
 # Keep this as the only github overlay.
 # A leftover bouncer.yaml loses, because later files replace slices.
-# Edit github_repo, Bitwarden email, and item names before run.
+# Edit github_repo, the Bitwarden account email, and item names before run.
 # If your context is not named git, rename that key.
 # Copy the whole directory, tests/ included, or delete the tests: line.
 # relativeDir fails the config load when tests/ is missing.
@@ -13,18 +13,21 @@ bouncers:
   github:
     default_profile: default
     tests: '{{ relativeDir "tests" }}'
+    bitwarden:
+      agent:
+        email: you@example.com
     credentials:
       github-pat:
         token:
           source: bitwarden
-          email: you@example.com
+          account: agent
           item: pat-github-agent
           path: $.notes
         export_env: [GH_TOKEN, GITHUB_TOKEN]
       github-ssh:
         private_key:
           source: bitwarden
-          email: you@example.com
+          account: agent
           item: ssh-github
           path: $.sshKey.privateKey
 

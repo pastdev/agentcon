@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	bouncercfg "github.com/pastdev/agentcon/pkg/bouncer/config"
-	"gopkg.in/yaml.v3"
 )
 
 func envCreds(policy []byte, extra []string) (map[string]string, error) {
@@ -15,35 +14,36 @@ func envCreds(policy []byte, extra []string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var cfg bouncercfg.Config
-	err = yaml.Unmarshal(policy, &cfg)
+	cfg, err := parsePolicy(policy)
 	if err != nil {
-		return nil, fmt.Errorf("parse bouncer policy: %w", err)
+		return nil, err
+	}
+	names := map[string]bool{}
+	for _, c := range cfg.Credentials {
+		for _, slot := range c.Slots() {
+			if slot.Source.Source == "env" {
+				names[slot.Source.Env] = true
+			}
+		}
+	}
+	for _, a := range bouncercfg.BitwardenAccounts(cfg.Credentials) {
+		if a.Password != nil && a.Password.Source == "env" {
+			names[a.Password.Env] = true
+		}
 	}
 	out := map[string]string{}
 	var missing []string
-	for name, c := range cfg.Credentials {
-		if c == nil {
+	for name := range names {
+		if v := overlay[name]; v != "" {
+			out[name] = v
 			continue
 		}
-		for _, slot := range c.Slots() {
-			if slot.Source.Source != "env" {
-				continue
-			}
-			if slot.Source.Env == "" {
-				return nil, fmt.Errorf("credential %s %s: source env requires env", name, slot.Name)
-			}
-			if v := overlay[slot.Source.Env]; v != "" {
-				out[slot.Source.Env] = v
-				continue
-			}
-			v, ok := os.LookupEnv(slot.Source.Env)
-			if !ok || v == "" {
-				missing = append(missing, slot.Source.Env)
-				continue
-			}
-			out[slot.Source.Env] = v
+		v, ok := os.LookupEnv(name)
+		if !ok || v == "" {
+			missing = append(missing, name)
+			continue
 		}
+		out[name] = v
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)

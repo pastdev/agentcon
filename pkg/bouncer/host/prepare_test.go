@@ -64,18 +64,59 @@ credentials:
 			},
 		})
 	})
+	t.Run("forwards a bitwarden env password", func(t *testing.T) {
+		tester(t, testCase{
+			policy: `prompts: {cli: false}
+bitwarden:
+  work:
+    email: user@example.com
+    password: {source: env, env: AGENTCON_TEST_BW_MASTER}
+credentials:
+  vault:
+    token:
+      source: bitwarden
+      account: work
+      item: example
+      path: $.login.password
+`,
+			env:  []string{"AGENTCON_TEST_BW_MASTER=fake-test-password"},
+			want: Credentials{Env: map[string]string{"AGENTCON_TEST_BW_MASTER": "fake-test-password"}, Provided: map[string]string{}},
+		})
+	})
+	t.Run("forwards a caller-provided bitwarden password", func(t *testing.T) {
+		tester(t, testCase{
+			policy: `prompts: {cli: false}
+bitwarden:
+  work:
+    email: user@example.com
+    password: {source: provided}
+credentials:
+  vault:
+    token:
+      source: bitwarden
+      account: work
+      item: example
+      path: $.login.password
+`,
+			provided: map[string]string{"bitwarden.work": "fake-test-password"},
+			want:     Credentials{Env: map[string]string{}, Provided: map[string]string{"bitwarden.work": "fake-test-password"}},
+		})
+	})
 	t.Run("refuses an unanswerable policy first", func(t *testing.T) {
 		tester(t, testCase{
 			policy: `prompts: {cli: false}
+bitwarden:
+  work:
+    email: user@example.com
 credentials:
   bw:
     token:
       source: bitwarden
-      email: user@example.com
+      account: work
       item: GitLab
       path: $.login.password
 `,
-			wantErr: "bouncer policy: credentials bw use bitwarden without password_env",
+			wantErr: "bouncer policy: bitwarden accounts work have no password",
 		})
 	})
 	t.Run("names a malformed env entry by position", func(t *testing.T) {

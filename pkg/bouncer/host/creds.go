@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"runtime"
-	"sort"
 	"strings"
 
 	"github.com/pastdev/agentcon/internal/bouncer/creds"
@@ -103,22 +102,15 @@ func CheckPromptable(policy []byte) error {
 		return nil
 	}
 	var names []string
-	for name, c := range cfg.Credentials {
-		if c == nil {
-			continue
-		}
-		for _, slot := range c.Slots() {
-			if slot.Source != nil && slot.Source.Source == "bitwarden" && slot.Source.PasswordEnv == "" {
-				names = append(names, name)
-				break
-			}
+	for _, a := range bouncercfg.BitwardenAccounts(cfg.Credentials) {
+		if a.Password == nil {
+			names = append(names, a.Name)
 		}
 	}
 	if len(names) == 0 {
 		return nil
 	}
-	sort.Strings(names)
-	return fmt.Errorf("credentials %s use bitwarden without password_env, and prompts.cli: false leaves nothing to ask for the master password",
+	return fmt.Errorf("bitwarden accounts %s have no password, and prompts.cli: false leaves nothing to ask for the master password",
 		strings.Join(names, ", "))
 }
 
@@ -147,6 +139,22 @@ func providedCreds(ctx context.Context, policy []byte, extra map[string]string) 
 			}
 			out[key] = v
 		}
+	}
+	// Resolved once per account, however many slots use it.
+	for _, a := range bouncercfg.BitwardenAccounts(cfg.Credentials) {
+		if a.Password == nil {
+			continue
+		}
+		switch a.Password.Source {
+		case "file", "keyring", "command", "provided":
+		default:
+			continue
+		}
+		v, err := store.AccountPassword(ctx, a)
+		if err != nil {
+			return nil, fmt.Errorf("host credential: %w", err)
+		}
+		out[bouncercfg.BitwardenKey(a.Name)] = v
 	}
 	return out, nil
 }

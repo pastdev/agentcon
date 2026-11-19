@@ -142,9 +142,75 @@ credentials:
 		require.NoError(t, err)
 		assert.Equal(t, map[string]string{"SMOKE_USER": "alice"}, env)
 	})
+	t.Run("resolves a bitwarden account password once", func(t *testing.T) {
+		counter := filepath.Join(t.TempDir(), "n")
+		tester(t, testCase{
+			skipWindows: "uses sh",
+			policy: `
+bitwarden:
+  work:
+    email: user@example.com
+    password:
+      source: command
+      command: [sh, -c, "echo run >> ` + counter + `; printf fake-master"]
+  unused:
+    email: unused@example.com
+    password:
+      source: command
+      command: [sh, -c, "exit 1"]
+credentials:
+  a:
+    username:
+      source: bitwarden
+      account: work
+      item: GitLab
+      path: $.login.username
+    password:
+      source: bitwarden
+      account: work
+      item: GitLab
+      path: $.login.password
+  b:
+    token:
+      source: bitwarden
+      account: work
+      item: GitHub
+      path: $.login.password
+`,
+			want: map[string]string{"bitwarden.work": "fake-master"},
+		})
+		if runtime.GOOS == "windows" {
+			return
+		}
+		runs, err := os.ReadFile(counter) //nolint:gosec // the test's own temp file
+		require.NoError(t, err)
+		assert.Equal(t, "run\n", string(runs))
+	})
+	t.Run("names the account when its password fails", func(t *testing.T) {
+		tester(t, testCase{
+			policy: `
+bitwarden:
+  work:
+    email: user@example.com
+    password: {source: provided}
+credentials:
+  bw:
+    token:
+      source: bitwarden
+      account: work
+      item: GitLab
+      path: $.login.password
+`,
+			wantErr: "bitwarden account work password: no value provided",
+		})
+	})
 	t.Run("skips env bitwarden and ssh-agent sources", func(t *testing.T) {
 		tester(t, testCase{
 			policy: `
+bitwarden:
+  work:
+    email: user@example.com
+    password: {source: env, env: UNUSED}
 credentials:
   envtok:
     token:
@@ -153,7 +219,7 @@ credentials:
   bw:
     token:
       source: bitwarden
-      email: user@example.com
+      account: work
       item: GitLab
       path: $.login.password
   key:

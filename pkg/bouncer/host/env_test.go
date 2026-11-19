@@ -76,21 +76,67 @@ credentials:
 			wantErr: []string{"SMOKE_TOKEN", "OTHER_TOKEN"},
 		})
 	})
+	t.Run("reads a bitwarden env password from the process environment", func(t *testing.T) {
+		tester(t, testCase{
+			policy: bitwardenPolicy("{source: env, env: BW_MASTER}"),
+			setenv: map[string]string{"BW_MASTER": "fake-from-os"},
+			want:   map[string]string{"BW_MASTER": "fake-from-os"},
+		})
+	})
+	t.Run("lets extra pairs win for a bitwarden env password", func(t *testing.T) {
+		tester(t, testCase{
+			policy: bitwardenPolicy("{source: env, env: BW_MASTER}"),
+			setenv: map[string]string{"BW_MASTER": "fake-from-os"},
+			extra:  []string{"BW_MASTER=fake-from-extra"},
+			want:   map[string]string{"BW_MASTER": "fake-from-extra"},
+		})
+	})
+	t.Run("reports a missing bitwarden env password", func(t *testing.T) {
+		tester(t, testCase{
+			policy:  bitwardenPolicy("{source: env, env: BW_MASTER}"),
+			setenv:  map[string]string{"BW_MASTER": ""},
+			wantErr: []string{"missing BW_MASTER"},
+		})
+	})
+	t.Run("names a variable shared by a slot and an account once", func(t *testing.T) {
+		_, err := envCreds([]byte(bitwardenPolicy("{source: env, env: AGENTCON_TEST_UNSET}")+`  tok:
+    token:
+      source: env
+      env: AGENTCON_TEST_UNSET
+`), nil)
+		require.EqualError(t, err, "missing AGENTCON_TEST_UNSET")
+	})
+	t.Run("skips an unused account", func(t *testing.T) {
+		tester(t, testCase{
+			policy: "bitwarden:\n  unused:\n    email: u@example.com\n    password: {source: env, env: AGENTCON_TEST_UNSET}\n",
+			want:   map[string]string{},
+		})
+	})
 	t.Run("skips non-env sources", func(t *testing.T) {
 		tester(t, testCase{
-			policy: `
+			policy: bitwardenPolicy("{source: command, command: [unused]}"),
+			extra:  []string{"UNUSED=1"},
+			want:   map[string]string{},
+		})
+	})
+}
+
+// bitwardenPolicy is a policy whose bw credential uses account work with
+// the given password source.
+func bitwardenPolicy(password string) string {
+	return `
+bitwarden:
+  work:
+    email: user@example.com
+    password: ` + password + `
 credentials:
   bw:
     token:
       source: bitwarden
-      email: user@example.com
+      account: work
       item: GitLab
       path: $.login.password
-`,
-			extra: []string{"UNUSED=1"},
-			want:  map[string]string{},
-		})
-	})
+`
 }
 
 func TestParseEnvPairs(t *testing.T) {

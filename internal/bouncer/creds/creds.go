@@ -125,7 +125,8 @@ func (s *Store) SetProvided(values map[string]string) {
 	s.cache = map[string]cached{}
 }
 
-// SetEnv replaces the source: env overlay. Keys are environment variable
+// SetEnv replaces the source: env overlay, which Bitwarden account
+// passwords with source: env also read. Keys are environment variable
 // names. Empty keys and values are ignored.
 func (s *Store) SetEnv(vars map[string]string) {
 	s.mu.Lock()
@@ -158,7 +159,8 @@ func (s *Store) providedValue(name string) (string, bool) {
 }
 
 // MissingProvided lists credential slots with source: provided that have no
-// startup value. Names are credential.slot.
+// startup value, and Bitwarden accounts whose password is source: provided.
+// Names are credential.slot or config.BitwardenKey.
 func (s *Store) MissingProvided() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -168,7 +170,7 @@ func (s *Store) MissingProvided() []string {
 			continue
 		}
 		for _, slot := range c.Slots() {
-			if slot.Source.Source != "provided" {
+			if !isProvided(slot.Source) {
 				continue
 			}
 			key := config.ProvidedKey(name, slot.Name)
@@ -177,8 +179,21 @@ func (s *Store) MissingProvided() []string {
 			}
 		}
 	}
+	for _, a := range config.BitwardenAccounts(s.creds) {
+		if !isProvided(a.Password) {
+			continue
+		}
+		key := config.BitwardenKey(a.Name)
+		if _, ok := s.provided[key]; !ok {
+			out = append(out, key)
+		}
+	}
 	sort.Strings(out)
 	return out
+}
+
+func isProvided(src *config.ValueSource) bool {
+	return src != nil && src.Source == "provided"
 }
 
 // ConfigureBitwarden sets where the process stores its Bitwarden device id
@@ -194,31 +209,42 @@ func ConfigureBitwarden(stateDir string, log zerolog.Logger, prompts *prompt.Bro
 // mid-request. It blocks until each vault is unlocked or fails. Vaults stay
 // unlocked until the process exits.
 func (s *Store) Prepare(ctx context.Context, creds map[string]*config.Credential) error {
-	var accounts []bitwarden.Account
-	for _, c := range creds {
-		if c == nil {
-			continue
+	for _, a := range config.BitwardenAccounts(creds) {
+		err := bitwarden.Unlock(ctx, []bitwarden.Account{s.bitwardenAccount(a)})
+		if err != nil {
+			return fmt.Errorf("bitwarden unlock %s: %w", a.Name, err)
 		}
-		for _, slot := range c.Slots() {
-			src := slot.Source
-			if src == nil || src.Source != "bitwarden" {
-				continue
-			}
-			accounts = append(accounts, bitwarden.Account{
-				Email:       src.Email,
-				Server:      src.Server,
-				PasswordEnv: src.PasswordEnv,
-			})
-		}
-	}
-	if len(accounts) == 0 {
-		return nil
-	}
-	err := bitwarden.Unlock(ctx, accounts)
-	if err != nil {
-		return fmt.Errorf("bitwarden unlock: %w", err)
 	}
 	return nil
+}
+
+// AccountPassword resolves a Bitwarden account's master password: a
+// provided value under config.BitwardenKey first, then its configured
+// source. The account must have a password.
+func (s *Store) AccountPassword(ctx context.Context, a *config.BitwardenAccount) (string, error) {
+	key := config.BitwardenKey(a.Name)
+	if v, ok := s.providedValue(key); ok {
+		return v, nil
+	}
+	if a.Password == nil {
+		return "", fmt.Errorf("bitwarden account %s has no password", a.Name)
+	}
+	v, err := s.fetchValue(ctx, key, a.Password)
+	if err != nil {
+		return "", fmt.Errorf("bitwarden account %s password: %w", a.Name, err)
+	}
+	if v == "" {
+		return "", fmt.Errorf("bitwarden account %s password: empty secret", a.Name)
+	}
+	return v, nil
+}
+
+func (s *Store) bitwardenAccount(a *config.BitwardenAccount) bitwarden.Account {
+	out := bitwarden.Account{Email: a.Email, Server: a.Server}
+	if a.Password != nil {
+		out.Password = func(ctx context.Context) (string, error) { return s.AccountPassword(ctx, a) }
+	}
+	return out
 }
 
 // Update swaps in a new credential set (on config reload), dropping cache
@@ -379,7 +405,7 @@ func (s *Store) fetchPayload(ctx context.Context, credName string, src *config.V
 		return strings.TrimRight(string(out), "\r\n"), nil
 	case "bitwarden":
 		raw, err := bitwarden.ItemJSON(ctx, bitwarden.Query{
-			Account: bitwarden.Account{Email: src.Email, Server: src.Server, PasswordEnv: src.PasswordEnv},
+			Account: s.bitwardenAccount(src.Bitwarden),
 			Item:    src.Item,
 			Folder:  src.Folder,
 		})

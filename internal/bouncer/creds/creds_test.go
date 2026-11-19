@@ -109,11 +109,34 @@ func TestGet(t *testing.T) {
 		t.Cleanup(srv.Close)
 		ConfigureBitwarden(t.TempDir(), zerolog.Nop(), prompt.NewBroker(time.Minute))
 		s := NewStore(map[string]*config.Credential{"bw": tokenCred("bw", config.ValueSource{
-			Source: "bitwarden", Email: "user@example.com", Server: srv.URL, Item: "GitLab", Path: "$.login.password",
+			Source: "bitwarden", Account: "work", Item: "GitLab", Path: "$.login.password",
+			Bitwarden: &config.BitwardenAccount{Name: "work", Email: "user@example.com", Server: srv.URL},
 		})})
 		_, err := s.Get(context.Background(), "bw")
 		require.ErrorContains(t, err, `credential "bw"`)
 		require.ErrorContains(t, err, "prelogin")
+	})
+	t.Run("unlocks bitwarden with a password from the env overlay", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/identity/accounts/prelogin" {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write([]byte(`{"kdf":0,"kdfIterations":1000}`))
+		}))
+		t.Cleanup(srv.Close)
+		ConfigureBitwarden(t.TempDir(), zerolog.Nop(), prompt.NewBroker(time.Minute))
+		s := NewStore(map[string]*config.Credential{"bw": tokenCred("bw", config.ValueSource{
+			Source: "bitwarden", Account: "work", Item: "GitLab", Path: "$.login.password",
+			Bitwarden: &config.BitwardenAccount{Name: "work", Email: "user@example.com", Server: srv.URL,
+				Password: &config.ValueSource{Source: "env", Env: "BOUNCER_TEST_BW_MASTER"}},
+		})})
+		_, err := s.Get(context.Background(), "bw")
+		require.ErrorContains(t, err, "bitwarden account work password: environment variable BOUNCER_TEST_BW_MASTER is not set")
+		s.SetEnv(map[string]string{"BOUNCER_TEST_BW_MASTER": "fake-test-password"})
+		_, err = s.Get(context.Background(), "bw")
+		require.Error(t, err, "the fake vault has no login endpoint")
+		assert.NotContains(t, err.Error(), "is not set")
 	})
 	t.Run("fills composite username and password slots", func(t *testing.T) {
 		c := &config.Credential{
@@ -136,6 +159,95 @@ func TestGet(t *testing.T) {
 			wantOver: "oauth2",
 		})
 	})
+}
+
+func TestAccountPassword(t *testing.T) {
+	type testCase struct {
+		password *config.ValueSource
+		provided map[string]string
+		env      map[string]string
+		setenv   map[string]string
+		skipWin  string
+		want     string
+		wantErr  string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		if tc.skipWin != "" && runtime.GOOS == "windows" {
+			t.Skip(tc.skipWin)
+		}
+		for k, v := range tc.setenv {
+			t.Setenv(k, v)
+		}
+		s := NewStore(map[string]*config.Credential{})
+		s.SetProvided(tc.provided)
+		s.SetEnv(tc.env)
+		got, err := s.AccountPassword(context.Background(), &config.BitwardenAccount{Name: "work", Email: "user@example.com", Password: tc.password})
+		if tc.wantErr != "" {
+			require.ErrorContains(t, err, tc.wantErr)
+			return
+		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
+	}
+
+	t.Run("prefers a provided value", func(t *testing.T) {
+		tester(t, testCase{
+			password: &config.ValueSource{Source: "env", Env: "BOUNCER_TEST_BW_MASTER"},
+			provided: map[string]string{"bitwarden.work": "from-provided"},
+			env:      map[string]string{"BOUNCER_TEST_BW_MASTER": "from-overlay"},
+			want:     "from-provided",
+		})
+	})
+	t.Run("reads env from the overlay before the process", func(t *testing.T) {
+		tester(t, testCase{
+			password: &config.ValueSource{Source: "env", Env: "BOUNCER_TEST_BW_MASTER"},
+			env:      map[string]string{"BOUNCER_TEST_BW_MASTER": "from-overlay"},
+			setenv:   map[string]string{"BOUNCER_TEST_BW_MASTER": "from-os"},
+			want:     "from-overlay",
+		})
+	})
+	t.Run("falls back to the process env", func(t *testing.T) {
+		tester(t, testCase{
+			password: &config.ValueSource{Source: "env", Env: "BOUNCER_TEST_BW_MASTER"},
+			setenv:   map[string]string{"BOUNCER_TEST_BW_MASTER": "from-os"},
+			want:     "from-os",
+		})
+	})
+	t.Run("runs a command", func(t *testing.T) {
+		tester(t, testCase{
+			password: &config.ValueSource{Source: "command", Command: []string{"sh", "-c", "printf 'from-command\\n'"}},
+			skipWin:  "uses sh",
+			want:     "from-command",
+		})
+	})
+	t.Run("names the account when the source fails", func(t *testing.T) {
+		tester(t, testCase{
+			password: &config.ValueSource{Source: "provided"},
+			wantErr:  "bitwarden account work password: no value provided",
+		})
+	})
+	t.Run("rejects an empty value", func(t *testing.T) {
+		tester(t, testCase{
+			password: &config.ValueSource{Source: "env", Env: "BOUNCER_TEST_BW_MASTER"},
+			setenv:   map[string]string{"BOUNCER_TEST_BW_MASTER": ""},
+			wantErr:  "bitwarden account work password: empty secret",
+		})
+	})
+	t.Run("needs a password", func(t *testing.T) {
+		tester(t, testCase{wantErr: "bitwarden account work has no password"})
+	})
+}
+
+func TestMissingProvided(t *testing.T) {
+	work := &config.BitwardenAccount{Name: "work", Email: "user@example.com", Password: &config.ValueSource{Source: "provided"}}
+	s := NewStore(map[string]*config.Credential{
+		"bw":  tokenCred("bw", config.ValueSource{Source: "bitwarden", Account: "work", Bitwarden: work}),
+		"tok": tokenCred("tok", config.ValueSource{Source: "provided"}),
+	})
+	assert.Equal(t, []string{"bitwarden.work", "tok.token"}, s.MissingProvided())
+	s.SetProvided(map[string]string{"bitwarden.work": "x"})
+	assert.Equal(t, []string{"tok.token"}, s.MissingProvided())
 }
 
 func TestExtractJSONPath(t *testing.T) {

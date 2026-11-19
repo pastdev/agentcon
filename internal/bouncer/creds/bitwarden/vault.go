@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pastdev/agentcon/pkg/bouncer/config"
 	"github.com/rs/zerolog"
 )
 
@@ -26,9 +27,9 @@ type Account struct {
 	// Server is the vault base URL. Empty means bitwarden.com.
 	// A self-hosted URL such as https://vault.example.com is used as-is.
 	Server string
-	// PasswordEnv, when set, is an environment variable holding the master
-	// password. Otherwise the prompter asks for it when the vault unlocks.
-	PasswordEnv string
+	// Password, when set, returns the master password. It is tried once.
+	// Otherwise the prompter asks for it when the vault unlocks.
+	Password func(context.Context) (string, error)
 }
 
 // Query selects one field of one item.
@@ -46,7 +47,7 @@ type Options struct {
 	StateDir string
 	Log      zerolog.Logger
 	// Prompt asks for master passwords and verification codes. It is fixed
-	// for the life of the set. Nil means only password_env can unlock.
+	// for the life of the set. Nil means only Account.Password can unlock.
 	Prompt Prompter
 }
 
@@ -145,7 +146,8 @@ func New(opt Options) *Vaults {
 	}
 }
 
-// Unlock syncs and unlocks each distinct account.
+// Unlock syncs and unlocks each distinct account. When accounts repeat an
+// email and server, the first one is used.
 func (v *Vaults) Unlock(ctx context.Context, accounts []Account) error {
 	seen := map[string]Account{}
 	var keys []string
@@ -154,14 +156,7 @@ func (v *Vaults) Unlock(ctx context.Context, accounts []Account) error {
 		if err != nil {
 			return fmt.Errorf("bitwarden: %w", err)
 		}
-		if prev, ok := seen[k]; ok {
-			if prev.PasswordEnv != "" && a.PasswordEnv != "" && prev.PasswordEnv != a.PasswordEnv {
-				return fmt.Errorf("bitwarden account %s: conflicting password_env %q and %q", normalizeEmail(a.Email), prev.PasswordEnv, a.PasswordEnv)
-			}
-			if prev.PasswordEnv == "" && a.PasswordEnv != "" {
-				prev.PasswordEnv = a.PasswordEnv
-				seen[k] = prev
-			}
+		if _, ok := seen[k]; ok {
 			continue
 		}
 		seen[k] = a
@@ -229,15 +224,11 @@ func (v *Vaults) ensure(ctx context.Context, a Account) (*unlocked, error) {
 }
 
 func accountKey(a Account) (string, error) {
-	email := normalizeEmail(a.Email)
-	if email == "" {
-		return "", errors.New("email is empty")
-	}
-	apiBase, identityBase, err := endpoints(a.Server)
+	key, err := config.BitwardenVault(a.Email, a.Server)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("vault identity: %w", err)
 	}
-	return email + "\n" + apiBase + "\n" + identityBase, nil
+	return key, nil
 }
 
 func normalizeEmail(s string) string {
@@ -254,7 +245,7 @@ func (a Account) label() string {
 
 func (v *Vaults) unlock(ctx context.Context, a Account) (*unlocked, error) {
 	email := normalizeEmail(a.Email)
-	apiBase, identityBase, err := endpoints(a.Server)
+	apiBase, identityBase, err := config.BitwardenEndpoints(a.Server)
 	if err != nil {
 		return nil, fmt.Errorf("bitwarden: %w", err)
 	}
@@ -292,7 +283,7 @@ func (v *Vaults) unlock(ctx context.Context, a Account) (*unlocked, error) {
 	}
 
 	attempts := 3
-	if a.PasswordEnv != "" {
+	if a.Password != nil {
 		attempts = 1
 	}
 	var lastErr error
@@ -356,15 +347,18 @@ func (v *Vaults) unlock(ctx context.Context, a Account) (*unlocked, error) {
 }
 
 func (v *Vaults) masterPassword(ctx context.Context, a Account, attempt, attempts int) (string, error) {
-	if a.PasswordEnv != "" {
-		pw, ok := os.LookupEnv(a.PasswordEnv)
-		if !ok || pw == "" {
-			return "", fmt.Errorf("environment variable %s is not set", a.PasswordEnv)
+	if a.Password != nil {
+		pw, err := a.Password(ctx)
+		if err != nil {
+			return "", fmt.Errorf("master password: %w", err)
+		}
+		if pw == "" {
+			return "", errors.New("master password is empty")
 		}
 		return pw, nil
 	}
 	if v.prompt == nil {
-		return "", fmt.Errorf("master password for %s required and nothing can ask for it; set password_env", a.label())
+		return "", fmt.Errorf("master password for %s required and nothing can ask for it; set the account password", a.label())
 	}
 	pw, err := v.prompt.MasterPassword(ctx, a.label(), attempt, attempts)
 	if err != nil {
