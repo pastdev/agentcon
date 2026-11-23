@@ -171,16 +171,52 @@ func TestCreateSessionClaims(t *testing.T) {
 	t.Run("an empty value list rejects the create", func(t *testing.T) {
 		tester(t, testCase{claims: map[string][]string{"repository": {}}, wantErr: "no values"})
 	})
-	t.Run("a raw request with a non-object claims field is rejected", func(t *testing.T) {
+}
+
+func TestCreateSessionRawBody(t *testing.T) {
+	type testCase struct {
+		body       string
+		wantStatus int
+		wantErr    string
+		wantClaims claims.Set
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
 		cd := newClaimDaemon(t, "")
 		token, err := os.ReadFile(AdminTokenPath(cd.state))
 		require.NoError(t, err)
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/_bouncer/sessions", strings.NewReader(`{"claims":["repository"]}`))
+		req := httptest.NewRequest(http.MethodPost, "/_bouncer/sessions", strings.NewReader(tc.body))
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
 		cd.d.Control().ServeHTTP(rec, req)
-		assert.Equal(t, http.StatusBadRequest, rec.Code)
-		assert.Empty(t, cd.d.listSessions())
+		require.Equal(t, tc.wantStatus, rec.Code, rec.Body.String())
+		list := cd.d.listSessions()
+		if tc.wantStatus != http.StatusOK {
+			assert.Contains(t, rec.Body.String(), tc.wantErr)
+			assert.Empty(t, list, "a rejected create made a session")
+			return
+		}
+		require.Len(t, list, 1)
+		assert.Equal(t, tc.wantClaims, list[0].Claims)
+	}
+
+	t.Run("a non-object claims field", func(t *testing.T) {
+		tester(t, testCase{body: `{"claims":["repository"]}`, wantStatus: http.StatusBadRequest, wantErr: "cannot unmarshal"})
+	})
+	t.Run("invalid utf8 is not replaced", func(t *testing.T) {
+		tester(t, testCase{body: "{\"claims\":{\"t\":[\"a\xffb\"]}}", wantStatus: http.StatusBadRequest, wantErr: "not valid UTF-8"})
+	})
+	t.Run("an unpaired surrogate is not replaced", func(t *testing.T) {
+		tester(t, testCase{body: `{"claims":{"t":["a\ud800b"]}}`, wantStatus: http.StatusBadRequest, wantErr: "unpaired surrogate"})
+	})
+	t.Run("a duplicate claim type cannot hide an invalid value", func(t *testing.T) {
+		tester(t, testCase{body: `{"claims":{"t":["bad\n"],"t":["ok"]}}`, wantStatus: http.StatusBadRequest, wantErr: `repeats the member "t"`})
+	})
+	t.Run("a duplicate claims key cannot hide invalid claims", func(t *testing.T) {
+		tester(t, testCase{body: `{"claims":{"t":["bad\n"]},"claims":{}}`, wantStatus: http.StatusBadRequest, wantErr: `repeats the member "claims"`})
+	})
+	t.Run("a paired surrogate escape is kept exactly", func(t *testing.T) {
+		tester(t, testCase{body: `{"claims":{"t":["a\ud83d\ude00b"]}}`, wantStatus: http.StatusOK, wantClaims: claims.Set{"t": {"a😀b"}}})
 	})
 }
 

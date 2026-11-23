@@ -143,8 +143,9 @@ type createSession struct {
 }
 
 // WithClaims seeds the session's claims, a map from claim type to values.
-// The daemon rejects the whole request, creating no session, when any
-// claim is invalid or the set exceeds a limit (see package claims).
+// When any claim is invalid or the set exceeds a limit (see package
+// claims), CreateSession fails without sending the request, and the daemon
+// would reject it too, creating no session.
 func WithClaims(c map[string][]string) SessionOption {
 	return func(s *createSession) { s.Claims = c }
 }
@@ -155,6 +156,14 @@ func (c *Client) CreateSession(ctx context.Context, id, profile, label, ttl stri
 	body := createSession{ID: id, Profile: profile, Label: label, TTL: ttl}
 	for _, o := range opts {
 		o(&body)
+	}
+	// JSON encoding turns invalid UTF-8 into U+FFFD, which would change a
+	// value the daemon compares exactly, so check before sending.
+	if body.Claims != nil {
+		_, err := claims.FromMap(body.Claims)
+		if err != nil {
+			return NewSession{}, fmt.Errorf("claims: %w", err)
+		}
 	}
 	var rec NewSession
 	err := c.do(ctx, http.MethodPost, "/_bouncer/sessions", body, &rec)

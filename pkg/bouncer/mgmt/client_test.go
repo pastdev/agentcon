@@ -165,6 +165,18 @@ func TestClient(t *testing.T) {
 			},
 		})
 	})
+	t.Run("invalid claims are refused before sending", func(t *testing.T) {
+		called := false
+		tester(t, testCase{
+			handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }),
+			check: func(t *testing.T, c *Client) {
+				t.Helper()
+				_, err := c.CreateSession(t.Context(), "", "", "x", "", WithClaims(map[string][]string{"repository": {"ok", "a\xffb"}}))
+				require.ErrorContains(t, err, "claims: claim repository value 2: claim value is not valid UTF-8")
+				assert.False(t, called, "the request was sent")
+			},
+		})
+	})
 	t.Run("returns the trust bundle", func(t *testing.T) {
 		tester(t, testCase{
 			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

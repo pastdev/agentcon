@@ -597,6 +597,7 @@ TOTP values expire.
 Create a session, then fetch the CA.
 `claims` is optional and seeds the session's [claims](bouncer-filters.md#session-claims).
 Any invalid claim, or a set over a limit, rejects the whole request with 400 and creates no session.
+Claims compare exactly, so the request body must also be valid UTF-8 with no unpaired surrogate escapes and no repeated member names.
 `GET /_bouncer/sessions` lists each session with its current claims.
 From Go, pass `mgmt.WithClaims` to `CreateSession`.
 
