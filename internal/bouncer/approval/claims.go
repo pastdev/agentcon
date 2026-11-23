@@ -27,10 +27,16 @@ type ClaimStore interface {
 	AddClaim(s *chain.Session, c claims.Claim, filter, promptID string) error
 }
 
-// claimWait is one claim prompt shared by identical requests.
+// claimWait is one claim prompt shared by identical requests. While it is
+// pending, its claim holds a slot against the session's limits.
 type claimWait struct {
 	waiting
+	// session is the session id and instance.
+	session  string
 	instance string
+	claim    claims.Claim
+	// reserves is false for a shared session, which never gains claims.
+	reserves bool
 	// cancel withdraws the prompt.
 	cancel context.CancelFunc
 }
@@ -75,11 +81,12 @@ func (c *Claims) RequestClaim(ctx context.Context, r chain.ClaimRequest) (bool, 
 		return false, errors.New("claim request has no session")
 	}
 	sess := r.Session
-	jk := sess.ID + "\x00" + sess.Instance + "\x00" + r.Claim.Type + "\x00" + r.Claim.Value
+	sk := sess.ID + "\x00" + sess.Instance
+	jk := sk + "\x00" + r.Claim.Type + "\x00" + r.Claim.Value
 
-	// The store check and the join happen under mu, and an approved claim
-	// is stored before its join entry goes away, so a request never prompts
-	// for a claim that a settled prompt just added.
+	// The store check, the join, and the reservation happen under mu, and
+	// an approved claim is stored before its join entry goes away, so a
+	// request never prompts for a claim that a settled prompt just added.
 	c.mu.Lock()
 	current := claims.Set{}
 	if !sess.Shared {
@@ -94,11 +101,6 @@ func (c *Claims) RequestClaim(ctx context.Context, r chain.ClaimRequest) (bool, 
 		c.mu.Unlock()
 		return true, nil
 	}
-	err = current.Check(r.Claim.Type, r.Claim.Value)
-	if err != nil {
-		c.mu.Unlock()
-		return false, fmt.Errorf("%w: %w", chain.ErrClaimRejected, err)
-	}
 	if w, ok := c.byJoin[jk]; ok {
 		c.mu.Unlock()
 		select {
@@ -108,6 +110,13 @@ func (c *Claims) RequestClaim(ctx context.Context, r chain.ClaimRequest) (bool, 
 			return false, fmt.Errorf("claim prompt %s: %w", w.id, ctx.Err())
 		}
 	}
+	// Pending prompts hold their slots, so every grant an operator approves
+	// fits within the limits.
+	err = c.reservedLocked(sk, current).Check(r.Claim.Type, r.Claim.Value)
+	if err != nil {
+		c.mu.Unlock()
+		return false, fmt.Errorf("%w: %w", chain.ErrClaimRejected, err)
+	}
 	claim := r.Claim
 	t := c.b.Raise(prompt.Question{
 		Kind: prompt.KindClaim, Source: "filter:" + r.Filter, Message: r.Prompt, Detail: r.Request,
@@ -116,7 +125,14 @@ func (c *Claims) RequestClaim(ctx context.Context, r chain.ClaimRequest) (bool, 
 	})
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	w := &claimWait{waiting: waiting{id: t.ID(), done: make(chan struct{})}, instance: sess.Instance, cancel: cancel}
+	w := &claimWait{
+		waiting:  waiting{id: t.ID(), done: make(chan struct{})},
+		session:  sk,
+		instance: sess.Instance,
+		claim:    claim,
+		reserves: !sess.Shared,
+		cancel:   cancel,
+	}
 	c.byJoin[jk] = w
 	c.mu.Unlock()
 
@@ -145,4 +161,17 @@ func (c *Claims) RequestClaim(ctx context.Context, r chain.ClaimRequest) (bool, 
 		return true, fmt.Errorf("claim %s allowed once, not added: %w", claim.Type, addErr)
 	}
 	return allow, nil
+}
+
+// reservedLocked returns current plus the claims of the session's pending
+// prompts. Caller holds mu.
+func (c *Claims) reservedLocked(session string, current claims.Set) claims.Set {
+	out := current.Clone()
+	for _, w := range c.byJoin {
+		if w.reserves && w.session == session {
+			// Each was checked against the limits when it was raised.
+			_, _ = out.Add(w.claim.Type, w.claim.Value)
+		}
+	}
+	return out
 }

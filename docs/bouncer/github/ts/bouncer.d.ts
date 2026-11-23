@@ -192,7 +192,8 @@ declare module "bouncer" {
    *   not remembered, so a later request asks again.
    *
    * Throws, without asking, when the type or value is invalid or the
-   * session's claim limits would be exceeded. Identical concurrent
+   * session's claim limits would be exceeded, counting claims still
+   * waiting on an answer. Identical concurrent
    * requests in a session share one prompt. The shared anonymous session
    * never gains claims: "for this session" counts as once there.
    */

@@ -133,7 +133,13 @@ func (i *instance) installHost() error {
 			panic(vm.NewTypeError("requestClaim: " + err.Error()))
 		}
 		if err != nil {
-			i.log(zerolog.WarnLevel, "requestClaim() failed: "+err.Error(), nil)
+			// An allowed request with an error is a grant that could not
+			// be added, which the operator should hear about.
+			level := zerolog.WarnLevel
+			if ok {
+				level = zerolog.ErrorLevel
+			}
+			i.log(level, "requestClaim() failed: "+err.Error(), nil)
 		}
 		return i.resolved(vm.ToValue(ok))
 	})

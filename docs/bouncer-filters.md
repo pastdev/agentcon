@@ -192,6 +192,7 @@ Claim rules are exact.
   Canonicalize values the same way in the host and in filters.
 
 `requestClaim()` throws, without asking, when the type or value breaks these rules or the session is at a limit.
+Claims still waiting on an answer count toward the limits, so a grant the operator approves always fits.
 An uncaught throw denies the request.
 
 [gitlab-issue-scope.ts](bouncer/reference/ts/filters/gitlab-issue-scope.ts) allows GitLab issue creation in the session's repositories and asks for any other.

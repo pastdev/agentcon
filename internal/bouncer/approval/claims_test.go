@@ -390,6 +390,75 @@ func TestRequestClaimSequences(t *testing.T) {
 		assert.Equal(t, claims.Set{}, got, "the new session gained the old session's claim")
 		assert.Empty(t, store.added)
 	})
+	t.Run("pending prompts hold their slots against the limits", func(t *testing.T) {
+		b := prompt.NewBroker(time.Minute)
+		almost := claims.Set{}
+		for i := range claims.MaxTypes - 1 {
+			almost[fmt.Sprintf("t%02d", i)] = []string{"v"}
+		}
+		store := newMemStore(map[string]claims.Set{"s1": almost})
+		c := NewClaims(b, store)
+		sess := &chain.Session{ID: "s1"}
+		req := func(typ string) chain.ClaimRequest {
+			return chain.ClaimRequest{Session: sess, Filter: "f", Prompt: "?", Claim: claims.Claim{Type: typ, Value: "v"}}
+		}
+
+		first := make(chan bool, 1)
+		go func() {
+			ok, _ := c.RequestClaim(context.Background(), req("new_a"))
+			first <- ok
+		}()
+		require.Eventually(t, func() bool { return len(b.List()) == 1 }, time.Second, 5*time.Millisecond)
+		pending := b.List()[0]
+
+		ok, err := c.RequestClaim(context.Background(), req("new_b"))
+		require.ErrorIs(t, err, chain.ErrClaimRejected, "a second new type fit while the last slot was reserved")
+		require.ErrorIs(t, err, claims.ErrLimit)
+		assert.False(t, ok)
+		assert.Len(t, b.List(), 1, "the over-limit request prompted")
+
+		joined := make(chan bool, 1)
+		go func() {
+			ok, _ := c.RequestClaim(context.Background(), req("new_a"))
+			joined <- ok
+		}()
+		time.Sleep(20 * time.Millisecond)
+		assert.Len(t, b.List(), 1, "an identical request did not join")
+
+		require.NoError(t, b.Answer(pending.ID, prompt.Answer{Allow: true}))
+		assert.True(t, <-first)
+		assert.True(t, <-joined)
+
+		// Allowed once, so the slot is free again.
+		second := make(chan bool, 1)
+		go func() {
+			ok, _ := c.RequestClaim(context.Background(), req("new_b"))
+			second <- ok
+		}()
+		require.Eventually(t, func() bool { return len(b.List()) == 1 }, time.Second, 5*time.Millisecond)
+		require.NoError(t, b.Answer(b.List()[0].ID, prompt.Answer{Allow: true, Remember: true}))
+		assert.True(t, <-second)
+		assert.Len(t, store.get("s1"), claims.MaxTypes)
+	})
+	t.Run("another session's pending prompts hold no slots here", func(t *testing.T) {
+		b := prompt.NewBroker(time.Minute)
+		almost := claims.Set{}
+		for i := range claims.MaxTypes - 1 {
+			almost[fmt.Sprintf("t%02d", i)] = []string{"v"}
+		}
+		store := newMemStore(map[string]claims.Set{"s1": almost, "s2": almost.Clone()})
+		c := NewClaims(b, store)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			_, _ = c.RequestClaim(ctx, chain.ClaimRequest{Session: &chain.Session{ID: "s1"}, Claim: claims.Claim{Type: "new_a", Value: "v"}})
+		}()
+		require.Eventually(t, func() bool { return len(b.List()) == 1 }, time.Second, 5*time.Millisecond)
+		go func() {
+			_, _ = c.RequestClaim(ctx, chain.ClaimRequest{Session: &chain.Session{ID: "s2"}, Claim: claims.Claim{Type: "new_b", Value: "v"}})
+		}()
+		require.Eventually(t, func() bool { return len(b.List()) == 2 }, time.Second, 5*time.Millisecond)
+	})
 	t.Run("a joiner leaves when its context ends", func(t *testing.T) {
 		b := prompt.NewBroker(time.Minute)
 		store := newMemStore(map[string]claims.Set{"s1": {}})
