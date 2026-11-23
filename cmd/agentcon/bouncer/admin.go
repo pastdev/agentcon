@@ -36,7 +36,11 @@ func promptsCmd() *cobra.Command {
 			for _, p := range list {
 				detail := d(p.Detail, 80)
 				if p.Claim != nil {
-					detail = "claim " + d(p.Claim.Type, 64) + "=" + d(p.Claim.Value, 80) + "; " + detail
+					value := d(p.Claim.Value, 80)
+					if len([]rune(p.Claim.Value)) > 80 {
+						value += " (agentcon bouncer answer " + p.ID + " shows it in full)"
+					}
+					detail = "claim " + d(p.Claim.Type, 64) + "=" + value + "; " + detail
 				}
 				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.ID, p.Kind, d(p.Source, 60), d(p.SessionLabel, 60),
 					d(p.Message, 80), detail, time.Until(p.Expires).Round(time.Second))

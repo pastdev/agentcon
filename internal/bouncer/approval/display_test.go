@@ -89,6 +89,22 @@ func TestClaimLines(t *testing.T) {
 			want: "  claim: repository=g/c\n  session claims: none\n",
 		})
 	})
+	t.Run("shows a maximum-length requested value in full", func(t *testing.T) {
+		base := strings.Repeat("v", claims.MaxValueBytes-1)
+		a := ClaimLines(prompt.Pending{Claim: &claims.Claim{Type: "repository", Value: base + "a"}, SessionClaims: claims.Set{}}, "")
+		b := ClaimLines(prompt.Pending{Claim: &claims.Claim{Type: "repository", Value: base + "b"}, SessionClaims: claims.Set{}}, "")
+		assert.Contains(t, a, "claim: repository="+base+"a\n")
+		assert.Contains(t, b, "claim: repository="+base+"b\n")
+		assert.NotEqual(t, a, b)
+		assert.NotContains(t, a, "more characters")
+	})
+	t.Run("cuts off long current values", func(t *testing.T) {
+		long := strings.Repeat("v", 200)
+		tester(t, testCase{
+			p:    prompt.Pending{Claim: &claims.Claim{Type: "t", Value: "x"}, SessionClaims: claims.Set{"t": {long}}},
+			want: "  claim: t=x\n  session claims:\n    t: " + strings.Repeat("v", 120) + "… [80 more characters]\n",
+		})
+	})
 	t.Run("cuts off long lists and escapes invisible characters", func(t *testing.T) {
 		tester(t, testCase{
 			p: prompt.Pending{

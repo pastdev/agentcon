@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
@@ -41,12 +42,16 @@ const (
 
 // ClaimLines describes a claim prompt for a terminal: the requested claim,
 // then the session's current claims grouped by type. Each line starts with
-// indent and ends with a newline. Long values and long lists are cut off
-// visibly.
+// indent and ends with a newline. The requested claim is shown in full, so
+// distinct values never look the same. The current claims are context, so
+// long values and long lists are cut off visibly.
 func ClaimLines(p prompt.Pending, indent string) string {
 	var b strings.Builder
 	if p.Claim != nil {
-		fmt.Fprintf(&b, "%sclaim: %s=%s\n", indent, Display(p.Claim.Type, 64), Display(p.Claim.Value, displayClaimValue))
+		// A valid value is at most MaxValueBytes bytes, so at most that many
+		// runes: this limit never cuts one.
+		fmt.Fprintf(&b, "%sclaim: %s=%s\n", indent,
+			Display(p.Claim.Type, claims.MaxTypeLength), Display(p.Claim.Value, claims.MaxValueBytes))
 	}
 	if len(p.SessionClaims) == 0 {
 		fmt.Fprintf(&b, "%ssession claims: none\n", indent)
