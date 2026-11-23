@@ -385,24 +385,49 @@ func (d *Daemon) SessionClaims(sess *chain.Session) (claims.Set, bool) {
 }
 
 // AddClaim implements approval.ClaimStore. It adds a claim an operator
-// approved, saves the sessions, and audits the addition.
+// approved. The claim is saved first, and only then becomes visible to
+// requests and audited, so a claim that fails to save is never granted.
 func (d *Daemon) AddClaim(sess *chain.Session, c claims.Claim, filter, promptID string) error {
-	d.mu.Lock()
+	// Holding saveMu keeps other saves out until this one commits. Claims
+	// change only here, so the set cannot change underneath it either.
+	d.saveMu.Lock()
+	defer d.saveMu.Unlock()
+	d.mu.RLock()
 	s := d.liveSession(sess)
 	if s == nil {
-		d.mu.Unlock()
+		d.mu.RUnlock()
 		return approval.ErrSessionGone
 	}
-	added, err := s.Claims.Add(c.Type, c.Value)
+	next := s.Claims.Clone()
+	added, err := next.Add(c.Type, c.Value)
 	label := s.Label
-	d.mu.Unlock()
+	recs := d.snapshotLocked()
+	d.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("add claim: %w", err)
 	}
 	if !added {
 		return nil
 	}
-	d.saveSessions()
+	for _, r := range recs {
+		if r.Token == s.Token {
+			r.Claims = next
+		}
+	}
+	err = d.writeSessions(recs)
+	if err != nil {
+		return fmt.Errorf("save claim: %w", err)
+	}
+	d.mu.Lock()
+	s = d.liveSession(sess)
+	if s != nil {
+		s.Claims = next
+	}
+	d.mu.Unlock()
+	if s == nil {
+		// Ended while saving. Its own save, waiting on saveMu, drops it.
+		return approval.ErrSessionGone
+	}
 	d.audit.ClaimAdded(audit.ClaimEvent{Session: sess.ID, Label: label, Claim: c, AddedBy: claims.AddedOperator, Filter: filter, Prompt: promptID})
 	return nil
 }
@@ -589,24 +614,44 @@ func (d *Daemon) loadSessions() {
 	}
 }
 
+// saveSessions writes the sessions file, logging a failure.
 func (d *Daemon) saveSessions() {
 	d.saveMu.Lock()
 	defer d.saveMu.Unlock()
 	d.mu.RLock()
+	recs := d.snapshotLocked()
+	d.mu.RUnlock()
+	err := d.writeSessions(recs)
+	if err != nil {
+		d.log.Error().Err(err).Msg("save sessions")
+	}
+}
+
+// snapshotLocked copies every session record. Caller holds mu.
+func (d *Daemon) snapshotLocked() []*SessionRecord {
 	recs := make([]*SessionRecord, 0, len(d.sessions))
 	for _, s := range d.sessions {
 		recs = append(recs, s.clone())
 	}
-	d.mu.RUnlock()
-	b, _ := json.MarshalIndent(recs, "", "  ")
-	tmp := d.sessionsFile() + ".tmp"
-	err := os.WriteFile(tmp, b, 0o600)
-	if err == nil {
-		err = os.Rename(tmp, d.sessionsFile())
-	}
+	return recs
+}
+
+// writeSessions replaces the sessions file. Caller holds saveMu.
+func (d *Daemon) writeSessions(recs []*SessionRecord) error {
+	b, err := json.MarshalIndent(recs, "", "  ")
 	if err != nil {
-		d.log.Error().Err(err).Msg("save sessions")
+		return fmt.Errorf("encode sessions: %w", err)
 	}
+	tmp := d.sessionsFile() + ".tmp"
+	err = os.WriteFile(tmp, b, 0o600)
+	if err != nil {
+		return fmt.Errorf("write sessions: %w", err)
+	}
+	err = os.Rename(tmp, d.sessionsFile())
+	if err != nil {
+		return fmt.Errorf("replace sessions: %w", err)
+	}
+	return nil
 }
 
 // resolveGitLabProject looks up a project's numeric ID using the service's credential.

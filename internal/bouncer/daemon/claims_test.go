@@ -217,6 +217,46 @@ func TestSessionClaimsLifecycle(t *testing.T) {
 			},
 		}, cd.audit.events(t, "claim_added"))
 	})
+	t.Run("a claim that fails to save is not granted", func(t *testing.T) {
+		cd := newClaimDaemon(t, "")
+		rec, err := cd.d.CreateSession("deadbeef", "", "agentcon", 0, seed)
+		require.NoError(t, err)
+		// A directory where the temp file goes makes every save fail.
+		tmp := filepath.Join(cd.state, "sessions.json.tmp")
+		require.NoError(t, os.Mkdir(tmp, 0o700))
+		err = cd.d.AddClaim(&rec.Session, claims.Claim{Type: "repository", Value: "g/b"}, "scope", "a1b2c3")
+		require.ErrorContains(t, err, "save claim")
+		got, _ := cd.d.SessionClaims(&rec.Session)
+		assert.Equal(t, seed, got, "an unsaved claim was granted")
+		assert.Len(t, cd.audit.events(t, "claim_added"), 1, "only the seeded claim is audited")
+
+		require.NoError(t, os.Remove(tmp))
+		require.NoError(t, cd.d.AddClaim(&rec.Session, claims.Claim{Type: "repository", Value: "g/b"}, "scope", "d4e5f6"))
+		cd.reopen(t)
+		got, _ = cd.d.SessionClaims(&rec.Session)
+		assert.Equal(t, claims.Set{"repository": {"g/a", "g/b"}}, got)
+	})
+	t.Run("an approval whose claim fails to save allows once", func(t *testing.T) {
+		cd := newClaimDaemon(t, "")
+		rec, err := cd.d.CreateSession("deadbeef", "", "", 0, seed)
+		require.NoError(t, err)
+		require.NoError(t, os.Mkdir(filepath.Join(cd.state, "sessions.json.tmp"), 0o700))
+		s, _ := cd.d.Session(rec.Token)
+		events, cancel := cd.d.Prompts.Subscribe()
+		defer cancel()
+		done := make(chan bool, 1)
+		go func() {
+			ok, _ := cd.d.env.Claims.RequestClaim(context.Background(), chain.ClaimRequest{
+				Session: s, Filter: "scope", Prompt: "?", Claim: claims.Claim{Type: "repository", Value: "g/b"},
+			})
+			done <- ok
+		}()
+		ev := <-events
+		require.NoError(t, cd.d.Prompts.Answer(ev.Pending.ID, prompt.Answer{Allow: true, Remember: true}))
+		assert.True(t, <-done, "the operator allowed this request")
+		got, _ := cd.d.SessionClaims(&rec.Session)
+		assert.Equal(t, seed, got)
+	})
 	t.Run("an addition over the limit fails", func(t *testing.T) {
 		cd := newClaimDaemon(t, "")
 		full := claims.Set{}
