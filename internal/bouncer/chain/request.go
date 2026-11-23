@@ -32,6 +32,10 @@ type Session struct {
 	// Claims are trusted facts about the session. A request holds a copy
 	// taken when it arrived. It is never nil for a session from the daemon.
 	Claims claims.Set `json:"claims"`
+	// Instance identifies this session among any that reuse its ID after it
+	// ends or expires. It is not secret, but filters and the control API
+	// never see it.
+	Instance string `json:"-"`
 	// Shared marks a session used by many clients (the anonymous profile);
 	// "for this session" approvals are not remembered for it, and it never
 	// gains claims.

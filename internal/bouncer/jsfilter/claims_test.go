@@ -59,6 +59,20 @@ export default defineFilter({
 			wantBody: `{"repository":["a","b"]}`,
 		})
 	})
+	t.Run("filters never see the session instance", func(t *testing.T) {
+		f := load(t, `
+import { defineFilter, respond } from "bouncer";
+export default defineFilter({
+  onRequest(req) { return respond(200, req.session); },
+});`, Options{})
+		r := req(t, "GET", "https://x/", nil)
+		r.Session = &chain.Session{ID: "s1", Label: "l", Profile: "p", Instance: "secret-ish", Claims: claims.Set{}}
+		resp, err := chain.Build([]chain.Filter{f}, upstream("ok"))(r)
+		require.NoError(t, err)
+		b, err := io.ReadAll(resp.Body.Reader())
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"id":"s1","label":"l","profile":"p","claims":{}}`, string(b))
+	})
 	t.Run("a session without claims shows {}", func(t *testing.T) {
 		tester(t, testCase{
 			src: `

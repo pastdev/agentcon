@@ -15,7 +15,7 @@ import (
 	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
-// memStore is an in-memory ClaimStore.
+// memStore is an in-memory ClaimStore keyed by session id and instance.
 type memStore struct {
 	mu       sync.Mutex
 	sessions map[string]claims.Set
@@ -23,24 +23,45 @@ type memStore struct {
 	addErr   error
 }
 
+func storeKey(id, instance string) string { return id + "\x00" + instance }
+
+// newMemStore holds sessions by id, with no instance.
 func newMemStore(sessions map[string]claims.Set) *memStore {
-	return &memStore{sessions: sessions}
+	s := &memStore{sessions: map[string]claims.Set{}}
+	for id, set := range sessions {
+		s.sessions[storeKey(id, "")] = set
+	}
+	return s
 }
 
-func (s *memStore) SessionClaims(id string) (claims.Set, bool) {
+func (s *memStore) SessionClaims(sess *chain.Session) (claims.Set, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c, ok := s.sessions[id]
+	c, ok := s.sessions[storeKey(sess.ID, sess.Instance)]
 	return c.Clone(), ok
 }
 
-func (s *memStore) AddClaim(id string, c claims.Claim, filter, promptID string) error {
+// end removes an instance of session s1, as ending or expiry does.
+func (s *memStore) end(instance string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessions, storeKey("s1", instance))
+}
+
+// put adds an instance of session s1.
+func (s *memStore) put(instance string, set claims.Set) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions[storeKey("s1", instance)] = set
+}
+
+func (s *memStore) AddClaim(sess *chain.Session, c claims.Claim, filter, promptID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.addErr != nil {
 		return s.addErr
 	}
-	set, ok := s.sessions[id]
+	set, ok := s.sessions[storeKey(sess.ID, sess.Instance)]
 	if !ok {
 		return ErrSessionGone
 	}
@@ -57,7 +78,7 @@ func (s *memStore) AddClaim(id string, c claims.Claim, filter, promptID string) 
 func (s *memStore) get(id string) claims.Set {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sessions[id].Clone()
+	return s.sessions[storeKey(id, "")].Clone()
 }
 
 func claimReq(sess *chain.Session, value string) chain.ClaimRequest {
@@ -297,6 +318,77 @@ func TestRequestClaimSequences(t *testing.T) {
 		cancel()
 		wg.Wait()
 		assert.Empty(t, b.List(), "withdrawn prompts still pending")
+	})
+	t.Run("ending a session withdraws its pending prompt", func(t *testing.T) {
+		b := prompt.NewBroker(time.Minute)
+		store := newMemStore(nil)
+		store.put("i1", claims.Set{})
+		c := NewClaims(b, store)
+		events, cancel := b.Subscribe()
+		defer cancel()
+		sess := &chain.Session{ID: "s1", Instance: "i1"}
+		results := make(chan bool, 2)
+		for range 2 {
+			go func() {
+				ok, _ := c.RequestClaim(context.Background(), claimReq(sess, "g/b"))
+				results <- ok
+			}()
+		}
+		<-events
+		time.Sleep(20 * time.Millisecond)
+		store.end("i1")
+		c.EndSession("i1")
+		assert.False(t, <-results)
+		assert.False(t, <-results)
+		assert.Empty(t, b.List(), "withdrawn prompt still pending")
+		for ev := range events {
+			if ev.Type == "settled" {
+				assert.Equal(t, prompt.OutcomeWithdrawn, ev.Outcome)
+				break
+			}
+		}
+	})
+	t.Run("ending one instance leaves another's prompts", func(t *testing.T) {
+		b := prompt.NewBroker(time.Minute)
+		store := newMemStore(nil)
+		store.put("i2", claims.Set{})
+		c := NewClaims(b, store)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() { _, _ = c.RequestClaim(ctx, claimReq(&chain.Session{ID: "s1", Instance: "i2"}, "g/b")) }()
+		require.Eventually(t, func() bool { return len(b.List()) == 1 }, time.Second, 5*time.Millisecond)
+		c.EndSession("i1")
+		time.Sleep(20 * time.Millisecond)
+		assert.Len(t, b.List(), 1)
+	})
+	t.Run("a reused session id is a different session", func(t *testing.T) {
+		b := prompt.NewBroker(time.Minute)
+		store := newMemStore(nil)
+		store.put("old", claims.Set{})
+		c := NewClaims(b, store)
+		old := make(chan bool, 1)
+		go func() {
+			ok, _ := c.RequestClaim(context.Background(), claimReq(&chain.Session{ID: "s1", Instance: "old"}, "g/b"))
+			old <- ok
+		}()
+		require.Eventually(t, func() bool { return len(b.List()) == 1 }, time.Second, 5*time.Millisecond)
+		oldPrompt := b.List()[0]
+
+		// The old session ends without withdrawing, as expiry does, and a
+		// new session takes its id.
+		store.end("old")
+		store.put("new", claims.Set{})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() { _, _ = c.RequestClaim(ctx, claimReq(&chain.Session{ID: "s1", Instance: "new"}, "g/b")) }()
+		require.Eventually(t, func() bool { return len(b.List()) == 2 }, time.Second, 5*time.Millisecond)
+
+		require.NoError(t, b.Answer(oldPrompt.ID, prompt.Answer{Allow: true, Remember: true}))
+		assert.False(t, <-old, "an approval for an expired session went through")
+		got, ok := store.SessionClaims(&chain.Session{ID: "s1", Instance: "new"})
+		require.True(t, ok)
+		assert.Equal(t, claims.Set{}, got, "the new session gained the old session's claim")
+		assert.Empty(t, store.added)
 	})
 	t.Run("a joiner leaves when its context ends", func(t *testing.T) {
 		b := prompt.NewBroker(time.Minute)

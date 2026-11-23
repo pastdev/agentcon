@@ -14,14 +14,25 @@ import (
 // ErrSessionGone is returned when a claim's session ended or expired.
 var ErrSessionGone = errors.New("session ended")
 
-// ClaimStore holds the live claims of sessions.
+// ClaimStore holds the live claims of sessions. It finds a session by its
+// id and instance, so a later session that reuses the id is a different
+// session.
 type ClaimStore interface {
 	// SessionClaims returns a copy of a session's claims, and false when
 	// the session has ended or expired.
-	SessionClaims(sessionID string) (claims.Set, bool)
+	SessionClaims(s *chain.Session) (claims.Set, bool)
 	// AddClaim adds a claim an operator approved through a prompt. Adding
-	// a claim the session holds succeeds.
-	AddClaim(sessionID string, c claims.Claim, filter, promptID string) error
+	// a claim the session holds succeeds. It returns ErrSessionGone when the
+	// session has ended or expired.
+	AddClaim(s *chain.Session, c claims.Claim, filter, promptID string) error
+}
+
+// claimWait is one claim prompt shared by identical requests.
+type claimWait struct {
+	waiting
+	instance string
+	// cancel withdraws the prompt.
+	cancel context.CancelFunc
 }
 
 // Claims raises claim prompts on a broker and records approved claims in a
@@ -31,13 +42,25 @@ type Claims struct {
 	store ClaimStore
 	mu    sync.Mutex
 	// byJoin shares one prompt among identical concurrent requests: same
-	// session, type, and value.
-	byJoin map[string]*waiting
+	// session instance, type, and value.
+	byJoin map[string]*claimWait
 }
 
 // NewClaims returns a claim requester.
 func NewClaims(b *prompt.Broker, store ClaimStore) *Claims {
-	return &Claims{b: b, store: store, byJoin: map[string]*waiting{}}
+	return &Claims{b: b, store: store, byJoin: map[string]*claimWait{}}
+}
+
+// EndSession withdraws the pending claim prompts of a session instance.
+// Their requests resolve false.
+func (c *Claims) EndSession(instance string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, w := range c.byJoin {
+		if w.instance == instance {
+			w.cancel()
+		}
+	}
 }
 
 // RequestClaim resolves true when the session holds the claim or the
@@ -52,7 +75,7 @@ func (c *Claims) RequestClaim(ctx context.Context, r chain.ClaimRequest) (bool, 
 		return false, errors.New("claim request has no session")
 	}
 	sess := r.Session
-	jk := sess.ID + "\x00" + r.Claim.Type + "\x00" + r.Claim.Value
+	jk := sess.ID + "\x00" + sess.Instance + "\x00" + r.Claim.Type + "\x00" + r.Claim.Value
 
 	// The store check and the join happen under mu, and an approved claim
 	// is stored before its join entry goes away, so a request never prompts
@@ -61,7 +84,7 @@ func (c *Claims) RequestClaim(ctx context.Context, r chain.ClaimRequest) (bool, 
 	current := claims.Set{}
 	if !sess.Shared {
 		var ok bool
-		current, ok = c.store.SessionClaims(sess.ID)
+		current, ok = c.store.SessionClaims(sess)
 		if !ok {
 			c.mu.Unlock()
 			return false, ErrSessionGone
@@ -91,26 +114,32 @@ func (c *Claims) RequestClaim(ctx context.Context, r chain.ClaimRequest) (bool, 
 		SessionID: sess.ID, SessionLabel: sess.Label, Profile: sess.Profile,
 		Claim: &claim, SessionClaims: current,
 	})
-	w := &waiting{id: t.ID(), done: make(chan struct{})}
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	w := &claimWait{waiting: waiting{id: t.ID(), done: make(chan struct{})}, instance: sess.Instance, cancel: cancel}
 	c.byJoin[jk] = w
 	c.mu.Unlock()
 
-	ans, err := t.Wait(ctx)
+	ans, err := t.Wait(wctx)
 	allow := err == nil && ans.Allow
 
 	c.mu.Lock()
 	var addErr error
 	if allow && ans.Remember && !sess.Shared {
-		addErr = c.store.AddClaim(sess.ID, claim, r.Filter, t.ID())
+		addErr = c.store.AddClaim(sess, claim, r.Filter, t.ID())
 	}
+	gone := errors.Is(addErr, ErrSessionGone)
 	delete(c.byJoin, jk)
-	w.allow = allow
+	w.allow = allow && !gone
 	close(w.done)
 	c.mu.Unlock()
 
 	switch {
 	case err != nil:
 		return false, fmt.Errorf("claim prompt: %w", err)
+	case gone:
+		// The session ended or expired while the operator decided.
+		return false, fmt.Errorf("claim %s not added: %w", claim.Type, addErr)
 	case addErr != nil:
 		// The operator allowed this request, so it goes through once.
 		return true, fmt.Errorf("claim %s allowed once, not added: %w", claim.Type, addErr)

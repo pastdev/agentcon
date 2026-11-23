@@ -195,7 +195,7 @@ func TestSessionClaimsLifecycle(t *testing.T) {
 		require.True(t, ok)
 		s.Claims["repository"][0] = "evil"
 		s.Claims["extra"] = []string{"x"}
-		got, ok := cd.d.SessionClaims(rec.ID)
+		got, ok := cd.d.SessionClaims(&rec.Session)
 		require.True(t, ok)
 		assert.Equal(t, seed, got)
 	})
@@ -204,8 +204,8 @@ func TestSessionClaimsLifecycle(t *testing.T) {
 		rec, err := cd.d.CreateSession("deadbeef", "", "agentcon", 0, seed)
 		require.NoError(t, err)
 		before, _ := cd.d.Session(rec.Token)
-		require.NoError(t, cd.d.AddClaim(rec.ID, claims.Claim{Type: "repository", Value: "g/b"}, "scope", "a1b2c3"))
-		require.NoError(t, cd.d.AddClaim(rec.ID, claims.Claim{Type: "repository", Value: "g/b"}, "scope", "d4e5f6"), "a duplicate is a no-op")
+		require.NoError(t, cd.d.AddClaim(&rec.Session, claims.Claim{Type: "repository", Value: "g/b"}, "scope", "a1b2c3"))
+		require.NoError(t, cd.d.AddClaim(&rec.Session, claims.Claim{Type: "repository", Value: "g/b"}, "scope", "d4e5f6"), "a duplicate is a no-op")
 		after, _ := cd.d.Session(rec.Token)
 		assert.Equal(t, seed, before.Claims, "an earlier request's copy changed")
 		assert.Equal(t, claims.Set{"repository": {"g/a", "g/b"}}, after.Claims)
@@ -225,7 +225,7 @@ func TestSessionClaimsLifecycle(t *testing.T) {
 		}
 		rec, err := cd.d.CreateSession("", "", "", 0, full)
 		require.NoError(t, err)
-		err = cd.d.AddClaim(rec.ID, claims.Claim{Type: "another", Value: "v"}, "f", "p")
+		err = cd.d.AddClaim(&rec.Session, claims.Claim{Type: "another", Value: "v"}, "f", "p")
 		require.ErrorIs(t, err, claims.ErrLimit)
 	})
 	t.Run("ending the session discards its claims", func(t *testing.T) {
@@ -233,9 +233,9 @@ func TestSessionClaimsLifecycle(t *testing.T) {
 		rec, err := cd.d.CreateSession("deadbeef", "", "", 0, seed)
 		require.NoError(t, err)
 		require.True(t, cd.d.EndSession(rec.ID))
-		_, ok := cd.d.SessionClaims(rec.ID)
+		_, ok := cd.d.SessionClaims(&rec.Session)
 		assert.False(t, ok)
-		err = cd.d.AddClaim(rec.ID, claims.Claim{Type: "repository", Value: "g/b"}, "f", "p")
+		err = cd.d.AddClaim(&rec.Session, claims.Claim{Type: "repository", Value: "g/b"}, "f", "p")
 		require.ErrorIs(t, err, approval.ErrSessionGone)
 		again, err := cd.d.CreateSession("deadbeef", "", "", 0, nil)
 		require.NoError(t, err)
@@ -246,9 +246,9 @@ func TestSessionClaimsLifecycle(t *testing.T) {
 		rec, err := cd.d.CreateSession("deadbeef", "", "", 20*time.Millisecond, seed)
 		require.NoError(t, err)
 		time.Sleep(40 * time.Millisecond)
-		_, ok := cd.d.SessionClaims(rec.ID)
+		_, ok := cd.d.SessionClaims(&rec.Session)
 		assert.False(t, ok)
-		err = cd.d.AddClaim(rec.ID, claims.Claim{Type: "repository", Value: "g/b"}, "f", "p")
+		err = cd.d.AddClaim(&rec.Session, claims.Claim{Type: "repository", Value: "g/b"}, "f", "p")
 		require.ErrorIs(t, err, approval.ErrSessionGone)
 		again, err := cd.d.CreateSession("deadbeef", "", "", 0, nil)
 		require.NoError(t, err)
@@ -258,11 +258,13 @@ func TestSessionClaimsLifecycle(t *testing.T) {
 		cd := newClaimDaemon(t, "")
 		rec, err := cd.d.CreateSession("deadbeef", "", "", 0, seed)
 		require.NoError(t, err)
-		require.NoError(t, cd.d.AddClaim(rec.ID, claims.Claim{Type: "repository", Value: "g/b"}, "f", "p"))
+		require.NoError(t, cd.d.AddClaim(&rec.Session, claims.Claim{Type: "repository", Value: "g/b"}, "f", "p"))
 		cd.reopen(t)
 		s, ok := cd.d.Session(rec.Token)
 		require.True(t, ok)
 		assert.Equal(t, claims.Set{"repository": {"g/a", "g/b"}}, s.Claims)
+		assert.Equal(t, rec.Instance, s.Instance, "the instance changed across a restart")
+		require.NoError(t, cd.d.AddClaim(&rec.Session, claims.Claim{Type: "repository", Value: "g/c"}, "f", "p"))
 	})
 	t.Run("a saved session from before claims loads with none", func(t *testing.T) {
 		cd := newClaimDaemon(t, "")
@@ -272,6 +274,7 @@ func TestSessionClaimsLifecycle(t *testing.T) {
 		s, ok := cd.d.Session("tok")
 		require.True(t, ok)
 		assert.Equal(t, claims.Set{}, s.Claims)
+		assert.NotEmpty(t, s.Instance, "an old record got no instance")
 	})
 	t.Run("a saved session with invalid claims is dropped", func(t *testing.T) {
 		cd := newClaimDaemon(t, "")
@@ -305,6 +308,77 @@ func TestSessionClaimsLifecycle(t *testing.T) {
 		s, _ = cd.d.Session("")
 		assert.Equal(t, claims.Set{}, s.Claims)
 		assert.Empty(t, cd.audit.events(t, "claim_added"))
+	})
+}
+
+func TestClaimPromptsAndSessionEnd(t *testing.T) {
+	request := func(cd *claimDaemon, s *chain.Session) <-chan bool {
+		done := make(chan bool, 1)
+		go func() {
+			ok, _ := cd.d.env.Claims.RequestClaim(context.Background(), chain.ClaimRequest{
+				Session: s, Filter: "scope", Prompt: "?", Claim: claims.Claim{Type: "repository", Value: "g/b"},
+			})
+			done <- ok
+		}()
+		return done
+	}
+	pending := func(t *testing.T, cd *claimDaemon, n int) []prompt.Pending {
+		t.Helper()
+		require.Eventually(t, func() bool { return len(cd.d.Prompts.List()) == n }, time.Second, 5*time.Millisecond)
+		return cd.d.Prompts.List()
+	}
+
+	t.Run("ending a session withdraws its claim prompts and its id starts clean", func(t *testing.T) {
+		cd := newClaimDaemon(t, "")
+		rec, err := cd.d.CreateSession("deadbeef", "", "", 0, nil)
+		require.NoError(t, err)
+		s, _ := cd.d.Session(rec.Token)
+		done := request(cd, s)
+		pending(t, cd, 1)
+		require.True(t, cd.d.EndSession("deadbeef"))
+		assert.False(t, <-done)
+		pending(t, cd, 0)
+		again, err := cd.d.CreateSession("deadbeef", "", "", 0, nil)
+		require.NoError(t, err)
+		assert.NotEqual(t, rec.Instance, again.Instance)
+		assert.Equal(t, claims.Set{}, again.Claims)
+	})
+	t.Run("an approval after expiry never reaches a session that reuses the id", func(t *testing.T) {
+		cd := newClaimDaemon(t, "")
+		rec, err := cd.d.CreateSession("deadbeef", "", "", 50*time.Millisecond, nil)
+		require.NoError(t, err)
+		s, _ := cd.d.Session(rec.Token)
+		done := request(cd, s)
+		old := pending(t, cd, 1)[0]
+		time.Sleep(80 * time.Millisecond)
+		again, err := cd.d.CreateSession("deadbeef", "", "", 0, nil)
+		require.NoError(t, err)
+
+		require.NoError(t, cd.d.Prompts.Answer(old.ID, prompt.Answer{Allow: true, Remember: true}))
+		assert.False(t, <-done, "an approval for an expired session went through")
+		got, ok := cd.d.SessionClaims(&again.Session)
+		require.True(t, ok)
+		assert.Equal(t, claims.Set{}, got)
+		assert.Empty(t, cd.audit.events(t, "claim_added"))
+	})
+	t.Run("the same request from a reused id gets its own prompt", func(t *testing.T) {
+		cd := newClaimDaemon(t, "")
+		rec, err := cd.d.CreateSession("deadbeef", "", "", 50*time.Millisecond, nil)
+		require.NoError(t, err)
+		s, _ := cd.d.Session(rec.Token)
+		first := request(cd, s)
+		pending(t, cd, 1)
+		time.Sleep(80 * time.Millisecond)
+		again, err := cd.d.CreateSession("deadbeef", "", "", 0, nil)
+		require.NoError(t, err)
+		s2, _ := cd.d.Session(again.Token)
+		second := request(cd, s2)
+		list := pending(t, cd, 2)
+		for _, p := range list {
+			require.NoError(t, cd.d.Prompts.Answer(p.ID, prompt.Answer{}))
+		}
+		assert.False(t, <-first)
+		assert.False(t, <-second)
 	})
 }
 

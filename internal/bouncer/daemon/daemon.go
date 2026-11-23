@@ -75,6 +75,7 @@ type Daemon struct {
 	CA        *ca.Authority
 	Approvals *approval.Manager
 	Prompts   *prompt.Broker
+	claims    *approval.Claims
 	creds     *creds.Store
 	kv        *kv.Store
 	audit     *audit.Log
@@ -102,11 +103,17 @@ type Daemon struct {
 // SessionRecord is a registered agent session.
 type SessionRecord struct {
 	chain.Session
-	Token   string    `json:"token"`
-	Created time.Time `json:"created"`
+	// InstanceID persists Session.Instance, which never reaches JSON
+	// itself so filters cannot see it.
+	InstanceID string    `json:"instance"`
+	Token      string    `json:"token"`
+	Created    time.Time `json:"created"`
 	// Expires is zero for sessions that last until revoked.
 	Expires time.Time `json:"expires,omitzero"`
 }
+
+// newInstance returns a session instance id.
+func newInstance() string { return randHex(8) }
 
 func (s *SessionRecord) expired() bool { return !s.Expires.IsZero() && time.Now().After(s.Expires) }
 
@@ -179,9 +186,10 @@ func New(opts Options) (*Daemon, error) {
 	}
 	d.Prompts = prompt.NewBroker(cfg.Prompts.TimeoutOrDefault())
 	d.Approvals = approval.NewManager(d.Prompts)
+	d.claims = approval.NewClaims(d.Prompts, d)
 	d.env = &chain.Env{
 		Approver: d.Approvals,
-		Claims:   approval.NewClaims(d.Prompts, d),
+		Claims:   d.claims,
 		Resolver: d.resolveGitLabProject,
 		Log:      component(opts.Log, "filter"),
 	}
@@ -353,10 +361,12 @@ func (d *Daemon) Session(token string) (*chain.Session, bool) {
 	return s.Clone(), true
 }
 
-// liveSession returns the unexpired record with id. Caller holds mu.
-func (d *Daemon) liveSession(id string) *SessionRecord {
+// liveSession returns the unexpired record for sess, matching its id and
+// instance, so a session that reuses an ended session's id is never
+// mistaken for it. Caller holds mu.
+func (d *Daemon) liveSession(sess *chain.Session) *SessionRecord {
 	for _, s := range d.sessions {
-		if s.ID == id && !s.expired() {
+		if s.ID == sess.ID && s.InstanceID == sess.Instance && !s.expired() {
 			return s
 		}
 	}
@@ -364,10 +374,10 @@ func (d *Daemon) liveSession(id string) *SessionRecord {
 }
 
 // SessionClaims implements approval.ClaimStore.
-func (d *Daemon) SessionClaims(id string) (claims.Set, bool) {
+func (d *Daemon) SessionClaims(sess *chain.Session) (claims.Set, bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	s := d.liveSession(id)
+	s := d.liveSession(sess)
 	if s == nil {
 		return nil, false
 	}
@@ -376,9 +386,9 @@ func (d *Daemon) SessionClaims(id string) (claims.Set, bool) {
 
 // AddClaim implements approval.ClaimStore. It adds a claim an operator
 // approved, saves the sessions, and audits the addition.
-func (d *Daemon) AddClaim(id string, c claims.Claim, filter, promptID string) error {
+func (d *Daemon) AddClaim(sess *chain.Session, c claims.Claim, filter, promptID string) error {
 	d.mu.Lock()
-	s := d.liveSession(id)
+	s := d.liveSession(sess)
 	if s == nil {
 		d.mu.Unlock()
 		return approval.ErrSessionGone
@@ -393,7 +403,7 @@ func (d *Daemon) AddClaim(id string, c claims.Claim, filter, promptID string) er
 		return nil
 	}
 	d.saveSessions()
-	d.audit.ClaimAdded(audit.ClaimEvent{Session: id, Label: label, Claim: c, AddedBy: claims.AddedOperator, Filter: filter, Prompt: promptID})
+	d.audit.ClaimAdded(audit.ClaimEvent{Session: sess.ID, Label: label, Claim: c, AddedBy: claims.AddedOperator, Filter: filter, Prompt: promptID})
 	return nil
 }
 
@@ -450,10 +460,12 @@ func (d *Daemon) CreateSession(id, profile, label string, ttl time.Duration, see
 		}
 	}
 	rec := &SessionRecord{
-		Session: chain.Session{ID: id, Label: label, Profile: profile, Claims: seed.Clone()},
-		Token:   randHex(24),
-		Created: time.Now(),
+		Session:    chain.Session{ID: id, Label: label, Profile: profile, Claims: seed.Clone()},
+		InstanceID: newInstance(),
+		Token:      randHex(24),
+		Created:    time.Now(),
 	}
+	rec.Instance = rec.InstanceID
 	if ttl > 0 {
 		rec.Expires = rec.Created.Add(ttl)
 	}
@@ -508,19 +520,23 @@ func (d *Daemon) SSHHosts() []string {
 // EndSession removes a session by ID.
 func (d *Daemon) EndSession(id string) bool {
 	d.mu.Lock()
-	found := false
+	var ended []string
 	for tok, s := range d.sessions {
 		if s.ID == id {
 			delete(d.sessions, tok)
-			found = true
+			ended = append(ended, s.InstanceID)
 		}
 	}
 	d.mu.Unlock()
-	if found {
-		d.Approvals.ForgetSession(id)
-		d.saveSessions()
+	if len(ended) == 0 {
+		return false
 	}
-	return found
+	d.Approvals.ForgetSession(id)
+	for _, instance := range ended {
+		d.claims.EndSession(instance)
+	}
+	d.saveSessions()
+	return true
 }
 
 func (d *Daemon) listSessions() []SessionRecord {
@@ -564,6 +580,11 @@ func (d *Daemon) loadSessions() {
 			continue
 		}
 		r.Claims = set
+		// Records from before instances existed get one now.
+		if r.InstanceID == "" {
+			r.InstanceID = newInstance()
+		}
+		r.Instance = r.InstanceID
 		d.sessions[r.Token] = r
 	}
 }
