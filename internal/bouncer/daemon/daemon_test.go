@@ -97,7 +97,7 @@ func TestCreateSession(t *testing.T) {
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		rec, err := tc.d.CreateSession(tc.id, "", tc.label, tc.ttl)
+		rec, err := tc.d.CreateSession(tc.id, "", tc.label, tc.ttl, nil)
 		if tc.wantErr {
 			require.Error(t, err)
 			return
@@ -110,9 +110,9 @@ func TestCreateSession(t *testing.T) {
 
 	t.Run("expires a short ttl and keeps a forever session", func(t *testing.T) {
 		d := newTestDaemon(t)
-		short, err := d.CreateSession("", "", "short", 30*time.Millisecond)
+		short, err := d.CreateSession("", "", "short", 30*time.Millisecond, nil)
 		require.NoError(t, err)
-		forever, err := d.CreateSession("", "", "forever", 0)
+		forever, err := d.CreateSession("", "", "forever", 0, nil)
 		require.NoError(t, err)
 		assert.Len(t, short.ID, 8, "session ID should be 32 bits")
 		_, ok := d.Session(short.Token)

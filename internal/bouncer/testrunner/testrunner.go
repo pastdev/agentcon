@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +26,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/jsfilter"
 	"github.com/pastdev/agentcon/internal/bouncer/kv"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
@@ -47,7 +50,46 @@ type Case struct {
 	FilterConfig map[string]any `yaml:"filter_config"`
 	// Profile replaces the spec's Profile when not empty.
 	Profile string `yaml:"profile"`
-	Steps   []Step `yaml:"steps"`
+	// Claims seed the case's session. Its steps share them, so a claim
+	// added for the session in one step is held in the next.
+	Claims map[string][]string `yaml:"claims"`
+	Steps  []Step              `yaml:"steps"`
+}
+
+// Claim answers a step can script for requestClaim.
+const (
+	ClaimAnswerSession = "session"
+	ClaimAnswerOnce    = "once"
+	ClaimAnswerDeny    = "deny"
+	ClaimAnswerTimeout = "timeout"
+)
+
+// ClaimRequested is expect_claim_requested: a boolean, or the claim
+// {type, value} the step must have requested.
+type ClaimRequested struct {
+	Requested bool
+	Claim     *claims.Claim
+}
+
+// UnmarshalYAML accepts true, false, or {type, value}.
+func (c *ClaimRequested) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		err := n.Decode(&c.Requested)
+		if err != nil {
+			return fmt.Errorf("expect_claim_requested: %w", err)
+		}
+		return nil
+	}
+	var claim struct {
+		Type  string `yaml:"type"`
+		Value string `yaml:"value"`
+	}
+	dec := n.Decode(&claim)
+	if dec != nil {
+		return fmt.Errorf("expect_claim_requested: %w", dec)
+	}
+	c.Requested, c.Claim = true, &claims.Claim{Type: claim.Type, Value: claim.Value}
+	return nil
 }
 
 type Step struct {
@@ -57,6 +99,10 @@ type Step struct {
 	Upstream *Upstream    `yaml:"upstream"`
 	// Approve answers every ask() in this step. Unset means asks are denied.
 	Approve *bool `yaml:"approve"`
+	// ClaimAnswer answers every requestClaim() in this step that the
+	// session does not already satisfy: session, once, deny, or timeout.
+	// Unset means deny.
+	ClaimAnswer string `yaml:"claim_answer"`
 
 	Expect               string            `yaml:"expect"` // allow or deny
 	ExpectReason         string            `yaml:"expect_reason"`
@@ -68,6 +114,12 @@ type Step struct {
 	// ExpectCredential checks whether the request reached the upstream with
 	// its service's credential. Leftover paths under unmatched: tunnel do not.
 	ExpectCredential *bool `yaml:"expect_credential"`
+	// ExpectClaimRequested checks whether the step asked the operator for
+	// a claim, and optionally which one.
+	ExpectClaimRequested *ClaimRequested `yaml:"expect_claim_requested"`
+	// ExpectClaims is the session's full claim set after the step. {}
+	// asserts no claims.
+	ExpectClaims map[string][]string `yaml:"expect_claims"`
 }
 
 type HTTPRequest struct {
@@ -247,12 +299,24 @@ func runCase(spec *Spec, c *Case, filterPath, policyPath string) (Result, error)
 	if len(c.Steps) == 0 {
 		return Result{}, errors.New("case has no steps")
 	}
+	seed, err := claims.FromMap(c.Claims)
+	if err != nil {
+		return Result{}, fmt.Errorf("claims: %w", err)
+	}
+	for i := range c.Steps {
+		err = checkClaimFields(&c.Steps[i])
+		if err != nil {
+			return Result{}, fmt.Errorf("step %d: %w", i+1, err)
+		}
+	}
 	store, _ := kv.Open("")
 	defer func() { _ = store.Close() }()
 	approver := &scriptedApprover{}
+	claimer := &scriptedClaims{set: seed}
 	logs := &bytes.Buffer{}
 	env := &chain.Env{
 		Approver: approver,
+		Claims:   claimer,
 		Log: zerolog.New(zerolog.ConsoleWriter{
 			Out:        logs,
 			NoColor:    true,
@@ -277,7 +341,8 @@ func runCase(spec *Spec, c *Case, filterPath, policyPath string) (Result, error)
 	for i := range c.Steps {
 		s := &c.Steps[i]
 		approver.answer, approver.asked = s.Approve != nil && *s.Approve, false
-		msg, err := runStep(s, httpChain, sshChain, profile, approver)
+		claimer.answer, claimer.requested = s.ClaimAnswer, nil
+		msg, err := runStep(s, httpChain, sshChain, profile, approver, claimer)
 		if err != nil {
 			msg = err.Error()
 		}
@@ -346,8 +411,10 @@ func chains(spec *Spec, c *Case, filterPath, policyPath, profile string, env *ch
 	return httpChain, sshChain, nil
 }
 
-func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scriptedApprover) (string, error) {
-	sess := &chain.Session{ID: harnessName, Label: harnessName, Profile: profile}
+func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scriptedApprover, cl *scriptedClaims) (string, error) {
+	// Like the daemon, each request sees the claims as they were when it
+	// arrived.
+	sess := &chain.Session{ID: harnessName, Label: harnessName, Profile: profile, Claims: cl.set.Clone()}
 	var req *chain.Request
 	var tgt target
 	var seen upstream
@@ -411,7 +478,7 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 			err = chain.CheckMethodOverride(req)
 		}
 		if err != nil {
-			return check(c, chain.Deny("bouncer", err.Error()), ap, tgt, seen)
+			return check(c, chain.Deny("bouncer", err.Error()), ap, cl, tgt, seen)
 		}
 	case c.SSH != nil:
 		var err error
@@ -443,10 +510,10 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 	}
 
 	resp, _ := chain.Build(tgt.filters, terminal)(req)
-	return check(c, resp, ap, tgt, seen)
+	return check(c, resp, ap, cl, tgt, seen)
 }
 
-func check(c *Step, resp *chain.Response, ap *scriptedApprover, tgt target, seen upstream) (string, error) {
+func check(c *Step, resp *chain.Response, ap *scriptedApprover, cl *scriptedClaims, tgt target, seen upstream) (string, error) {
 	upstreamHeader := seen.header
 	var problems []string
 	got := "allow"
@@ -498,6 +565,7 @@ func check(c *Step, resp *chain.Response, ap *scriptedApprover, tgt target, seen
 			problems = append(problems, fmt.Sprintf("expected upstream header %s=%q, got %q", k, v, got))
 		}
 	}
+	problems = append(problems, checkClaims(c, cl)...)
 	if c.ExpectCredential != nil {
 		got := seen.reached && !seen.skipCredential && tgt.credential != ""
 		if got != *c.ExpectCredential {
@@ -535,4 +603,96 @@ type scriptedApprover struct {
 func (a *scriptedApprover) Ask(context.Context, chain.AskRequest) (bool, error) {
 	a.asked = true
 	return a.answer, nil
+}
+
+// checkClaimFields validates a step's claim fields before the case runs.
+func checkClaimFields(s *Step) error {
+	switch s.ClaimAnswer {
+	case "", ClaimAnswerSession, ClaimAnswerOnce, ClaimAnswerDeny, ClaimAnswerTimeout:
+	default:
+		return fmt.Errorf("claim_answer %q must be session, once, deny, or timeout", s.ClaimAnswer)
+	}
+	if s.ExpectClaimRequested != nil && s.ExpectClaimRequested.Claim != nil {
+		c := s.ExpectClaimRequested.Claim
+		err := claims.Valid(c.Type, c.Value)
+		if err != nil {
+			return fmt.Errorf("expect_claim_requested: %w", err)
+		}
+	}
+	if s.ExpectClaims != nil {
+		_, err := claims.FromMap(s.ExpectClaims)
+		if err != nil {
+			return fmt.Errorf("expect_claims: %w", err)
+		}
+	}
+	return nil
+}
+
+func checkClaims(c *Step, cl *scriptedClaims) []string {
+	var problems []string
+	if want := c.ExpectClaimRequested; want != nil {
+		got := len(cl.requested) > 0
+		switch {
+		case got != want.Requested:
+			problems = append(problems, fmt.Sprintf("expected claim requested=%v, got %v", want.Requested, got))
+		case want.Claim != nil && !slices.Contains(cl.requested, *want.Claim):
+			problems = append(problems, fmt.Sprintf("expected claim %s=%s requested, got %s",
+				want.Claim.Type, want.Claim.Value, describeClaims(cl.requested)))
+		}
+	}
+	if c.ExpectClaims != nil {
+		// Validated before the case ran.
+		want, _ := claims.FromMap(c.ExpectClaims)
+		if !equalSets(want, cl.set) {
+			problems = append(problems, fmt.Sprintf("expected claims %s, got %s", describeClaims(want.List()), describeClaims(cl.set.List())))
+		}
+	}
+	return problems
+}
+
+func equalSets(a, b claims.Set) bool {
+	return maps.EqualFunc(a, b, slices.Equal[[]string])
+}
+
+func describeClaims(list []claims.Claim) string {
+	if len(list) == 0 {
+		return "none"
+	}
+	parts := make([]string, len(list))
+	for i, c := range list {
+		parts[i] = c.Type + "=" + c.Value
+	}
+	return strings.Join(parts, ", ")
+}
+
+// scriptedClaims answers requestClaim from the step's claim_answer and
+// keeps the case session's claims.
+type scriptedClaims struct {
+	set       claims.Set
+	answer    string
+	requested []claims.Claim
+}
+
+func (s *scriptedClaims) RequestClaim(_ context.Context, r chain.ClaimRequest) (bool, error) {
+	if s.set.Has(r.Claim.Type, r.Claim.Value) {
+		return true, nil
+	}
+	err := s.set.Check(r.Claim.Type, r.Claim.Value)
+	if err != nil {
+		return false, fmt.Errorf("%w: %w", chain.ErrClaimRejected, err)
+	}
+	s.requested = append(s.requested, r.Claim)
+	switch s.answer {
+	case ClaimAnswerSession:
+		_, err = s.set.Add(r.Claim.Type, r.Claim.Value)
+		if err != nil {
+			return false, fmt.Errorf("add claim: %w", err)
+		}
+		return true, nil
+	case ClaimAnswerOnce:
+		return true, nil
+	case ClaimAnswerTimeout:
+		return false, errors.New("claim prompt timed out")
+	}
+	return false, nil
 }

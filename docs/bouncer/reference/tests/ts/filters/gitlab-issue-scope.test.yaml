@@ -1,0 +1,105 @@
+cases:
+  - name: issue in a seeded repository goes through without a prompt
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fproject/issues", body: "{}"}
+        expect: allow
+        expect_claim_requested: false
+        expect_claims: {repository: [gitlab.example.com/group/project]}
+  - name: unscoped project, operator adds it for the session
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: session
+        expect: allow
+        expect_claim_requested: {type: repository, value: gitlab.example.com/group/other}
+        expect_claims:
+          repository: [gitlab.example.com/group/other, gitlab.example.com/group/project]
+      - name: second issue in the same project no longer prompts
+        request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        expect: allow
+        expect_claim_requested: false
+  - name: allow once adds nothing, so the next issue asks again
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: once
+        expect: allow
+        expect_claim_requested: true
+        expect_claims: {}
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: deny
+        expect: deny
+        expect_reason: not one of this session's repositories
+  - name: a denial is not remembered
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: deny
+        expect: deny
+        expect_claim_requested: true
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: session
+        expect: allow
+        expect_claim_requested: true
+        expect_claims: {repository: [gitlab.example.com/group/other]}
+  - name: no answer in time denies
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: timeout
+        expect: deny
+        expect_claims: {}
+  - name: claims compare exactly
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/Group%2FProject/issues", body: "{}"}
+        expect: deny
+        expect_claim_requested: {type: repository, value: gitlab.example.com/Group/Project}
+  - name: a claim for another host does not match
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.other.com/api/v4/projects/group%2Fproject/issues", body: "{}"}
+        expect: deny
+        expect_claim_requested: {type: repository, value: gitlab.other.com/group/project}
+  - name: format suffix and trailing slash are still issue creation
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues.json", body: "{}"}
+        expect: deny
+        expect_claim_requested: true
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues/", body: "{}"}
+        expect: deny
+        expect_claim_requested: true
+  - name: numeric project IDs are denied without a prompt
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/1234/issues", body: "{}"}
+        claim_answer: session
+        expect: deny
+        expect_reason: not its numeric ID
+        expect_claim_requested: false
+  - name: graphql createIssue is denied without a prompt
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { createIssue(input:{projectPath:\"group/project\", title:\"t\"}) { issue { id } } }"}'
+        claim_answer: session
+        expect: deny
+        expect_reason: issue creation through GraphQL
+        expect_claim_requested: false
+  - name: graphql queries go through
+    steps:
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"query { project(fullPath:\"group/project\") { id } }"}'
+        expect: allow
+  - name: other requests go through untouched
+    steps:
+      - request: {method: GET, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues"}
+        expect: allow
+        expect_claim_requested: false
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues/5/notes", body: "{}"}
+        expect: allow
+        expect_claim_requested: false

@@ -141,11 +141,11 @@ func (d *Daemon) RunTerminalPrompter(ctx context.Context, in Terminal, out io.Wr
 // event that follows moves on to the next prompt.
 func (d *Daemon) submit(out io.Writer, p prompt.Pending, line string) {
 	switch p.Kind {
-	case prompt.KindConfirm:
-		a, ok := prompt.ParseConfirm(line)
+	case prompt.KindConfirm, prompt.KindClaim:
+		a, ok := prompt.ParseChoice(p.Kind, line)
 		if !ok {
 			// Raw mode: return the carriage ourselves.
-			_, _ = fmt.Fprint(out, "\r\n  answer y, s, n or d > ")
+			_, _ = fmt.Fprintf(out, "\r\n  answer %s > ", choiceLetters(p.Kind))
 			return
 		}
 		_ = d.Prompts.Answer(p.ID, a)
@@ -166,16 +166,32 @@ func (d *Daemon) submit(out io.Writer, p prompt.Pending, line string) {
 	}
 }
 
+// choiceLetters lists the letters a choice prompt accepts.
+func choiceLetters(k prompt.Kind) string {
+	if k == prompt.KindClaim {
+		return "y, s or n"
+	}
+	return "y, s, n or d"
+}
+
 func showPrompt(out io.Writer, p prompt.Pending) {
 	d := approval.Display
-	if p.Kind == prompt.KindConfirm {
-		session := p.SessionLabel
-		if session == "" {
-			session = p.SessionID
-		}
+	session := p.SessionLabel
+	if session == "" {
+		session = p.SessionID
+	}
+	switch p.Kind {
+	case prompt.KindConfirm:
 		_, _ = fmt.Fprintf(out, "\n=== approval needed [%s] session=%s profile=%s source=%s\n  %s\n  request: %s\n  %s > ",
 			p.ID, d(session, 60), d(p.Profile, 60), d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), prompt.ConfirmChoices)
 		return
+	case prompt.KindClaim:
+		// Raw mode follows, so lines end with a carriage return too.
+		lines := strings.ReplaceAll(approval.ClaimLines(p, "  "), "\n", "\r\n")
+		_, _ = fmt.Fprintf(out, "\n=== claim requested [%s] session=%s profile=%s source=%s\n  %s\n  request: %s\n%s  %s > ",
+			p.ID, d(session, 60), d(p.Profile, 60), d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), lines, prompt.ClaimChoices)
+		return
+	case prompt.KindText, prompt.KindSecret:
 	}
 	_, _ = fmt.Fprintf(out, "\n=== input needed [%s] source=%s\n  %s\n  empty or Ctrl-C declines > ",
 		p.ID, d(p.Source, 60), d(p.Message, 300))
@@ -185,7 +201,7 @@ func verdict(ev prompt.Event) string {
 	if ev.Outcome != prompt.OutcomeAnswered {
 		return ev.Outcome
 	}
-	if ev.Pending.Kind != prompt.KindConfirm {
+	if !ev.Pending.Kind.IsChoice() {
 		return "answered"
 	}
 	if ev.Allowed {

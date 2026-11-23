@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
@@ -77,7 +78,12 @@ func TestRunTerminalPrompter(t *testing.T) {
 		var out lockedBuffer
 		var ticket *prompt.Ticket
 		raise := func() {
-			ticket = d.Prompts.Raise(prompt.Question{Kind: tc.kind, Source: "test", Message: "Question?"})
+			q := prompt.Question{Kind: tc.kind, Source: "test", Message: "Question?"}
+			if tc.kind == prompt.KindClaim {
+				q.Claim = &claims.Claim{Type: "repository", Value: "g/b"}
+				q.SessionClaims = claims.Set{"repository": {"g/a"}}
+			}
+			ticket = d.Prompts.Raise(q)
 		}
 		if tc.raiseFirst {
 			raise()
@@ -143,6 +149,13 @@ func TestRunTerminalPrompter(t *testing.T) {
 	t.Run("confirm asks again after a bad answer", func(t *testing.T) {
 		tester(t, testCase{kind: prompt.KindConfirm, keys: "x\rs\r", wantAnswer: prompt.Answer{Allow: true, Remember: true},
 			wantOut: []string{"approval needed", "answer y, s, n or d", "allowed"}})
+	})
+	t.Run("claim shows the claims and refuses deny for session", func(t *testing.T) {
+		tester(t, testCase{kind: prompt.KindClaim, keys: "d\rs\r", wantAnswer: prompt.Answer{Allow: true, Remember: true},
+			wantOut: []string{"claim requested", "claim: repository=g/b", "repository: g/a", prompt.ClaimChoices, "answer y, s or n", "allowed"}})
+	})
+	t.Run("claim deny", func(t *testing.T) {
+		tester(t, testCase{kind: prompt.KindClaim, keys: "n\r", wantAnswer: prompt.Answer{}, wantOut: []string{"denied"}})
 	})
 	t.Run("empty secret declines", func(t *testing.T) {
 		tester(t, testCase{kind: prompt.KindSecret, keys: "\r", wantErr: prompt.ErrDeclined, wantOut: []string{"declined"}})

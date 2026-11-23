@@ -2,8 +2,12 @@ package approval
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 // Display makes request-derived text safe to show a human deciding on it:
@@ -25,6 +29,41 @@ func Display(s string, limit int) string {
 		} else {
 			fmt.Fprintf(&b, `\u%04x`, r)
 		}
+	}
+	return b.String()
+}
+
+// Bounds on how much of a session's claims a claim prompt shows.
+const (
+	displayClaimValue  = 120
+	displayClaimValues = 10
+)
+
+// ClaimLines describes a claim prompt for a terminal: the requested claim,
+// then the session's current claims grouped by type. Each line starts with
+// indent and ends with a newline. Long values and long lists are cut off
+// visibly.
+func ClaimLines(p prompt.Pending, indent string) string {
+	var b strings.Builder
+	if p.Claim != nil {
+		fmt.Fprintf(&b, "%sclaim: %s=%s\n", indent, Display(p.Claim.Type, 64), Display(p.Claim.Value, displayClaimValue))
+	}
+	if len(p.SessionClaims) == 0 {
+		fmt.Fprintf(&b, "%ssession claims: none\n", indent)
+		return b.String()
+	}
+	fmt.Fprintf(&b, "%ssession claims:\n", indent)
+	for _, t := range slices.Sorted(maps.Keys(p.SessionClaims)) {
+		vs := p.SessionClaims[t]
+		shown := make([]string, 0, min(len(vs), displayClaimValues))
+		for _, v := range vs[:min(len(vs), displayClaimValues)] {
+			shown = append(shown, Display(v, displayClaimValue))
+		}
+		line := strings.Join(shown, ", ")
+		if more := len(vs) - len(shown); more > 0 {
+			line += fmt.Sprintf(", … [%d more]", more)
+		}
+		fmt.Fprintf(&b, "%s  %s: %s\n", indent, Display(t, 64), line)
 	}
 	return b.String()
 }

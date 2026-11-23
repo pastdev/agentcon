@@ -1,10 +1,14 @@
 package approval
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
+	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
 func TestDisplay(t *testing.T) {
@@ -52,6 +56,47 @@ func TestDisplay(t *testing.T) {
 			in:   "ssh agent@sandbox exec: ls -la",
 			max:  200,
 			want: "ssh agent@sandbox exec: ls -la",
+		})
+	})
+}
+
+func TestClaimLines(t *testing.T) {
+	type testCase struct {
+		p    prompt.Pending
+		want string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		assert.Equal(t, tc.want, ClaimLines(tc.p, "  "))
+	}
+	many := make([]string, 12)
+	for i := range many {
+		many[i] = fmt.Sprintf("v%02d", i)
+	}
+
+	t.Run("groups current claims by type", func(t *testing.T) {
+		tester(t, testCase{
+			p: prompt.Pending{
+				Claim:         &claims.Claim{Type: "repository", Value: "g/c"},
+				SessionClaims: claims.Set{"ticket": {"T-1"}, "repository": {"g/a", "g/b"}},
+			},
+			want: "  claim: repository=g/c\n  session claims:\n    repository: g/a, g/b\n    ticket: T-1\n",
+		})
+	})
+	t.Run("no current claims", func(t *testing.T) {
+		tester(t, testCase{
+			p:    prompt.Pending{Claim: &claims.Claim{Type: "repository", Value: "g/c"}, SessionClaims: claims.Set{}},
+			want: "  claim: repository=g/c\n  session claims: none\n",
+		})
+	})
+	t.Run("cuts off long lists and escapes invisible characters", func(t *testing.T) {
+		tester(t, testCase{
+			p: prompt.Pending{
+				Claim:         &claims.Claim{Type: "repository", Value: "g/\u202eevil"},
+				SessionClaims: claims.Set{"repository": many},
+			},
+			want: "  claim: repository=g/\\u202eevil\n  session claims:\n" +
+				"    repository: v00, v01, v02, v03, v04, v05, v06, v07, v08, v09, … [2 more]\n",
 		})
 	})
 }

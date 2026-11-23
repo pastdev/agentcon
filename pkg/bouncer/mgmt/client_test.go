@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -137,6 +138,30 @@ func TestClient(t *testing.T) {
 					`/_bouncer/credentials/provided {"x.token":"1"}`,
 					`/_bouncer/credentials/provided {}`,
 				}, bodies)
+			},
+		})
+	})
+	t.Run("creates a session with and without claims", func(t *testing.T) {
+		var bodies []string
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /_bouncer/sessions", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, string(body))
+			_, _ = io.WriteString(w, `{"id":"deadbeef","claims":{"repository":["g/a"]}}`)
+		})
+		tester(t, testCase{
+			handler: mux,
+			check: func(t *testing.T, c *Client) {
+				t.Helper()
+				_, err := c.CreateSession(t.Context(), "", "", "plain", "")
+				require.NoError(t, err)
+				rec, err := c.CreateSession(t.Context(), "deadbeef", "p", "seeded", "1h",
+					WithClaims(map[string][]string{"repository": {"g/a"}}))
+				require.NoError(t, err)
+				assert.Equal(t, claims.Set{"repository": {"g/a"}}, rec.Claims)
+				require.Len(t, bodies, 2)
+				assert.JSONEq(t, `{"id":"","profile":"","label":"plain","ttl":""}`, bodies[0])
+				assert.JSONEq(t, `{"id":"deadbeef","profile":"p","label":"seeded","ttl":"1h","claims":{"repository":["g/a"]}}`, bodies[1])
 			},
 		})
 	})

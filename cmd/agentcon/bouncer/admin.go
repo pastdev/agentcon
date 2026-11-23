@@ -34,8 +34,12 @@ func promptsCmd() *cobra.Command {
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "ID\tKIND\tSOURCE\tSESSION\tMESSAGE\tDETAIL\tEXPIRES")
 			for _, p := range list {
+				detail := d(p.Detail, 80)
+				if p.Claim != nil {
+					detail = "claim " + d(p.Claim.Type, 64) + "=" + d(p.Claim.Value, 80) + "; " + detail
+				}
 				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.ID, p.Kind, d(p.Source, 60), d(p.SessionLabel, 60),
-					d(p.Message, 80), d(p.Detail, 80), time.Until(p.Expires).Round(time.Second))
+					d(p.Message, 80), detail, time.Until(p.Expires).Round(time.Second))
 			}
 			return w.Flush()
 		},
@@ -99,7 +103,11 @@ func approveCmd(allow bool) *cobra.Command {
 			return c.AnswerPrompt(cmd.Context(), args[0], prompt.Answer{Allow: allow, Remember: session})
 		},
 	}
-	cmd.Flags().BoolVarP(&session, "session", "s", false, "apply to identical requests for the rest of the session")
+	help := "apply to identical requests for the rest of the session"
+	if allow {
+		help += "; for a claim request, add the claim to the session"
+	}
+	cmd.Flags().BoolVarP(&session, "session", "s", false, help)
 	return cmd
 }
 
@@ -118,9 +126,9 @@ func sessionsCmd() *cobra.Command {
 				return fmt.Errorf("sessions: %w", err)
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			_, _ = fmt.Fprintln(w, "ID\tLABEL\tPROFILE\tCREATED")
+			_, _ = fmt.Fprintln(w, "ID\tLABEL\tPROFILE\tCREATED\tCLAIMS")
 			for _, s := range list {
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, s.Label, s.Profile, s.Created.Format(time.DateTime))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", s.ID, s.Label, s.Profile, s.Created.Format(time.DateTime), s.Claims.Count())
 			}
 			return w.Flush()
 		},

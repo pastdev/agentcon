@@ -32,6 +32,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
 	"github.com/pastdev/agentcon/internal/bouncer/proxy"
 	"github.com/pastdev/agentcon/internal/bouncer/sshproxy"
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
 	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
@@ -85,6 +86,8 @@ type Daemon struct {
 	cfg      *config.Config
 	set      *policy.Set
 	sessions map[string]*SessionRecord // by token
+	// saveMu serializes writes of the sessions file.
+	saveMu sync.Mutex
 
 	resolved sync.Map // resolver cache key -> resolvedID
 
@@ -113,10 +116,18 @@ func (s *SessionRecord) wire() mgmt.SessionRecord {
 		ID:      s.ID,
 		Label:   s.Label,
 		Profile: s.Profile,
+		Claims:  s.Claims.Clone(),
 		Token:   s.Token,
 		Created: s.Created,
 		Expires: s.Expires,
 	}
+}
+
+// clone copies the record, claims included.
+func (s *SessionRecord) clone() *SessionRecord {
+	c := *s
+	c.Claims = s.Claims.Clone()
+	return &c
 }
 
 // Runtime describes a running daemon; written to the state dir so clients
@@ -170,6 +181,7 @@ func New(opts Options) (*Daemon, error) {
 	d.Approvals = approval.NewManager(d.Prompts)
 	d.env = &chain.Env{
 		Approver: d.Approvals,
+		Claims:   approval.NewClaims(d.Prompts, d),
 		Resolver: d.resolveGitLabProject,
 		Log:      component(opts.Log, "filter"),
 	}
@@ -286,8 +298,12 @@ func (d *Daemon) apply(cfg *config.Config) error {
 	if cfg.Prompts.NotifyEnabled() {
 		d.Prompts.SetNotify(func(p prompt.Pending) {
 			title := "agent-bouncer: input needed"
-			if p.Kind == prompt.KindConfirm {
+			switch p.Kind {
+			case prompt.KindConfirm:
 				title = "agent-bouncer: approval needed"
+			case prompt.KindClaim:
+				title = "agent-bouncer: claim requested"
+			case prompt.KindText, prompt.KindSecret:
 			}
 			notify.Send(title, approval.Display(p.Message, 150)+"\n"+approval.Display(p.Detail, 150))
 		})
@@ -327,14 +343,58 @@ func (d *Daemon) Session(token string) (*chain.Session, bool) {
 		if d.cfg.AnonymousProfile == "" {
 			return nil, false
 		}
-		return &chain.Session{ID: "anonymous", Label: "anonymous", Profile: d.cfg.AnonymousProfile, Shared: true}, true
+		return &chain.Session{ID: "anonymous", Label: "anonymous", Profile: d.cfg.AnonymousProfile, Claims: claims.Set{}, Shared: true}, true
 	}
 	s, ok := d.sessions[token]
 	if !ok || s.expired() {
 		return nil, false
 	}
-	sess := s.Session
-	return &sess, true
+	// A request gets its own copy of the claims, fixed when it arrives.
+	return s.Clone(), true
+}
+
+// liveSession returns the unexpired record with id. Caller holds mu.
+func (d *Daemon) liveSession(id string) *SessionRecord {
+	for _, s := range d.sessions {
+		if s.ID == id && !s.expired() {
+			return s
+		}
+	}
+	return nil
+}
+
+// SessionClaims implements approval.ClaimStore.
+func (d *Daemon) SessionClaims(id string) (claims.Set, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	s := d.liveSession(id)
+	if s == nil {
+		return nil, false
+	}
+	return s.Claims.Clone(), true
+}
+
+// AddClaim implements approval.ClaimStore. It adds a claim an operator
+// approved, saves the sessions, and audits the addition.
+func (d *Daemon) AddClaim(id string, c claims.Claim, filter, promptID string) error {
+	d.mu.Lock()
+	s := d.liveSession(id)
+	if s == nil {
+		d.mu.Unlock()
+		return approval.ErrSessionGone
+	}
+	added, err := s.Claims.Add(c.Type, c.Value)
+	label := s.Label
+	d.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("add claim: %w", err)
+	}
+	if !added {
+		return nil
+	}
+	d.saveSessions()
+	d.audit.ClaimAdded(audit.ClaimEvent{Session: id, Label: label, Claim: c, AddedBy: claims.AddedOperator, Filter: filter, Prompt: promptID})
+	return nil
 }
 
 // Profile implements proxy.Backend and sshproxy.Backend.
@@ -353,10 +413,11 @@ func NewSessionID() string {
 	return randHex(SessionIDLength / 2)
 }
 
-// CreateSession registers a new agent session.
+// CreateSession registers a new agent session with seed as its initial
+// claims, which the caller has validated with claims.FromMap.
 // A ttl of 0 means the session lasts until revoked.
 // An empty id mints a new session id.
-func (d *Daemon) CreateSession(id, profile, label string, ttl time.Duration) (*SessionRecord, error) {
+func (d *Daemon) CreateSession(id, profile, label string, ttl time.Duration, seed claims.Set) (*SessionRecord, error) {
 	d.mu.Lock()
 	if profile == "" {
 		profile = d.cfg.DefaultProfile
@@ -388,7 +449,11 @@ func (d *Daemon) CreateSession(id, profile, label string, ttl time.Duration) (*S
 			}
 		}
 	}
-	rec := &SessionRecord{Session: chain.Session{ID: id, Label: label, Profile: profile}, Token: randHex(24), Created: time.Now()}
+	rec := &SessionRecord{
+		Session: chain.Session{ID: id, Label: label, Profile: profile, Claims: seed.Clone()},
+		Token:   randHex(24),
+		Created: time.Now(),
+	}
 	if ttl > 0 {
 		rec.Expires = rec.Created.Add(ttl)
 	}
@@ -401,9 +466,14 @@ func (d *Daemon) CreateSession(id, profile, label string, ttl time.Duration) (*S
 		rec.Label = rec.ID
 	}
 	d.sessions[rec.Token] = rec
+	out := rec.clone()
 	d.mu.Unlock()
 	d.saveSessions()
-	return rec, nil
+	d.audit.SessionCreated(out.ID, out.Label, out.Profile, out.Claims)
+	for _, c := range out.Claims.List() {
+		d.audit.ClaimAdded(audit.ClaimEvent{Session: out.ID, Label: out.Label, Claim: c, AddedBy: claims.AddedSeeded})
+	}
+	return out, nil
 }
 
 // Placeholders lists the export_env variables of every credential.
@@ -461,9 +531,9 @@ func (d *Daemon) listSessions() []SessionRecord {
 		if s.expired() {
 			continue
 		}
-		r := *s
+		r := s.clone()
 		r.Token = ""
-		out = append(out, r)
+		out = append(out, *r)
 	}
 	return out
 }
@@ -483,17 +553,28 @@ func (d *Daemon) loadSessions() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, r := range recs {
-		if _, ok := d.cfg.Profiles[r.Profile]; ok {
-			d.sessions[r.Token] = r
+		if _, ok := d.cfg.Profiles[r.Profile]; !ok {
+			continue
 		}
+		// Records from before claims existed have none. A record whose
+		// claims no longer validate is dropped rather than trusted.
+		set, err := claims.FromMap(r.Claims)
+		if err != nil {
+			d.log.Error().Err(err).Str("session", r.ID).Msg("drop saved session with invalid claims")
+			continue
+		}
+		r.Claims = set
+		d.sessions[r.Token] = r
 	}
 }
 
 func (d *Daemon) saveSessions() {
+	d.saveMu.Lock()
+	defer d.saveMu.Unlock()
 	d.mu.RLock()
 	recs := make([]*SessionRecord, 0, len(d.sessions))
 	for _, s := range d.sessions {
-		recs = append(recs, s)
+		recs = append(recs, s.clone())
 	}
 	d.mu.RUnlock()
 	b, _ := json.MarshalIndent(recs, "", "  ")

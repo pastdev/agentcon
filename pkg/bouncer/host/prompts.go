@@ -66,15 +66,19 @@ func plainHint(p prompt.Pending) string {
 // answers it.
 func AgentconHint(p prompt.Pending) string {
 	command := "answer"
-	if p.Kind == prompt.KindConfirm {
+	if p.Kind.IsChoice() {
 		command = "approve"
 	}
 	return fmt.Sprintf("%s (agentcon bouncer %s %s)", plainHint(p), command, p.ID)
 }
 
 func promptWhat(p prompt.Pending) string {
-	if p.Kind == prompt.KindConfirm {
+	switch p.Kind {
+	case prompt.KindConfirm:
 		return "approval"
+	case prompt.KindClaim:
+		return "claim request"
+	case prompt.KindText, prompt.KindSecret:
 	}
 	return "prompt"
 }

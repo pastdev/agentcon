@@ -302,7 +302,7 @@ Every line has a `log` field that names its logger.
 |---|---|---|
 | `cli` | the agentcon process: config, image builds, container setup | `info` |
 | `bouncer` | the bouncer: listeners, credentials, filters, reloads | the `cli` level |
-| `audit` | one line per bouncer decision | `info` |
+| `audit` | one line per bouncer decision, session creation, and claim addition | `info` |
 
 `--log` takes `[name=]level` and can repeat.
 A level without a name sets `cli`.

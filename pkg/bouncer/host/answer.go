@@ -23,7 +23,7 @@ type PromptAnswerer interface {
 // sends it. An empty value or Ctrl-C declines.
 func AnswerAtTerminal(ctx context.Context, c PromptAnswerer, in *os.File, out io.Writer, p prompt.Pending) error {
 	a, readErr := readAnswer(ctx, in, out, p)
-	declined := errors.Is(readErr, term.ErrInterrupted) || (readErr == nil && p.Kind != prompt.KindConfirm && a.Value == "")
+	declined := errors.Is(readErr, term.ErrInterrupted) || (readErr == nil && !p.Kind.IsChoice() && a.Value == "")
 	if declined {
 		err := c.DeclinePrompt(ctx, p.ID)
 		if err != nil {
@@ -71,19 +71,26 @@ func readAnswer(ctx context.Context, in *os.File, out io.Writer, p prompt.Pendin
 		_, _ = fmt.Fprintf(out, "%s [%s] (empty or Ctrl-C declines): ", d(p.Message, 300), d(p.Source, 60))
 		v, err := readLine(out)
 		return prompt.Answer{Value: strings.TrimSpace(v)}, err
-	case prompt.KindConfirm:
-		_, _ = fmt.Fprintf(out, "=== approval needed [%s] source=%s\n  %s\n  request: %s\n  %s > ",
-			p.ID, d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), prompt.ConfirmChoices)
+	case prompt.KindConfirm, prompt.KindClaim:
+		letters := "y, s, n or d"
+		if p.Kind == prompt.KindConfirm {
+			_, _ = fmt.Fprintf(out, "=== approval needed [%s] source=%s\n  %s\n  request: %s\n  %s > ",
+				p.ID, d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), prompt.ConfirmChoices)
+		} else {
+			letters = "y, s or n"
+			_, _ = fmt.Fprintf(out, "=== claim requested [%s] source=%s\n  %s\n  request: %s\n%s  %s > ",
+				p.ID, d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), approval.ClaimLines(p, "  "), prompt.ClaimChoices)
+		}
 		for {
 			line, err := readLine(out)
 			if err != nil {
 				return prompt.Answer{}, err
 			}
-			a, ok := prompt.ParseConfirm(line)
+			a, ok := prompt.ParseChoice(p.Kind, line)
 			if ok {
 				return a, nil
 			}
-			_, _ = fmt.Fprint(out, "  answer y, s, n or d > ")
+			_, _ = fmt.Fprintf(out, "  answer %s > ", letters)
 		}
 	}
 	return prompt.Answer{}, fmt.Errorf("prompt %s: unknown kind %q", p.ID, p.Kind)

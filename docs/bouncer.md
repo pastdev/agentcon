@@ -349,15 +349,34 @@ Host discovery files are `~/.local/state/agentcon/running/<slug>.yml`.
 
 Decisions go to the audit logger, which [Logging](../README.md#logging) describes.
 
+### Audit events
+
+Every audit line has an `event` field.
+Hosts can send these lines to log ingestion, so their field names are stable.
+
+| Event | Fields |
+| --- | --- |
+| `decision` | `session`, `label`, `profile`, `transport`, `service`, `request`, `decision`, `by`, `reason`, `status`, `duration_ms` |
+| `session_created` | `session`, `label`, `profile`, `claims` (`{}` when none) |
+| `claim_added` | `session`, `label`, `claim_type`, `claim_value`, `added_by`, and for an operator addition `filter` and `prompt` |
+
+`added_by` is `seeded` for a claim the session was created with, and `operator` for one added through a `requestClaim()` prompt.
+A session created with claims logs `session_created` and then one `claim_added` per claim.
+
+```json
+{"level":"info","event":"claim_added","session":"deadbeef","label":"agentcon","claim_type":"repository","claim_value":"gitlab.example.com/group/other","added_by":"operator","filter":"gitlab-issue-scope","prompt":"a1b2c3","message":"CLAIM  [agentcon] repository=gitlab.example.com/group/other (operator)"}
+```
+
 ## Prompts
 
 The sidecar asks a human through prompts.
-Filter `ask()` and rule `action: ask` raise one, and so does a Bitwarden vault that needs a master password or verification code.
+Filter `ask()` and rule `action: ask` raise one, filter `requestClaim()` raises one, and so does a Bitwarden vault that needs a master password or verification code.
 Each prompt has an id, a kind, a source, and a message.
 
 | Kind | Raised for | Answer |
 | --- | --- | --- |
 | `confirm` | an `ask` approval | allow or deny, once or for the session |
+| `claim` | a [session claim](bouncer-filters.md#session-claims) request | allow once, add the claim for the session, or deny |
 | `text` | a verification code | a line of text |
 | `secret` | a master password | a value read without echo |
 
@@ -367,16 +386,17 @@ Several places can answer a pending prompt.
 - An interactive `agentcon bouncer serve` shows prompts one at a time.
 - `agentcon bouncer prompts` lists them from another terminal, and `agentcon bouncer answer <id>` answers one there.
 - `agentcon bouncer approve <id>` and `agentcon bouncer deny <id>` answer a `confirm`, and `--session` remembers the answer.
+  They answer a `claim` too, where `approve --session` adds the claim and `deny --session` is refused.
 - `agentcon bouncer decline <id>` refuses to answer a prompt of any kind.
 
 At a terminal, Enter answers.
 An empty `text` or `secret` declines, and so does Ctrl-C.
-A declined or expired approval is a deny.
+A declined or expired approval or claim request is a deny.
 A declined master password fails that vault's unlock.
 
 A `secret` answer goes only to the code that asked for it.
 It is never logged, remembered, or shown in listings, events, or notifications.
-Filters and rules raise only `confirm` prompts, so a request can never ask the human for a password.
+Filters and rules raise only `confirm` and `claim` prompts, so a request can never ask the human for a password.
 
 The `prompts` block configures them.
 
@@ -565,6 +585,9 @@ curl -fsS -X POST \
 ```
 
 Answer a `confirm` with `{"allow":true}` or `{"allow":false}`, and add `"remember":true` to apply it for the session.
+A `claim` prompt also lists `claim` (`{"type","value"}`) and `session_claims`, the session's claims grouped by type.
+Answer it with `{"allow":true,"remember":true}` to add the claim, `{"allow":true}` to allow once, or `{"allow":false}` to deny.
+A claim denial is never remembered, so `{"allow":false,"remember":true}` is refused.
 `DELETE /_bouncer/prompts/PROMPT_ID` declines.
 A password retry and a verification code each arrive as a new prompt.
 The message names the method, `authenticator app` for TOTP or `new device email` for the code Bitwarden emails on an unknown device.
@@ -572,12 +595,16 @@ Read a code when its prompt appears, not before.
 TOTP values expire.
 
 Create a session, then fetch the CA.
+`claims` is optional and seeds the session's [claims](bouncer-filters.md#session-claims).
+Any invalid claim, or a set over a limit, rejects the whole request with 400 and creates no session.
+`GET /_bouncer/sessions` lists each session with its current claims.
+From Go, pass `mgmt.WithClaims` to `CreateSession`.
 
 ```bash
 curl -fsS -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
-  --data '{"label":"agentcon"}' \
+  --data '{"label":"agentcon","claims":{"repository":["gitlab.example.com/group/project"]}}' \
   http://127.0.0.1:8228/_bouncer/sessions
 
 curl -fsS \
