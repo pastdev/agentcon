@@ -85,8 +85,51 @@ cases:
           body: '{"query":"mutation { createIssue(input:{projectPath:\"group/project\", title:\"t\"}) { issue { id } } }"}'
         claim_answer: session
         expect: deny
-        expect_reason: issue creation through GraphQL
+        expect_reason: issue creation through GraphQL (createIssue)
         expect_claim_requested: false
+  - name: graphql workItemCreate is denied without a prompt
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { workItemCreate(input:{namespacePath:\"group/project\", title:\"t\", workItemTypeId:\"gid://gitlab/WorkItems::Type/1\"}) { workItem { id } } }"}'
+        claim_answer: session
+        expect: deny
+        expect_reason: issue creation through GraphQL (workItemCreate)
+        expect_claim_requested: false
+  - name: graphql issueMove is denied, even alongside other fields
+    steps:
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { a: issueSetLabels(input:{projectPath:\"g/p\", iid:\"1\", labelIds:[]}) { errors } b: issueMove(input:{projectPath:\"g/p\", iid:\"1\", targetProjectPath:\"g/other\"}) { issue { id } } }"}'
+        expect: deny
+        expect_reason: issue creation through GraphQL (issueMove)
+  - name: graphql mutations that do not create issues go through
+    steps:
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { createNote(input:{noteableId:\"gid://gitlab/Issue/1\", body:\"hi\"}) { errors } }"}'
+        expect: allow
+  - name: REST issue move and clone are denied without a prompt
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fproject/issues/1/move", body: "to_project_id=6"}
+        claim_answer: session
+        expect: deny
+        expect_reason: issue move targets a project by numeric ID
+        expect_claim_requested: false
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fproject/issues/1/clone?to_project_id=6"}
+        expect: deny
+        expect_reason: issue clone targets a project by numeric ID
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fproject/issues/1/move.json/"}
+        expect: deny
+        expect_reason: issue move targets a project by numeric ID
   - name: graphql queries go through
     steps:
       - request:
