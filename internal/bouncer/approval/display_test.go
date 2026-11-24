@@ -60,6 +60,65 @@ func TestDisplay(t *testing.T) {
 	})
 }
 
+func TestDisplayASCII(t *testing.T) {
+	type testCase struct {
+		in    string
+		limit int
+		want  string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		assert.Equal(t, tc.want, DisplayASCII(tc.in, tc.limit))
+	}
+
+	t.Run("leaves printable ASCII unchanged", func(t *testing.T) {
+		tester(t, testCase{in: "gitlab.example.com/group/other", limit: 100, want: "gitlab.example.com/group/other"})
+	})
+	t.Run("escapes a look-alike letter", func(t *testing.T) {
+		tester(t, testCase{in: "gitlab.example.com/gr\u043eup/other", limit: 100, want: `gitlab.example.com/gr\u043eup/other`})
+	})
+	t.Run("escapes a backslash, so an escape typed literally differs", func(t *testing.T) {
+		tester(t, testCase{in: `gr\u043eup`, limit: 100, want: `gr\\u043eup`})
+	})
+	t.Run("escapes control characters and runes above U+FFFF", func(t *testing.T) {
+		tester(t, testCase{in: "a\tb\U0001F600", limit: 100, want: `a\u0009b\U0001f600`})
+	})
+	t.Run("cuts off at limit runes", func(t *testing.T) {
+		tester(t, testCase{in: "abcdef", limit: 3, want: "abc… [3 more characters]"})
+	})
+}
+
+func TestClaimSummary(t *testing.T) {
+	type testCase struct {
+		claim   claims.Claim
+		limit   int
+		want    string
+		wantCut bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		got, cut := ClaimSummary(tc.claim, tc.limit)
+		assert.Equal(t, tc.want, got)
+		assert.Equal(t, tc.wantCut, cut)
+	}
+
+	t.Run("escapes a look-alike letter", func(t *testing.T) {
+		tester(t, testCase{
+			claim: claims.Claim{Type: "repository", Value: "g/gr\u043eup"},
+			limit: 80,
+			want:  `repository=g/gr\u043eup`,
+		})
+	})
+	t.Run("reports a cut value", func(t *testing.T) {
+		tester(t, testCase{
+			claim:   claims.Claim{Type: "t", Value: "abcdef"},
+			limit:   3,
+			want:    "t=abc… [3 more characters]",
+			wantCut: true,
+		})
+	})
+}
+
 func TestClaimLines(t *testing.T) {
 	type testCase struct {
 		p    prompt.Pending
@@ -98,6 +157,23 @@ func TestClaimLines(t *testing.T) {
 		assert.NotEqual(t, a, b)
 		assert.NotContains(t, a, "more characters")
 	})
+	t.Run("adds an escaped line for a look-alike letter", func(t *testing.T) {
+		tester(t, testCase{
+			p: prompt.Pending{
+				Claim:         &claims.Claim{Type: "repository", Value: "gitlab.example.com/gr\u043eup/other"},
+				SessionClaims: claims.Set{},
+			},
+			want: "  claim: repository=gitlab.example.com/gr\u043eup/other\n" +
+				"  claim (escaped): repository=gitlab.example.com/gr\\u043eup/other\n" +
+				"  session claims: none\n",
+		})
+	})
+	t.Run("adds an escaped line for a backslash", func(t *testing.T) {
+		tester(t, testCase{
+			p:    prompt.Pending{Claim: &claims.Claim{Type: "t", Value: `a\u043e`}, SessionClaims: claims.Set{}},
+			want: "  claim: t=a\\u043e\n  claim (escaped): t=a\\\\u043e\n  session claims: none\n",
+		})
+	})
 	t.Run("cuts off long current values", func(t *testing.T) {
 		long := strings.Repeat("v", 200)
 		tester(t, testCase{
@@ -111,7 +187,8 @@ func TestClaimLines(t *testing.T) {
 				Claim:         &claims.Claim{Type: "repository", Value: "g/\u202eevil"},
 				SessionClaims: claims.Set{"repository": many},
 			},
-			want: "  claim: repository=g/\\u202eevil\n  session claims:\n" +
+			want: "  claim: repository=g/\\u202eevil\n" +
+				"  claim (escaped): repository=g/\\u202eevil\n  session claims:\n" +
 				"    repository: v00, v01, v02, v03, v04, v05, v06, v07, v08, v09, … [2 more]\n",
 		})
 	})

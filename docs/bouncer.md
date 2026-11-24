@@ -389,6 +389,11 @@ Several places can answer a pending prompt.
   They answer a `claim` too, where `approve --session` adds the claim and `deny --session` is refused.
 - `agentcon bouncer decline <id>` refuses to answer a prompt of any kind.
 
+A claim prompt shows the requested claim in full.
+When its value has a backslash or a non-ASCII character, a `claim (escaped):` line follows with those characters as `\uXXXX` escapes.
+That makes a look-alike letter from another script visible, such as a Cyrillic `о` in `grоup`.
+`agentcon bouncer prompts` shows only the escaped form.
+
 At a terminal, Enter answers.
 An empty `text` or `secret` declines, and so does Ctrl-C.
 A declined or expired approval or claim request is a deny.
