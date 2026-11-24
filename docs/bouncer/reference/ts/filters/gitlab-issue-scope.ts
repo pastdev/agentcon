@@ -5,8 +5,11 @@
 // an issue in one of those projects goes through without a prompt. Any other
 // project asks the operator, who can allow it once or add it to the session.
 //
-// Claims compare exactly. Seed them as `<host>/<path>` with the path cased
-// as clients send it in URLs.
+// GitLab host names and project paths are case-insensitive, so this filter
+// lowercases `<host>/<path>` before comparing it or asking for it. Claims
+// themselves compare exactly, so the host must seed the same lowercase form,
+// including values taken from operator-written configuration. A seed with
+// capitals never matches.
 //
 // Requests that create an issue in a project the filter cannot resolve to a
 // path are denied rather than guessed at:
@@ -72,7 +75,7 @@ export default defineFilter<Config>({
       return deny(`project ${project} is not a path; use the URL-encoded project path, not its numeric ID`);
     }
 
-    const repository = `${req.host}/${project}`;
+    const repository = `${req.host}/${project}`.toLowerCase();
     if ((req.session?.claims.repository ?? []).includes(repository)) return next(req);
     const allowed = await requestClaim(
       "repository",

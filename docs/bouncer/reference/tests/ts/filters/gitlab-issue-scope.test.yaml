@@ -47,12 +47,30 @@ cases:
         claim_answer: timeout
         expect: deny
         expect_claims: {}
-  - name: claims compare exactly
+  - name: host and path casing do not matter
     claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://GitLab.Example.com/api/v4/projects/Group%2FProject/issues", body: "{}"}
+        expect: allow
+        expect_claim_requested: false
+  - name: a mixed-case request asks for and adds the lowercase claim
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/Group%2FOther/issues", body: "{}"}
+        claim_answer: session
+        expect: allow
+        expect_claim_requested: {type: repository, value: gitlab.example.com/group/other}
+        expect_claims:
+          repository: [gitlab.example.com/group/other, gitlab.example.com/group/project]
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        expect: allow
+        expect_claim_requested: false
+  - name: a seed with capitals never matches
+    claims: {repository: [gitlab.example.com/Group/Project]}
     steps:
       - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/Group%2FProject/issues", body: "{}"}
         expect: deny
-        expect_claim_requested: {type: repository, value: gitlab.example.com/Group/Project}
+        expect_claim_requested: {type: repository, value: gitlab.example.com/group/project}
   - name: a claim for another host does not match
     claims: {repository: [gitlab.example.com/group/project]}
     steps:
