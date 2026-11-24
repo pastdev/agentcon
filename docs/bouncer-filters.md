@@ -196,6 +196,7 @@ Claims still waiting on an answer count toward the limits, so a grant the operat
 An uncaught throw denies the request.
 
 [gitlab-issue-scope.ts](bouncer/reference/ts/filters/gitlab-issue-scope.ts) allows GitLab issue creation in the session's repositories and asks for any other.
+It denies GraphQL mutations not listed in its `allowMutations` config, since a mutation can create an issue in any project.
 
 ### Context and helpers
 

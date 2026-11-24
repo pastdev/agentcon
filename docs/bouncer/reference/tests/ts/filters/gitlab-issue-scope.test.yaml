@@ -75,7 +75,7 @@ cases:
         expect: deny
         expect_reason: not its numeric ID
         expect_claim_requested: false
-  - name: graphql createIssue is denied without a prompt
+  - name: graphql issue-creating mutations are denied without a prompt
     claims: {repository: [gitlab.example.com/group/project]}
     steps:
       - request:
@@ -85,30 +85,37 @@ cases:
           body: '{"query":"mutation { createIssue(input:{projectPath:\"group/project\", title:\"t\"}) { issue { id } } }"}'
         claim_answer: session
         expect: deny
-        expect_reason: issue creation through GraphQL (createIssue)
+        expect_reason: GraphQL mutation createIssue is not in allowMutations
         expect_claim_requested: false
-  - name: graphql workItemCreate is denied without a prompt
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { workItemCreate(input:{namespacePath:\"group/project\", title:\"t\", workItemTypeId:\"gid://gitlab/WorkItems::Type/1\"}) { workItem { id } } }"}'
+        expect: deny
+        expect_reason: GraphQL mutation workItemCreate is not in allowMutations
+  - name: graphql mutations the filter does not know are denied
     claims: {repository: [gitlab.example.com/group/project]}
     steps:
       - request:
           method: POST
           url: https://gitlab.example.com/api/graphql
           headers: {Content-Type: application/json}
-          body: '{"query":"mutation { workItemCreate(input:{namespacePath:\"group/project\", title:\"t\", workItemTypeId:\"gid://gitlab/WorkItems::Type/1\"}) { workItem { id } } }"}'
+          body: '{"query":"mutation { jiraImportStart(input:{projectPath:\"group/other\", jiraProjectKey:\"J\"}) { errors } }"}'
         claim_answer: session
         expect: deny
-        expect_reason: issue creation through GraphQL (workItemCreate)
+        expect_reason: GraphQL mutation jiraImportStart is not in allowMutations
         expect_claim_requested: false
-  - name: graphql issueMove is denied, even alongside other fields
-    steps:
-      - request:
+      - name: a trailing slash is still the GraphQL endpoint
+        request:
           method: POST
-          url: https://gitlab.example.com/api/graphql
+          url: https://gitlab.example.com/api/graphql/
           headers: {Content-Type: application/json}
-          body: '{"query":"mutation { a: issueSetLabels(input:{projectPath:\"g/p\", iid:\"1\", labelIds:[]}) { errors } b: issueMove(input:{projectPath:\"g/p\", iid:\"1\", targetProjectPath:\"g/other\"}) { issue { id } } }"}'
+          body: '{"query":"mutation { jiraImportStart(input:{projectPath:\"group/other\", jiraProjectKey:\"J\"}) { errors } }"}'
         expect: deny
-        expect_reason: issue creation through GraphQL (issueMove)
-  - name: graphql mutations that do not create issues go through
+        expect_reason: jiraImportStart is not in allowMutations
+  - name: graphql mutations in allowMutations go through
+    filter_config: {allowMutations: [createNote, issueSetLabels]}
     steps:
       - request:
           method: POST
@@ -116,6 +123,23 @@ cases:
           headers: {Content-Type: application/json}
           body: '{"query":"mutation { createNote(input:{noteableId:\"gid://gitlab/Issue/1\", body:\"hi\"}) { errors } }"}'
         expect: allow
+      - name: one unlisted field denies the whole request
+        request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { a: issueSetLabels(input:{projectPath:\"g/p\", iid:\"1\", labelIds:[]}) { errors } b: issueMove(input:{projectPath:\"g/p\", iid:\"1\", targetProjectPath:\"g/other\"}) { issue { id } } }"}'
+        expect: deny
+        expect_reason: GraphQL mutation issueMove is not in allowMutations
+  - name: graphql mutations are denied with no allowMutations
+    steps:
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { createNote(input:{noteableId:\"gid://gitlab/Issue/1\", body:\"hi\"}) { errors } }"}'
+        expect: deny
+        expect_reason: GraphQL mutation createNote is not in allowMutations
   - name: REST issue move and clone are denied without a prompt
     claims: {repository: [gitlab.example.com/group/project]}
     steps:

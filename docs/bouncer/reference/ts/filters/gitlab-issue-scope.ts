@@ -12,13 +12,16 @@
 // path are denied rather than guessed at:
 // - numeric project IDs
 // - REST issue move and clone, whose target is a numeric to_project_id
-// - GraphQL mutations that create issues, which name their target in
-//   arguments
-// Every other request continues.
+// Every other REST request continues.
 //
-// The GraphQL list below is a denylist of known issue-creating mutations, so
-// it must keep up with GitLab. For a hard guarantee, pair this filter with a
-// GraphQL allowlist, as github-graphql-guard.ts does for GitHub.
+// GraphQL mutations name their target project in arguments, and GitLab adds
+// mutations that create issues over time. So GraphQL fails closed: queries
+// continue, and a mutation or subscription is denied unless every field it
+// calls is in allowMutations. List only mutations that cannot create an
+// issue. Unparseable GraphQL is denied.
+//
+// config:
+//   allowMutations: GraphQL mutation fields to let through (default: none)
 import { defineFilter, deny, requestClaim } from "bouncer";
 
 // POST /api/v4/projects/:id/issues, with an optional format suffix.
@@ -27,30 +30,21 @@ const issuesSegment = /^issues(\.json)?$/;
 // POST /api/v4/projects/:id/issues/:iid/move or /clone.
 const relocateSegment = /^(move|clone)(\.json)?$/;
 
-// GraphQL mutations that create an issue, or an Issue-typed work item, in a
-// project named by their arguments. The alert mutations may create an issue
-// as a side effect.
-const issueMutations = new Set([
-  "createIssue",
-  "workItemCreate",
-  "workItemCreateFromTask",
-  "issueMove",
-  "createAlertIssue",
-  "createTestCase",
-  "alertSetAssignees",
-  "alertTodoCreate",
-]);
+interface Config {
+  allowMutations?: string[];
+}
 
-export default defineFilter({
-  async onRequest(req, next) {
-    if (req.path === "/api/graphql") {
+export default defineFilter<Config>({
+  async onRequest(req, next, ctx) {
+    if (/^\/api\/graphql\/*$/.test(req.path)) {
       // A parse error rejects, which fails the request closed.
       const ops = (await req.graphql()) ?? [];
+      const allowed = new Set(ctx.config.allowMutations ?? []);
       for (const op of ops) {
-        if (op.type !== "mutation") continue;
-        const hit = op.fields.find((f) => issueMutations.has(f));
-        if (hit) {
-          return deny(`issue creation through GraphQL (${hit}) is not allowed; use the REST API with the project path`);
+        if (op.type === "query") continue;
+        const unlisted = op.fields.filter((f) => op.type !== "mutation" || !allowed.has(f));
+        if (unlisted.length) {
+          return deny(`GraphQL ${op.type} ${unlisted.join(", ")} is not in allowMutations`);
         }
       }
       return next(req);
