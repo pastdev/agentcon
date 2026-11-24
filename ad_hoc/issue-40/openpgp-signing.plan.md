@@ -85,6 +85,7 @@ profiles:
 - A service with `signer` may not set `credential`, `inject`, `allow_upgrade`, or `insecure`.
 - A resolved profile may have at most one service with `signer`.
   `BOUNCER_SIGNER_URL` then has one unambiguous value.
+- A signer service's `hosts` must be exact names, with no `*`, so the first host forms a URL.
 - `rules`, `filters`, and `default` work as on any service.
 
 ## Request
@@ -207,7 +208,8 @@ git-sign --status-fd=2 -bsau <key>
 - POST through the proxy from the environment, trusting `SSL_CERT_FILE`.
 - On 200, write the signature to stdout, then write `\n[GNUPG:] SIG_CREATED D <algo> <hash> 00 <time> <fingerprint>\n` to the status fd.
   Git only looks for the `SIG_CREATED ` prefix, but the line follows gpg's format.
-  The algorithm, hash, and fingerprint come from response headers `X-Bouncer-Signer-Key-Algorithm`, `X-Bouncer-Signer-Hash`, and `X-Bouncer-Signer-Fingerprint`, so the helper never parses the signature.
+  The algorithm, hash, fingerprint, and creation time come from response headers `X-Bouncer-Signer-Key-Algorithm`, `X-Bouncer-Signer-Hash`, `X-Bouncer-Signer-Fingerprint`, and `X-Bouncer-Signer-Created`, so the helper never parses the signature.
+  `X-Bouncer-Signer-Type` names the object type for the stderr line.
 - Write `bouncer: signed <type> for <repository> with <key> via <host>` to stderr.
   Git shows stderr only on failure.
 - On any other status, write the response body to stderr and exit 1.
@@ -251,7 +253,9 @@ The reference filter compares the way `gitlab-issue-scope.ts` does after the low
 
 `envexport.Params` gains `SignerURL`.
 When set, `Build` adds `BOUNCER_SIGNER_URL`.
-`agentcon run` sets it to `https://<first host>/openpgp/sign` from the session profile's signer service, when there is one.
+The sidecar knows the session's profile, so its create-session response carries `signer_url`, `https://<first host>/openpgp/sign`, when that profile has a signer service.
+`mgmt.NewSession.SignerURL` holds it, and `host.AgentEnv` passes it to `envexport`.
+`agentcon run` already calls `AgentEnv`, so it needs no change.
 Nothing else in the agent's git config or environment changes.
 
 The operator's git config needs:
@@ -307,7 +311,7 @@ GopenPGP v3 depends on `github.com/ProtonMail/go-crypto`, which is a different m
 7. `pkg/bouncer/gitsign`: `NormalizeRemote`, argument parsing, the HTTP client, and status output.
 8. `cmd/agentcon/bouncer`: hidden `git-sign`.
 9. `pkg/bouncer/host` and `envexport`: the wrapper in the agent payload, `AgentLayout.GitSign`, and `BOUNCER_SIGNER_URL`.
-10. `pkg/run`: pass `SignerURL` from the session profile.
+10. `daemon` and `mgmt`: `signer_url` in the create-session response.
 11. `testrunner`: the test signer and spec load checks.
 12. Dependency guard test.
 13. Reference policy, filter, fixture, and docs.
@@ -326,7 +330,11 @@ GopenPGP v3 depends on `github.com/ProtonMail/go-crypto`, which is a different m
 
 ## Smoke check
 
-A handoff script, because it needs the operator's Bitwarden vault and a passphrase-protected key in it.
+`ad_hoc/issue-40/smoke` runs in the agent container with no credentials.
+It starts a real `agentcon bouncer serve`, PUTs a generated passphrase-protected key as `provided` values, and unpacks the real agent payload and environment.
+It covers every check below except the Bitwarden source.
+
+The Bitwarden source needs a handoff script, because it needs the operator's vault and a passphrase-protected key in it.
 It runs a real `agentcon run` session against a throwaway repository with a seeded `repository` claim.
 
 - `git commit -S` with `gpg.openpgp.program=/opt/agentcon/bin/git-sign` succeeds.

@@ -6,17 +6,21 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/pastdev/agentcon/internal/bouncer/gitobject"
 	"github.com/pastdev/agentcon/internal/bouncer/gitproto"
 	"github.com/pastdev/agentcon/internal/bouncer/gql"
 	"github.com/pastdev/agentcon/pkg/bouncer/claims"
+	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
 const (
@@ -87,6 +91,9 @@ type Request struct {
 	// service credential. Used when no rule matched and the profile
 	// unmatched mode is tunnel.
 	SkipCredential bool
+	// SignerRequest marks a request to a signer service. Describe then adds
+	// the requested key and a digest of the object, never its contents.
+	SignerRequest bool
 
 	gitOnce sync.Once
 	git     *gitproto.Info
@@ -244,6 +251,9 @@ func gunzip(b []byte) ([]byte, error) {
 // A GraphQL request includes operation type, name, and top-level fields.
 func (r *Request) Describe() string {
 	s := r.describeTransport()
+	if r.SignerRequest {
+		return s + " " + r.describeSigner()
+	}
 	if extra := r.describeGitUpdates(); extra != "" {
 		return s + " " + extra
 	}
@@ -270,6 +280,32 @@ func (r *Request) describeTransport() string {
 		return r.Method
 	}
 	return r.Method + " " + r.URL.Host + r.URL.RequestURI()
+}
+
+// describeSigner summarizes a signing request. The key is the agent's value,
+// so an unparsable one is quoted.
+func (r *Request) describeSigner() string {
+	key := "none"
+	if r.URL != nil {
+		if ks := r.URL.Query()["key"]; len(ks) > 0 {
+			key = strconv.Quote(ks[0])
+			if id, err := config.NormalizeKeyID(ks[0]); err == nil {
+				key = id
+			}
+		}
+	}
+	if r.Body == nil {
+		return "key=" + key + " bytes=0"
+	}
+	body, err := r.Body.ReadAll()
+	if err != nil {
+		return "key=" + key + " body=unreadable"
+	}
+	typ, err := gitobject.Check(body)
+	if err != nil {
+		typ = "invalid"
+	}
+	return fmt.Sprintf("key=%s sha256=%x bytes=%d type=%s", key, sha256.Sum256(body), len(body), typ)
 }
 
 func (r *Request) describeGitUpdates() string {

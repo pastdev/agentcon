@@ -16,6 +16,7 @@ type Params struct {
 	CACert       string // PEM file with only the bouncer CA
 	CABundle     string // PEM file with system roots + bouncer CA
 	SSHCommand   string // command for GIT_SSH_COMMAND
+	SignerURL    string // signer service URL, empty without one
 	Placeholders map[string]string
 }
 
@@ -51,6 +52,9 @@ func Build(p Params) Env {
 	add("BOUNCER_SSH_ADDR", p.SSHAddr)
 	// Base URL for tools that can't use a proxy: $BOUNCER_BASE/<host>/<path>.
 	add("BOUNCER_BASE", "http://"+p.ProxyAddr+"/s/"+p.Token)
+	if p.SignerURL != "" {
+		add("BOUNCER_SIGNER_URL", p.SignerURL)
+	}
 
 	names := make([]string, 0, len(p.Placeholders))
 	for n := range p.Placeholders {

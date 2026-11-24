@@ -285,6 +285,14 @@ func (s *Store) lookup(name string) (*config.Credential, *sync.Mutex, error) {
 	return c, m, nil
 }
 
+// Credential returns the configured credential, without fetching it.
+func (s *Store) Credential(name string) (*config.Credential, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.creds[name]
+	return c, ok
+}
+
 // Get returns the resolved slots for a credential.
 func (s *Store) Get(ctx context.Context, name string) (Secret, error) {
 	c, m, err := s.lookup(name)

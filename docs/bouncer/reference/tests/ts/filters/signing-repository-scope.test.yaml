@@ -1,0 +1,61 @@
+cases:
+  - name: a held repository signs without a prompt
+    claims: {repository: [github.com/myorg/myrepo]}
+    steps:
+      - request: {method: POST, url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=github.com%2Fmyorg%2Fmyrepo", body: "commit"}
+        expect: allow
+        expect_claim_requested: false
+  - name: repository case does not matter
+    claims: {repository: [github.com/myorg/myrepo]}
+    steps:
+      - request: {method: POST, url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=GitHub.com%2FMyOrg%2FMyRepo", body: "commit"}
+        expect: allow
+        expect_claim_requested: false
+  - name: operator adds another repository for the session
+    claims: {repository: [github.com/myorg/myrepo]}
+    steps:
+      - request: {method: POST, url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=github.com%2Fmyorg%2Fother", body: "commit"}
+        claim_answer: session
+        expect: allow
+        expect_claim_requested: {type: repository, value: github.com/myorg/other}
+        expect_claims:
+          repository: [github.com/myorg/myrepo, github.com/myorg/other]
+      - name: the next commit there no longer prompts
+        request: {method: POST, url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=github.com%2Fmyorg%2Fother", body: "commit"}
+        expect: allow
+        expect_claim_requested: false
+  - name: allow once adds nothing
+    steps:
+      - request: {method: POST, url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=github.com%2Fmyorg%2Fother", body: "commit"}
+        claim_answer: once
+        expect: allow
+        expect_claims: {}
+  - name: a denied repository signs nothing
+    steps:
+      - request: {method: POST, url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=github.com%2Fmyorg%2Fother", body: "commit"}
+        claim_answer: deny
+        expect: deny
+        expect_reason: not one of this session's repositories
+  - name: no answer in time denies
+    steps:
+      - request: {method: POST, url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=github.com%2Fmyorg%2Fother", body: "commit"}
+        claim_answer: timeout
+        expect: deny
+  - name: a missing repository is denied without a prompt
+    claims: {repository: [github.com/myorg/myrepo]}
+    steps:
+      - request: {method: POST, url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF", body: "commit"}
+        expect: deny
+        expect_reason: exactly one repository
+        expect_claim_requested: false
+  - name: a repeated repository is denied
+    claims: {repository: [github.com/myorg/myrepo]}
+    steps:
+      - request: {method: POST, url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=github.com%2Fmyorg%2Fmyrepo&repository=github.com%2Fmyorg%2Fother", body: "commit"}
+        expect: deny
+        expect_reason: exactly one repository
+  - name: other requests pass through
+    steps:
+      - request: {method: GET, url: "https://signer.bouncer.internal/"}
+        expect: allow
+        expect_claim_requested: false

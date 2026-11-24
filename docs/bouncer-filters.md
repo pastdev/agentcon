@@ -211,6 +211,7 @@ Every line names the filter.
 `credential(name)` returns that credential's secret.
 Filters are trusted.
 The request object does not include secrets unless a filter puts one in a `respond()` body.
+A credential with [`internal: true`](bouncer.md#internal) is never readable this way.
 
 `kv` is persistent storage, namespaced per filter.
 Module-level variables are per VM, not shared across requests.

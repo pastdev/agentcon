@@ -91,6 +91,7 @@ func TestWriteAgentPayload(t *testing.T) {
 	type testCase struct {
 		layout     AgentLayout
 		wantFiles  map[string]string
+		wantModes  map[string]int64
 		configPath string
 		wantConfig []string
 		wantErr    string
@@ -115,6 +116,7 @@ func TestWriteAgentPayload(t *testing.T) {
 		}
 		require.NoError(t, err)
 		found := map[string]string{}
+		modes := map[string]int64{}
 		tr := tar.NewReader(&buf)
 		for {
 			hdr, err := tr.Next()
@@ -131,6 +133,10 @@ func TestWriteAgentPayload(t *testing.T) {
 			data, err := io.ReadAll(tr)
 			require.NoError(t, err)
 			found[hdr.Name] = string(data)
+			modes[hdr.Name] = hdr.Mode
+		}
+		for name, want := range tc.wantModes {
+			assert.Equal(t, want, modes[name], name)
 		}
 		for name, want := range tc.wantFiles {
 			assert.Equal(t, want, found[name], name)
@@ -147,6 +153,11 @@ func TestWriteAgentPayload(t *testing.T) {
 				"opt/agentcon/ca.pem":          "CERT",
 				"opt/agentcon/ca-bundle.pem":   "BUNDLE",
 				"opt/agentcon/ssh/known_hosts": "known-hosts\n",
+				"opt/agentcon/bin/git-sign":    "#!/usr/bin/env bash\nexec \"/opt/agentcon/bin/agentcon\" bouncer git-sign \"$@\"\n",
+			},
+			wantModes: map[string]int64{
+				"opt/agentcon/bin/git-sign": 0o755,
+				"opt/agentcon/ca.pem":       0o644,
 			},
 			configPath: "opt/agentcon/ssh/config",
 			wantConfig: []string{
@@ -166,6 +177,7 @@ func TestWriteAgentPayload(t *testing.T) {
 				"usr/libexec/host-tool/agentcon": "#!/bin/true",
 				"opt/agentcon/ca.pem":            "CERT",
 				"etc/host-tool/known_hosts":      "known-hosts\n",
+				"opt/agentcon/bin/git-sign":      "#!/usr/bin/env bash\nexec \"/usr/libexec/host-tool/agentcon\" bouncer git-sign \"$@\"\n",
 			},
 			configPath: "etc/host-tool/ssh_config",
 			wantConfig: []string{
@@ -181,15 +193,18 @@ func TestWriteAgentPayload(t *testing.T) {
 
 func TestAgentEnv(t *testing.T) {
 	type testCase struct {
-		layout  AgentLayout
-		want    map[string]string
-		wantErr string
+		layout     AgentLayout
+		signerURL  string
+		want       map[string]string
+		wantAbsent []string
+		wantErr    string
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		session := mgmt.NewSession{
 			SessionRecord: mgmt.SessionRecord{ID: "deadbeef", Token: "tok"},
 			Placeholders:  map[string]string{"GH_TOKEN": "placeholder"},
+			SignerURL:     tc.signerURL,
 		}
 		env, err := AgentEnv(tc.layout, session, "10.1.0.2:8228", "10.1.0.2:8229")
 		if tc.wantErr != "" {
@@ -207,6 +222,9 @@ func TestAgentEnv(t *testing.T) {
 		for k, want := range tc.want {
 			assert.Equal(t, want, got[k], k)
 		}
+		for _, k := range tc.wantAbsent {
+			assert.NotContains(t, got, k)
+		}
 	}
 
 	t.Run("uses the default layout", func(t *testing.T) {
@@ -218,7 +236,13 @@ func TestAgentEnv(t *testing.T) {
 			"BOUNCER_SSH_ADDR":    "10.1.0.2:8229",
 			"BOUNCER_SESSION_ID":  "deadbeef",
 			"GH_TOKEN":            "placeholder",
-		}})
+		}, wantAbsent: []string{"BOUNCER_SIGNER_URL"}})
+	})
+	t.Run("exports the signer url when the profile has a signer", func(t *testing.T) {
+		tester(t, testCase{
+			signerURL: "https://signer.bouncer.internal/openpgp/sign",
+			want:      map[string]string{"BOUNCER_SIGNER_URL": "https://signer.bouncer.internal/openpgp/sign"},
+		})
 	})
 	t.Run("uses a custom layout", func(t *testing.T) {
 		tester(t, testCase{

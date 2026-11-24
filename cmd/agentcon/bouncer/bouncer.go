@@ -53,7 +53,7 @@ Host commands pick a live session by --slug, then --project, then cwd.`,
 					return err //nolint:wrapcheck // the root hook already names its source
 				}
 			}
-			if cmd.Name() == "ssh-connect" {
+			if cmd.Name() == "ssh-connect" || cmd.Name() == "git-sign" {
 				return nil
 			}
 			return resolve()
@@ -66,6 +66,7 @@ Host commands pick a live session by --slug, then --project, then cwd.`,
 	cmd.AddCommand(
 		serveCmd(),
 		sshConnectCmd(),
+		gitSignCmd(),
 		promptsCmd(),
 		answerCmd(),
 		approveCmd(true),

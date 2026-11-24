@@ -4,6 +4,8 @@ go 1.27
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
+	github.com/ProtonMail/go-crypto v1.5.2
+	github.com/ProtonMail/gopenpgp/v3 v3.5.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/dop251/goja v0.0.0-20261028213108-85be1416108e
 	github.com/evanw/esbuild v0.28.2
@@ -29,6 +31,7 @@ require (
 )
 
 require (
+	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/containerd/containerd/v2 v2.2.0 // indirect
 	github.com/containerd/continuity v0.4.5 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect

@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -25,6 +26,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/creds"
 	"github.com/pastdev/agentcon/internal/bouncer/gitproto"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
+	"github.com/pastdev/agentcon/internal/bouncer/signer"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
@@ -46,7 +48,9 @@ type Server struct {
 	Audit     *audit.Log
 	Transport http.RoundTripper
 	Dialer    *net.Dialer
-	Log       zerolog.Logger
+	// Signer signs for signer services. Nil refuses every signing request.
+	Signer signer.Signer
+	Log    zerolog.Logger
 	// DisableControl keeps /_bouncer/ off the agent-facing proxy so the
 	// management API can listen on a different address.
 	DisableControl bool
@@ -348,6 +352,7 @@ func (s *Server) intercept(w http.ResponseWriter, r *http.Request, sess *chain.S
 	req := &chain.Request{
 		Ctx: r.Context(), Transport: chain.TransportHTTP, Session: sess, Profile: prof.Name, Service: svc.Config.Name,
 		Method: r.Method, URL: u, Header: header, Body: chain.NewBody(r.Body),
+		SignerRequest: svc.Config.Signer != nil,
 	}
 	e := s.entry(sess, svc.Config.Name, req.Describe())
 	defer func() {
@@ -373,7 +378,7 @@ func (s *Server) intercept(w http.ResponseWriter, r *http.Request, sess *chain.S
 		writeDenial(w, &chain.Denial{By: "bouncer", Reason: err.Error(), Status: 400})
 		return
 	}
-	h := chain.Build(svc.Filters, s.forwarder(svc, r.ContentLength))
+	h := chain.Build(svc.Filters, s.terminal(svc, r.ContentLength))
 	resp, _ := h(req)
 	if resp.Denial != nil {
 		e.Decision, e.By, e.Reason, e.Status = audit.DecisionDeny, resp.Denial.By, resp.Denial.Reason, resp.Denial.Status
@@ -587,4 +592,23 @@ func (c *notifyCloseConn) Close() error {
 	err := c.Conn.Close()
 	c.once.Do(c.onClose)
 	return err //nolint:wrapcheck // thin adapter: return the wrapped conn's error as-is
+}
+
+// terminal is the end of a service's chain: the in-process signer for a
+// signer service, which never forwards, and the upstream forwarder otherwise.
+func (s *Server) terminal(svc *policy.Service, origLength int64) chain.Handler {
+	if svc.Config.Signer == nil {
+		return s.forwarder(svc, origLength)
+	}
+	sg := s.Signer
+	if sg == nil {
+		sg = noSigner{}
+	}
+	return signer.Terminal(svc.Config, sg, s.Log)
+}
+
+type noSigner struct{}
+
+func (noSigner) Sign(context.Context, config.OpenPGPKey, []byte) (*signer.Signature, error) {
+	return nil, errors.New("no signer is configured")
 }

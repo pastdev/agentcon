@@ -31,6 +31,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/notify"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
 	"github.com/pastdev/agentcon/internal/bouncer/proxy"
+	"github.com/pastdev/agentcon/internal/bouncer/signer"
 	"github.com/pastdev/agentcon/internal/bouncer/sshproxy"
 	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
@@ -200,6 +201,10 @@ func New(opts Options) (*Daemon, error) {
 	d.creds = creds.NewStore(cfg.Credentials)
 	d.creds.SetProvided(opts.Provided)
 	d.env.Credential = func(ctx context.Context, name string) (string, error) {
+		if c, ok := d.Config().Credentials[name]; ok && c.Internal {
+			d.log.Warn().Str("credential", name).Msg("filter asked for an internal credential")
+			return "", creds.Unavailable(name)
+		}
 		sec, err := d.creds.Get(ctx, name)
 		if err != nil {
 			creds.LogError(d.log.Warn(), err).Str("credential", name).Msg("credential unavailable to a filter")
@@ -567,6 +572,16 @@ func (d *Daemon) Placeholders() map[string]string {
 	return out
 }
 
+// SignerURL is the signer URL for a profile, or "" when it has no signer
+// service.
+func (d *Daemon) SignerURL(profile string) string {
+	rp, err := d.Config().ResolvedProfile(profile)
+	if err != nil {
+		return ""
+	}
+	return rp.SignerService().SignerURL()
+}
+
 // SSHHosts lists the host patterns of every configured SSH service.
 func (d *Daemon) SSHHosts() []string {
 	seen := map[string]bool{}
@@ -781,6 +796,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	px := &proxy.Server{Backend: d, CA: d.CA, Creds: d.creds, Audit: d.audit, Transport: d.transport,
+		Signer: &signer.OpenPGP{Creds: d.creds},
 		Dialer: &net.Dialer{Timeout: 30 * time.Second}, Log: component(d.opts.Log, "proxy"), DisableControl: plan.split}
 	httpSrv := &http.Server{Handler: px, ReadHeaderTimeout: 30 * time.Second}
 	sshSrv := &sshproxy.Server{Backend: d, CA: d.CA, Creds: d.creds, Audit: d.audit, Log: component(d.opts.Log, "ssh")}

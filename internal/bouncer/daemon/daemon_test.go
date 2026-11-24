@@ -654,6 +654,58 @@ func TestControlWithClient(t *testing.T) {
 	})
 }
 
+func TestCreateSessionSignerURL(t *testing.T) {
+	type testCase struct {
+		profile string
+		want    string
+	}
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(cfg, []byte(`default_profile: plain
+prompts: {notify: false}
+credentials:
+  sign:
+    internal: true
+    private_key: {source: provided}
+profiles:
+  plain: {}
+  signing:
+    http:
+      - name: commit-signing
+        hosts: [signer.bouncer.internal]
+        signer:
+          openpgp:
+            keys: [{id: C26E02CE599B53FF, credential: sign}]
+  child:
+    extends: signing
+`), 0o600)
+	require.NoError(t, err)
+	state := filepath.Join(dir, "state")
+	d, err := New(Options{ConfigPath: cfg, StateDir: state, Provided: map[string]string{"sign.private_key": "k"}})
+	require.NoError(t, err)
+	token, err := os.ReadFile(AdminTokenPath(state))
+	require.NoError(t, err)
+	srv := httptest.NewServer(d.Control())
+	t.Cleanup(srv.Close)
+	c := mgmt.New(srv.URL, strings.TrimSpace(string(token)))
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		created, err := c.CreateSession(t.Context(), "", tc.profile, "test", "1h")
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, created.SignerURL)
+	}
+
+	t.Run("no signer service", func(t *testing.T) {
+		tester(t, testCase{profile: "plain"})
+	})
+	t.Run("signer service", func(t *testing.T) {
+		tester(t, testCase{profile: "signing", want: "https://signer.bouncer.internal/openpgp/sign"})
+	})
+	t.Run("inherited signer service", func(t *testing.T) {
+		tester(t, testCase{profile: "child", want: "https://signer.bouncer.internal/openpgp/sign"})
+	})
+}
+
 func TestCredentialErrorsStayInTheLog(t *testing.T) {
 	type testCase struct {
 		err  error
@@ -703,6 +755,56 @@ profiles:
 		d, logs := newDaemon(t)
 		_, err := d.env.Credential(t.Context(), "gl")
 		tester(t, testCase{err: err, logs: logs})
+	})
+}
+
+func TestFilterCredentialRefusesInternal(t *testing.T) {
+	type testCase struct {
+		name    string
+		want    string
+		wantErr bool
+	}
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(cfg, []byte(`default_profile: p
+prompts: {notify: false}
+credentials:
+  signing:
+    internal: true
+    private_key: {source: provided}
+  plain:
+    token: {source: provided}
+profiles:
+  p: {}
+`), 0o600)
+	require.NoError(t, err)
+	logs := &lockedBuffer{}
+	d, err := New(Options{
+		ConfigPath: cfg,
+		StateDir:   filepath.Join(dir, "state"),
+		Log:        zerolog.New(logs),
+		Provided:   map[string]string{"signing.private_key": "armored-key", "plain.token": "tok"},
+	})
+	require.NoError(t, err)
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		got, err := d.env.Credential(t.Context(), tc.name)
+		if tc.wantErr {
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "armored-key")
+			assert.Empty(t, got)
+			return
+		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
+	}
+
+	t.Run("internal credential is unavailable", func(t *testing.T) {
+		tester(t, testCase{name: "signing", wantErr: true})
+		assert.Contains(t, logs.String(), "filter asked for an internal credential")
+	})
+	t.Run("other credential is readable", func(t *testing.T) {
+		tester(t, testCase{name: "plain", want: "tok"})
 	})
 }
 

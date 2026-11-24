@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
@@ -26,6 +27,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/jsfilter"
 	"github.com/pastdev/agentcon/internal/bouncer/kv"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
+	"github.com/pastdev/agentcon/internal/bouncer/signer"
 	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
@@ -204,6 +206,19 @@ type target struct {
 	filters    []chain.Filter
 	service    string
 	credential string
+	// signer is the service config when it is a signer service.
+	signer *config.Service
+}
+
+// TestSignature is the body a signer service answers with in tests.
+const TestSignature = "-----BEGIN PGP SIGNATURE-----\nbouncer-test-signature\n-----END PGP SIGNATURE-----\n"
+
+// testSigner runs in place of the real signer: no credential is fetched and
+// the signature is fixed.
+type testSigner struct{}
+
+func (testSigner) Sign(_ context.Context, k config.OpenPGPKey, _ []byte) (*signer.Signature, error) {
+	return &signer.Signature{Armored: []byte(TestSignature), Fingerprint: k.ID, KeyAlgo: 22, Hash: 8, Created: time.Unix(0, 0)}, nil
 }
 
 type chainFunc func(host string) (target, error)
@@ -399,7 +414,11 @@ func chains(spec *Spec, c *Case, filterPath, policyPath, profile string, env *ch
 		if svc == nil {
 			return target{}, fmt.Errorf("no service in profile %s matches %s (it would be %sed)", prof.Name, host, prof.Unmatched)
 		}
-		return target{filters: svc.Filters, service: svc.Config.Name, credential: svc.Config.Credential}, nil
+		t := target{filters: svc.Filters, service: svc.Config.Name, credential: svc.Config.Credential}
+		if svc.Config.Signer != nil {
+			t.signer = svc.Config
+		}
+		return t, nil
 	}
 	sshChain := func(host string) (target, error) {
 		svc := prof.MatchSSH(host)
@@ -419,6 +438,9 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 	var tgt target
 	var seen upstream
 	terminal := func(r *chain.Request) (*chain.Response, error) {
+		if tgt.signer != nil {
+			return signer.Terminal(tgt.signer, testSigner{}, zerolog.Nop())(r)
+		}
 		seen = upstream{reached: true, header: r.Header, skipCredential: r.SkipCredential}
 		if r.Transport == chain.TransportSSH {
 			return chain.Allowed(), nil
@@ -456,6 +478,12 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 		if err != nil {
 			return "", err
 		}
+		if tgt.signer != nil && c.Upstream != nil {
+			return "", fmt.Errorf("upstream is not allowed on signer service %s, which never forwards", tgt.service)
+		}
+		if tgt.signer != nil && c.ExpectCredential != nil {
+			return "", fmt.Errorf("expect_credential is not allowed on signer service %s, which injects no credential", tgt.service)
+		}
 		method := c.Request.Method
 		if method == "" {
 			method = http.MethodGet
@@ -469,7 +497,8 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 			h.Set(k, v)
 		}
 		req = &chain.Request{Ctx: context.Background(), Transport: chain.TransportHTTP, Session: sess, Profile: profile,
-			Service: tgt.service, Method: method, URL: u, Header: h, Body: chain.BytesBody(body)}
+			Service: tgt.service, Method: method, URL: u, Header: h, Body: chain.BytesBody(body),
+			SignerRequest: tgt.signer != nil}
 		err = chain.CheckMethod(method)
 		if err == nil {
 			err = chain.CheckPath(u.Path)

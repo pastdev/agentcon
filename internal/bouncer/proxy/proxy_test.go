@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,13 +15,16 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/pastdev/agentcon/internal/bouncer/audit"
 	"github.com/pastdev/agentcon/internal/bouncer/ca"
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
 	"github.com/pastdev/agentcon/internal/bouncer/creds"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
+	"github.com/pastdev/agentcon/internal/bouncer/signer"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -595,5 +600,180 @@ func TestNonPublic(t *testing.T) {
 	})
 	t.Run("accepts a public address", func(t *testing.T) {
 		tester(t, testCase{ip: "140.82.112.3", want: false})
+	})
+}
+
+// recordingSigner signs with a fixed signature and records the call.
+type recordingSigner struct {
+	mu    sync.Mutex
+	calls int
+	key   config.OpenPGPKey
+}
+
+func (s *recordingSigner) Sign(_ context.Context, k config.OpenPGPKey, _ []byte) (*signer.Signature, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	s.key = k
+	return &signer.Signature{Armored: []byte("-----BEGIN PGP SIGNATURE-----\nfake\n-----END PGP SIGNATURE-----\n"), Fingerprint: "ABCD", KeyAlgo: 22, Hash: 8}, nil
+}
+
+// lockedEntries collects audit entries written after the response is sent.
+type lockedEntries struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+}
+
+func (l *lockedEntries) Write(p []byte) (int, error) {
+	var en audit.Entry
+	err := json.Unmarshal(p, &en)
+	if err != nil {
+		return 0, err //nolint:wrapcheck // test helper
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, en)
+	return len(p), nil
+}
+
+func (l *lockedEntries) last() (audit.Entry, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.entries) == 0 {
+		return audit.Entry{}, false
+	}
+	return l.entries[len(l.entries)-1], true
+}
+
+// failingTransport fails the test if anything is sent upstream.
+type failingTransport struct{ t *testing.T }
+
+func (f failingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.t.Errorf("signer request reached upstream: %s %s", r.Method, r.URL)
+	return nil, errors.New("no upstream")
+}
+
+func TestSignerService(t *testing.T) {
+	const commit = "tree 9bedf67800b2923982bdf60c89c57ce6986c4c5b\n" +
+		"author A <a@example.com> 1764000000 +0000\n" +
+		"committer A <a@example.com> 1764000000 +0000\n\nmsg\n"
+	type testCase struct {
+		path         string
+		body         string
+		wantStatus   int
+		wantSigned   bool
+		wantDecision string
+		wantRequest  string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		cfg, err := config.Parse([]byte(`
+credentials:
+  sign:
+    internal: true
+    private_key: {source: provided}
+profiles:
+  p:
+    unmatched: tunnel
+    http:
+      - name: signing
+        hosts: [signer.bouncer.internal]
+        signer:
+          openpgp:
+            keys: [{id: C26E02CE599B53FF, credential: sign}]
+        rules:
+          - action: deny
+            path: /openpgp/sign
+            methods: [PUT]
+          - action: allow
+            path: /openpgp/sign
+`), t.TempDir()+"/config.yaml")
+		require.NoError(t, err)
+		set, err := policy.Compile(cfg, &chain.Env{}, nil)
+		require.NoError(t, err)
+		authority, err := ca.LoadOrCreate(t.TempDir())
+		require.NoError(t, err)
+		entries := &lockedEntries{}
+		sg := &recordingSigner{}
+		srv := &Server{
+			Backend:   &fakeBackend{set: set, sessions: map[string]*chain.Session{"tok123": {ID: "s1", Profile: "p"}}},
+			CA:        authority,
+			Creds:     creds.NewStore(cfg.Credentials),
+			Audit:     audit.New(zerolog.New(entries)),
+			Transport: failingTransport{t},
+			Dialer:    &net.Dialer{},
+			Signer:    sg,
+		}
+		px := httptest.NewServer(srv)
+		t.Cleanup(px.Close)
+		roots := x509.NewCertPool()
+		roots.AddCert(authority.Cert())
+		proxyURL, err := url.Parse(px.URL)
+		require.NoError(t, err)
+		proxyURL.User = url.UserPassword("bouncer", "tok123")
+		client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: roots}}}
+
+		method, path, _ := strings.Cut(tc.path, " ")
+		req, err := http.NewRequest(method, "https://signer.bouncer.internal"+path, strings.NewReader(tc.body))
+		require.NoError(t, err)
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		b, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		assert.Equal(t, tc.wantStatus, resp.StatusCode, string(b))
+		sg.mu.Lock()
+		defer sg.mu.Unlock()
+		if tc.wantSigned {
+			assert.Equal(t, 1, sg.calls)
+			assert.Equal(t, "sign", sg.key.Credential)
+			assert.Contains(t, string(b), "BEGIN PGP SIGNATURE")
+			assert.Equal(t, "ABCD", resp.Header.Get(signer.HeaderFingerprint))
+		} else {
+			assert.Zero(t, sg.calls)
+			assert.NotContains(t, string(b), "BEGIN PGP SIGNATURE")
+		}
+		var last audit.Entry
+		require.Eventually(t, func() bool {
+			var ok bool
+			last, ok = entries.last()
+			return ok
+		}, 5*time.Second, 10*time.Millisecond, "audit entry")
+		assert.Equal(t, tc.wantDecision, last.Decision)
+		assert.Contains(t, last.Request, tc.wantRequest)
+		assert.NotContains(t, last.Request, "msg")
+	}
+
+	t.Run("signs an allowed commit without dialing upstream", func(t *testing.T) {
+		tester(t, testCase{
+			path: "POST /openpgp/sign?key=c26e02ce599b53ff&repository=github.com%2Fpastdev%2Fagentcon", body: commit,
+			wantStatus: 200, wantSigned: true, wantDecision: audit.DecisionAllow,
+			wantRequest: "key=C26E02CE599B53FF sha256=",
+		})
+	})
+	t.Run("audits size and type", func(t *testing.T) {
+		tester(t, testCase{
+			path: "POST /openpgp/sign?key=C26E02CE599B53FF", body: commit,
+			wantStatus: 200, wantSigned: true, wantDecision: audit.DecisionAllow,
+			wantRequest: fmt.Sprintf("bytes=%d type=commit", len(commit)),
+		})
+	})
+	t.Run("a rule deny signs nothing", func(t *testing.T) {
+		tester(t, testCase{
+			path: "PUT /openpgp/sign?key=C26E02CE599B53FF", body: commit,
+			wantStatus: 403, wantDecision: audit.DecisionDeny, wantRequest: "PUT signer.bouncer.internal",
+		})
+	})
+	t.Run("an unmatched path under tunnel is refused, not forwarded", func(t *testing.T) {
+		tester(t, testCase{
+			path: "POST /other?key=C26E02CE599B53FF", body: commit,
+			wantStatus: 403, wantDecision: audit.DecisionDeny, wantRequest: "POST signer.bouncer.internal/other",
+		})
+	})
+	t.Run("a malformed object signs nothing", func(t *testing.T) {
+		tester(t, testCase{
+			path: "POST /openpgp/sign?key=C26E02CE599B53FF", body: "sign me",
+			wantStatus: 400, wantDecision: audit.DecisionDeny, wantRequest: "type=invalid",
+		})
 	})
 }

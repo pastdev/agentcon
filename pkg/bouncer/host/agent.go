@@ -26,6 +26,9 @@ type AgentLayout struct {
 	SSHConfig string
 	// KnownHosts trusts the bouncer SSH CA.
 	KnownHosts string
+	// GitSign is a one-line wrapper around "agentcon bouncer git-sign" for
+	// git's gpg.openpgp.program, which takes a single executable path.
+	GitSign string
 	// SSHClient is the ssh executable already in the agent image. It is not
 	// part of the payload.
 	SSHClient string
@@ -39,6 +42,7 @@ func DefaultAgentLayout() AgentLayout {
 		CABundle:   "/opt/agentcon/ca-bundle.pem",
 		SSHConfig:  "/opt/agentcon/ssh/config",
 		KnownHosts: "/opt/agentcon/ssh/known_hosts",
+		GitSign:    "/opt/agentcon/bin/git-sign",
 		SSHClient:  "/usr/bin/ssh",
 	}
 }
@@ -61,6 +65,7 @@ func (l AgentLayout) Normalize() (AgentLayout, error) {
 		{"ca bundle", &l.CABundle, d.CABundle, true},
 		{"ssh config", &l.SSHConfig, d.SSHConfig, true},
 		{"known hosts", &l.KnownHosts, d.KnownHosts, true},
+		{"git sign", &l.GitSign, d.GitSign, true},
 		{"ssh client", &l.SSHClient, d.SSHClient, false},
 	}
 	var payload []string
@@ -163,6 +168,10 @@ func WriteAgentPayload(w io.Writer, p AgentPayload) error {
 	if err != nil {
 		return fmt.Errorf("write ssh config: %w", err)
 	}
+	err = tw.writeFile(l.GitSign, []byte(fmt.Sprintf("#!/usr/bin/env bash\nexec \"%s\" bouncer git-sign \"$@\"\n", l.Binary)), 0o755)
+	if err != nil {
+		return fmt.Errorf("write git-sign: %w", err)
+	}
 	err = tw.tw.Close()
 	if err != nil {
 		return fmt.Errorf("tar close: %w", err)
@@ -186,6 +195,7 @@ func AgentEnv(l AgentLayout, s mgmt.NewSession, proxyAddr, sshAddr string) ([]st
 		CACert:       l.CACert,
 		CABundle:     l.CABundle,
 		SSHCommand:   fmt.Sprintf(`"%s" -F "%s"`, l.SSHClient, l.SSHConfig),
+		SignerURL:    s.SignerURL,
 		Placeholders: s.Placeholders,
 	})
 	out := make([]string, 0, len(env.Vars))
@@ -233,11 +243,16 @@ func (t *tarWriter) header(name string, mode, size int64) *tar.Header {
 
 // writeBytes packs a world-readable file.
 func (t *tarWriter) writeBytes(name string, data []byte) error {
+	return t.writeFile(name, data, 0o644)
+}
+
+// writeFile packs data with mode.
+func (t *tarWriter) writeFile(name string, data []byte, mode int64) error {
 	err := t.writeDirs(name)
 	if err != nil {
 		return err
 	}
-	err = t.tw.WriteHeader(t.header(name, 0o644, int64(len(data))))
+	err = t.tw.WriteHeader(t.header(name, mode, int64(len(data))))
 	if err != nil {
 		return fmt.Errorf("tar header %s: %w", name, err)
 	}
