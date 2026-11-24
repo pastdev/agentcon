@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 )
 
 // Kind is the kind of answer a question expects.
@@ -23,6 +25,10 @@ const (
 	KindText Kind = "text"
 	// KindSecret expects a value that must not be echoed.
 	KindSecret Kind = "secret"
+	// KindClaim asks to add a claim to a session. It expects allow once,
+	// allow for the session (which adds the claim), or deny. A denial is
+	// never remembered.
+	KindClaim Kind = "claim"
 )
 
 // Outcomes of a settled question.
@@ -56,10 +62,15 @@ type Question struct {
 	SessionID    string
 	SessionLabel string
 	Profile      string
+	// Claim is the claim a KindClaim question asks to add.
+	Claim *claims.Claim
+	// SessionClaims is the session's claims when a KindClaim question was
+	// raised.
+	SessionClaims claims.Set
 }
 
-// Answer is the human's reply. Allow and Remember apply to a confirm.
-// Value applies to text and secret.
+// Answer is the human's reply. Allow and Remember apply to a confirm or a
+// claim. Value applies to text and secret.
 type Answer struct {
 	Allow    bool
 	Remember bool
@@ -68,6 +79,38 @@ type Answer struct {
 
 // ConfirmChoices is the hint shown when asking for a confirm answer.
 const ConfirmChoices = "[y] allow once  [s] allow for session  [n] deny  [d] deny for session"
+
+// ClaimChoices is the hint shown when asking for a claim answer.
+const ClaimChoices = "[y] allow once  [s] add claim for session  [n] deny"
+
+// ParseClaim maps a typed y, s, or n to a claim answer.
+func ParseClaim(s string) (Answer, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "y", "yes":
+		return Answer{Allow: true}, true
+	case "s":
+		return Answer{Allow: true, Remember: true}, true
+	case "n", "no":
+		return Answer{}, true
+	}
+	return Answer{}, false
+}
+
+// ParseChoice maps a typed choice to an answer for a confirm or a claim.
+func ParseChoice(k Kind, s string) (Answer, bool) {
+	switch k {
+	case KindConfirm:
+		return ParseConfirm(s)
+	case KindClaim:
+		return ParseClaim(s)
+	case KindText, KindSecret:
+	}
+	return Answer{}, false
+}
+
+// IsChoice reports whether the kind is answered with allow or deny rather
+// than a value.
+func (k Kind) IsChoice() bool { return k == KindConfirm || k == KindClaim }
 
 // ParseConfirm maps a typed y, s, n, or d to a confirm answer.
 func ParseConfirm(s string) (Answer, bool) {
@@ -86,20 +129,25 @@ func ParseConfirm(s string) (Answer, bool) {
 
 // Pending is a question awaiting an answer. It never holds the answer.
 type Pending struct {
-	ID           string    `json:"id"`
-	Kind         Kind      `json:"kind"`
-	Source       string    `json:"source"`
-	Message      string    `json:"message"`
-	Detail       string    `json:"detail,omitempty"`
-	SessionID    string    `json:"session_id,omitempty"`
-	SessionLabel string    `json:"session_label,omitempty"`
-	Profile      string    `json:"profile,omitempty"`
-	Created      time.Time `json:"created"`
-	Expires      time.Time `json:"expires"`
+	ID           string `json:"id"`
+	Kind         Kind   `json:"kind"`
+	Source       string `json:"source"`
+	Message      string `json:"message"`
+	Detail       string `json:"detail,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+	SessionLabel string `json:"session_label,omitempty"`
+	Profile      string `json:"profile,omitempty"`
+	// Claim is the claim a KindClaim prompt asks to add.
+	Claim *claims.Claim `json:"claim,omitempty"`
+	// SessionClaims is a snapshot of the session's claims, grouped by type,
+	// when a KindClaim prompt was raised. It is {} when the session has none.
+	SessionClaims claims.Set `json:"session_claims,omitzero"`
+	Created       time.Time  `json:"created"`
+	Expires       time.Time  `json:"expires"`
 }
 
 // Event notifies subscribers of changes. Allowed is set only for an
-// answered confirm.
+// answered confirm or claim.
 type Event struct {
 	Type    string // "pending" or "settled"
 	Pending Pending
@@ -170,6 +218,13 @@ func (b *Broker) Raise(q Question) *Ticket {
 		},
 		done: make(chan result, 1),
 	}
+	if q.Kind == KindClaim {
+		if q.Claim != nil {
+			c := *q.Claim
+			e.Claim = &c
+		}
+		e.SessionClaims = q.SessionClaims.Clone()
+	}
 	b.pending[e.ID] = e
 	b.broadcast(Event{Type: "pending", Pending: e.Pending})
 	notify := b.notify
@@ -216,6 +271,13 @@ func (b *Broker) Answer(id string, a Answer) error {
 		if a.Value != "" {
 			return fmt.Errorf("%w: a confirm takes allow, not a value", ErrInvalidAnswer)
 		}
+	case KindClaim:
+		if a.Value != "" {
+			return fmt.Errorf("%w: a claim takes allow, not a value", ErrInvalidAnswer)
+		}
+		if !a.Allow && a.Remember {
+			return fmt.Errorf("%w: a claim denial is never remembered; deny without remember", ErrInvalidAnswer)
+		}
 	case KindText, KindSecret:
 		if a.Value == "" || a.Allow || a.Remember {
 			return fmt.Errorf("%w: a %s prompt takes only a non-empty value", ErrInvalidAnswer, e.Kind)
@@ -250,7 +312,7 @@ func (b *Broker) settle(id string, r result, outcome string) bool {
 		Type:    "settled",
 		Pending: e.Pending,
 		Outcome: outcome,
-		Allowed: e.Kind == KindConfirm && r.err == nil && r.answer.Allow,
+		Allowed: e.Kind.IsChoice() && r.err == nil && r.answer.Allow,
 	})
 	return true
 }

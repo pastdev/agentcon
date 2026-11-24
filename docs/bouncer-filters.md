@@ -2,7 +2,7 @@
 
 A filter is a TypeScript (or JavaScript) module that default-exports `defineFilter({...})`.
 It runs inside the sidecar, in an embedded JS VM.
-`await` on `next()`, `ask()`, and body reads blocks that filter, not the daemon.
+`await` on `next()`, `ask()`, `requestClaim()`, and body reads blocks that filter, not the daemon.
 
 The type surface is [`internal/bouncer/types/bouncer.d.ts`](../internal/bouncer/types/bouncer.d.ts).
 A concrete GitHub overlay that uses filters is [docs/bouncer/github](bouncer/github).
@@ -138,6 +138,65 @@ Answer from another terminal with `agentcon bouncer approve`, or see [Prompts](b
 
 A YAML rule can also use `action: ask`.
 Use a filter `ask()` when the decision needs the body, GraphQL fields, or git refs.
+
+### Session claims
+
+A claim is a trusted `(type, value)` fact about a session, such as `repository = gitlab.example.com/group/project`.
+Claims say what the session is about.
+What may be done with that stays in filter policy.
+agentcon never interprets claim types or values.
+
+`req.session.claims` maps each claim type to its values.
+
+```typescript
+const repos = req.session?.claims.repository ?? [];
+if (repos.includes(`${req.host}/${project}`)) return next(req);
+```
+
+It is a deeply frozen copy taken when the request arrived.
+Changing it has no effect on the session.
+The shared anonymous session always has `{}`.
+
+Claims are added in exactly two ways.
+
+- The host seeds them when it creates the session through the [control API](bouncer.md#management-api).
+- An operator answers a filter's `requestClaim()` with "add claim for session".
+
+Nothing removes or replaces a claim.
+Claims end with their session, and they survive a daemon restart along with it.
+
+`requestClaim(type, value, prompt, { timeout? })` asks the operator to add a claim.
+
+```typescript
+if (await requestClaim("repository", repo, `Let the agent create issues in ${repo}?`)) return next(req);
+return deny(`${repo} is not one of this session's repositories`);
+```
+
+- It resolves `true` without asking when the session already holds the claim.
+- The operator sees the prompt, the requested claim, and the session's current claims grouped by type.
+- "Add claim for session" adds the claim and resolves `true`.
+  Later requests see it in `req.session.claims`.
+- "Allow once" resolves `true` and adds nothing.
+- Deny, decline, or no answer before the timeout resolves `false`.
+  A denial is not remembered, so the next request asks again.
+- Identical concurrent requests in a session share one prompt.
+- On the shared anonymous session, "add claim for session" counts as once.
+
+Claim rules are exact.
+
+- A type matches `^[a-z][a-z0-9_]*$` and has at most 64 characters.
+- A value is non-empty valid UTF-8 without control characters, at most 1024 bytes.
+- A session holds at most 32 types and 256 values per type.
+- Values are a set, so adding one twice is a no-op.
+- Nothing is case-folded, trimmed, or cleaned.
+  Canonicalize values the same way in the host and in filters.
+
+`requestClaim()` throws, without asking, when the type or value breaks these rules or the session is at a limit.
+Claims still waiting on an answer count toward the limits, so a grant the operator approves always fits.
+An uncaught throw denies the request.
+
+[gitlab-issue-scope.ts](bouncer/reference/ts/filters/gitlab-issue-scope.ts) allows GitLab issue creation in the session's repositories and asks for any other.
+It denies GraphQL mutations not listed in its `allowMutations` config, since a mutation can create an issue in any project.
 
 ### Context and helpers
 
@@ -283,6 +342,8 @@ Steps in a case run in order and share that state.
 Use several steps to test a sequence, such as a rate limit.
 A case's `filter_config` or `profile` replaces the file's.
 `filter_config: {}` runs the filter with no config.
+A case's `claims` seeds its session, validated like the control API.
+Its steps share them, so a claim added in one step is held in the next.
 A step without `name` is named by its position, starting at 1.
 The first failing step ends its case.
 
@@ -297,6 +358,9 @@ A step sends one request.
   Default is 200 with a short body.
 - `approve`: the answer to every `ask()` in the step.
   Unset means asks are denied.
+- `claim_answer`: the answer to every `requestClaim()` in the step that the session does not already satisfy.
+  It is `session`, `once`, `deny`, or `timeout`.
+  Unset means deny.
 
 A step checks any of these.
 
@@ -305,6 +369,9 @@ A step checks any of these.
 - `expect_status`: the response status.
 - `expect_body_contains` and `expect_body_excludes`: text the response body must or must not contain.
 - `expect_asked`: whether an `ask()` happened.
+- `expect_claim_requested`: whether a `requestClaim()` asked the operator, or the `{type, value}` it asked for.
+- `expect_claims`: the session's full claim set after the step.
+  `{}` asserts no claims.
 - `expect_upstream_header`: headers the upstream received.
 - `expect_credential`: whether the request reached the upstream with its service's credential.
   Leftover paths under `unmatched: tunnel` do not carry it.

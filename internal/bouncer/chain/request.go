@@ -16,6 +16,7 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/gitproto"
 	"github.com/pastdev/agentcon/internal/bouncer/gql"
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 )
 
 const (
@@ -28,9 +29,24 @@ type Session struct {
 	ID      string `json:"id"`
 	Label   string `json:"label"`
 	Profile string `json:"profile"`
+	// Claims are trusted facts about the session. A request holds a copy
+	// taken when it arrived. It is never nil for a session from the daemon.
+	Claims claims.Set `json:"claims"`
+	// Instance identifies this session among any that reuse its ID after it
+	// ends or expires. It is not secret, but filters and the control API
+	// never see it.
+	Instance string `json:"-"`
 	// Shared marks a session used by many clients (the anonymous profile);
-	// "for this session" approvals are not remembered for it.
+	// "for this session" approvals are not remembered for it, and it never
+	// gains claims.
 	Shared bool `json:"-"`
+}
+
+// Clone returns a copy that shares no claims with s.
+func (s *Session) Clone() *Session {
+	c := *s
+	c.Claims = s.Claims.Clone()
+	return &c
 }
 
 // SSHInfo describes an SSH channel request.

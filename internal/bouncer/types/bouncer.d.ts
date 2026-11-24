@@ -2,14 +2,29 @@
 //
 // Filters are TypeScript (or JavaScript) modules that default-export
 // `defineFilter({...})`. They run inside the bouncer daemon; host calls such
-// as `next()`, `ask()` and body reads block the filter, not the daemon, so
-// `await` behaves exactly as you'd expect.
+// as `next()`, `ask()`, `requestClaim()` and body reads block the filter, not
+// the daemon, so `await` behaves exactly as you'd expect.
 
 declare module "bouncer" {
+  /**
+   * Trusted facts about a session, from claim type to its values. Types
+   * match /^[a-z][a-z0-9_]*$/ (at most 64 characters). Values are non-empty
+   * UTF-8 without control characters, at most 1024 bytes, sorted, and
+   * unique. A session holds at most 32 types and 256 values per type.
+   * Comparison is exact: nothing is case-folded, trimmed, or cleaned.
+   */
+  export type Claims = Readonly<Record<string, readonly string[]>>;
+
   export interface Session {
     id: string;
     label: string;
     profile: string;
+    /**
+     * The session's claims when this request arrived, deeply frozen.
+     * Changing it has no effect. Claims added during the request appear on
+     * later requests. Always {} for the shared anonymous session.
+     */
+    readonly claims: Claims;
   }
 
   export interface Headers {
@@ -163,6 +178,26 @@ declare module "bouncer" {
    * "allow for this session" applies to them; it defaults to the prompt.
    */
   export function ask(prompt: string, opts?: { key?: string; timeout?: string | number }): Promise<boolean>;
+
+  /**
+   * Ask the human to add a claim to this session. Resolves true at once,
+   * without asking, when the session already holds the claim.
+   *
+   * Otherwise the human sees `prompt`, the requested claim, and the
+   * session's current claims, and answers:
+   * - allow for this session: the claim is added for every later request,
+   *   and this resolves true
+   * - allow once: resolves true and adds nothing
+   * - deny, or no answer before the timeout: resolves false. A denial is
+   *   not remembered, so a later request asks again.
+   *
+   * Throws, without asking, when the type or value is invalid or the
+   * session's claim limits would be exceeded, counting claims still
+   * waiting on an answer. Identical concurrent
+   * requests in a session share one prompt. The shared anonymous session
+   * never gains claims: "for this session" counts as once there.
+   */
+  export function requestClaim(type: string, value: string, prompt: string, opts?: { timeout?: string | number }): Promise<boolean>;
 
   export function log(message: string, fields?: Record<string, any>): void;
 

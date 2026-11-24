@@ -14,7 +14,7 @@ import (
 func writeSpec(t *testing.T, spec string) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, name := range []string{"counter.ts", "policy.yaml"} {
+	for _, name := range []string{"counter.ts", "claims.ts", "policy.yaml"} {
 		data, err := os.ReadFile(filepath.Join("testdata", name)) //nolint:gosec // fixed testdata name
 		require.NoError(t, err)
 		err = os.WriteFile(filepath.Join(dir, name), data, 0o600) //nolint:gosec // test fixture under TempDir
@@ -333,6 +333,169 @@ cases:
 			body:     "profile: open\ncases: []\n",
 			noPolicy: true,
 			wantErr:  "spec names no filter and no policy is given",
+		})
+	})
+}
+
+func TestRunFileClaims(t *testing.T) {
+	type testCase struct {
+		spec    string
+		want    []Result
+		wantErr string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		path := writeSpec(t, "filter: claims.ts\n"+tc.spec)
+		results, err := RunFile(path, Options{})
+		if tc.wantErr != "" {
+			require.ErrorContains(t, err, tc.wantErr)
+			return
+		}
+		require.NoError(t, err)
+		require.Len(t, results, len(tc.want))
+		for i, want := range tc.want {
+			got := results[i]
+			assert.Equal(t, want.Passed, got.Passed, got.Message)
+			assert.Equal(t, want.Step, got.Step)
+			assert.Contains(t, got.Message, want.Message)
+		}
+	}
+
+	t.Run("seeded claim allows without a request", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+cases:
+  - claims: {repository: [g/a]}
+    steps:
+      - request: {url: "https://example.com/?repo=g/a"}
+        expect: allow
+        expect_claim_requested: false
+        expect_claims: {repository: [g/a]}
+`,
+			want: []Result{{Passed: true}},
+		})
+	})
+	t.Run("session answer adds the claim for later steps", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+cases:
+  - claims: {repository: [g/a]}
+    steps:
+      - request: {url: "https://example.com/?repo=g/b"}
+        claim_answer: session
+        expect: allow
+        expect_claim_requested: {type: repository, value: g/b}
+        expect_claims: {repository: [g/b, g/a]}
+      - request: {url: "https://example.com/?repo=g/b"}
+        expect: allow
+        expect_claim_requested: false
+`,
+			want: []Result{{Passed: true}},
+		})
+	})
+	t.Run("once allows and adds nothing", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+cases:
+  - steps:
+      - request: {url: "https://example.com/?repo=g/b"}
+        claim_answer: once
+        expect: allow
+        expect_claim_requested: true
+        expect_claims: {}
+      - request: {url: "https://example.com/?repo=g/b"}
+        expect: deny
+        expect_claim_requested: true
+`,
+			want: []Result{{Passed: true}},
+		})
+	})
+	t.Run("deny and timeout resolve false", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+cases:
+  - steps:
+      - request: {url: "https://example.com/?repo=g/b"}
+        claim_answer: deny
+        expect: deny
+        expect_reason: out of scope
+      - request: {url: "https://example.com/?repo=g/b"}
+        claim_answer: timeout
+        expect: deny
+        expect_claim_requested: true
+        expect_claims: {}
+`,
+			want: []Result{{Passed: true}},
+		})
+	})
+	t.Run("an invalid claim throws and fails closed", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+cases:
+  - steps:
+      - request: {url: "https://example.com/?repo="}
+        claim_answer: session
+        expect: deny
+        expect_reason: claim value is empty
+        expect_claim_requested: false
+`,
+			want: []Result{{Passed: true}},
+		})
+	})
+	t.Run("expect_claims mismatch fails the step", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+cases:
+  - claims: {repository: [g/a]}
+    steps:
+      - request: {url: "https://example.com/?repo=g/a"}
+        expect_claims: {}
+`,
+			want: []Result{{Passed: false, Step: 1, Message: "expected claims none, got repository=g/a"}},
+		})
+	})
+	t.Run("expect_claim_requested names the wrong claim", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+cases:
+  - steps:
+      - request: {url: "https://example.com/?repo=g/b"}
+        expect_claim_requested: {type: repository, value: g/c}
+`,
+			want: []Result{{Passed: false, Step: 1, Message: "expected claim repository=g/c requested, got repository=g/b"}},
+		})
+	})
+	t.Run("invalid seed claims fail to load", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+cases:
+  - claims: {repository: [g/a, "bad\tvalue"]}
+    steps:
+      - request: {url: "https://example.com/?repo=g/a"}
+`,
+			wantErr: "claims: claim repository value 2: claim value contains a control character",
+		})
+	})
+	t.Run("unknown claim_answer fails to load", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+cases:
+  - steps:
+      - request: {url: "https://example.com/?repo=g/a"}
+        claim_answer: forever
+`,
+			wantErr: `claim_answer "forever" must be session, once, deny, or timeout`,
+		})
+	})
+	t.Run("invalid expect_claims fails to load", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+cases:
+  - steps:
+      - request: {url: "https://example.com/?repo=g/a"}
+        expect_claims: {Repo: [x]}
+`,
+			wantErr: "expect_claims: claim type",
 		})
 	})
 }

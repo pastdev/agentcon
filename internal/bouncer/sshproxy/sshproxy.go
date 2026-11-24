@@ -309,11 +309,20 @@ func (cn *conn) entry(req *chain.Request) audit.Entry {
 		Service: cn.svc.Config.Name, Request: req.Describe()}
 }
 
-// decide runs the chain for a channel request.
+// decide runs the chain for a channel request. Each request sees the
+// session as it is now, so claims added since the connection opened are
+// visible, and a session that ended since its channel opened is refused.
 func (cn *conn) decide(req *chain.Request) *chain.Response {
 	start := time.Now()
-	h := chain.Build(cn.svc.Filters, func(*chain.Request) (*chain.Response, error) { return chain.Allowed(), nil })
-	resp, _ := h(req)
+	var resp *chain.Response
+	sess, ok := cn.s.Backend.Session(cn.token)
+	if ok {
+		req.Session = sess
+		h := chain.Build(cn.svc.Filters, func(*chain.Request) (*chain.Response, error) { return chain.Allowed(), nil })
+		resp, _ = h(req)
+	} else {
+		resp = chain.Deny("bouncer", "session is no longer valid")
+	}
 	e := cn.entry(req)
 	e.DurationMS = time.Since(start).Milliseconds()
 	if resp.Denial != nil {

@@ -2,9 +2,12 @@ package chain
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/rs/zerolog"
+
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 )
 
 // Handler processes a request, typically by calling the rest of the chain.
@@ -35,12 +38,37 @@ type AskRequest struct {
 	Request string
 }
 
+// ErrClaimRejected marks a claim request that is invalid or would exceed a
+// claim limit. It is the filter's mistake, so the filter sees an exception
+// and no human is asked.
+var ErrClaimRejected = errors.New("claim request rejected")
+
+// ClaimRequest asks a human to add a claim to a session.
+type ClaimRequest struct {
+	Session *Session
+	Filter  string
+	Prompt  string
+	Claim   claims.Claim
+	Request string
+}
+
+// ClaimRequester adds claims to sessions with a human's approval.
+type ClaimRequester interface {
+	// RequestClaim resolves true when the session holds the claim or the
+	// human allows the request. An error wrapping ErrClaimRejected means
+	// nobody was asked. Other errors are reported alongside the result.
+	RequestClaim(ctx context.Context, r ClaimRequest) (bool, error)
+}
+
 // ProjectResolver maps a GitLab project path to its numeric ID on a host.
 type ProjectResolver func(ctx context.Context, service, host, project string) (int64, error)
 
 // Env is shared by every filter in a daemon.
 type Env struct {
 	Approver Approver
+	// Claims answers requestClaim. Nil makes every claim request resolve
+	// false.
+	Claims ClaimRequester
 	// Log receives filter log output. Each line names its filter.
 	Log      zerolog.Logger
 	Resolver ProjectResolver

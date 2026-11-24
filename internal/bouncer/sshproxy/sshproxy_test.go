@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -28,18 +29,67 @@ import (
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 )
 
+// sessionState is the test session, which tests change while connected.
+type sessionState struct {
+	mu      sync.Mutex
+	revoked bool
+	claims  claims.Set
+	// seen records the claims each filtered request saw.
+	seen []claims.Set
+}
+
+func (s *sessionState) revoke() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revoked = true
+}
+
+func (s *sessionState) addClaim(t, v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _ = s.claims.Add(t, v)
+}
+
+func (s *sessionState) seenClaims() []claims.Set {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.seen)
+}
+
 type backend struct {
-	set     *policy.Set
-	revoked *bool
+	set   *policy.Set
+	state *sessionState
 }
 
 func (b backend) Session(tok string) (*chain.Session, bool) {
-	if tok == "tok" && (b.revoked == nil || !*b.revoked) {
-		return &chain.Session{ID: "s1", Profile: "p"}, true
+	if b.state == nil {
+		if tok == "tok" {
+			return &chain.Session{ID: "s1", Profile: "p", Claims: claims.Set{}}, true
+		}
+		return nil, false
+	}
+	b.state.mu.Lock()
+	defer b.state.mu.Unlock()
+	if tok == "tok" && !b.state.revoked {
+		return &chain.Session{ID: "s1", Profile: "p", Claims: b.state.claims.Clone()}, true
 	}
 	return nil, false
+}
+
+// claimRecorder records the claims each request's session holds.
+type claimRecorder struct{ state *sessionState }
+
+func (claimRecorder) Name() string { return "claim-recorder" }
+
+func (r claimRecorder) Handle(req *chain.Request, next chain.Handler) (*chain.Response, error) {
+	r.state.mu.Lock()
+	r.state.seen = append(r.state.seen, req.Session.Claims.Clone())
+	r.state.mu.Unlock()
+	return next(req)
 }
 func (b backend) Profile(n string) (*policy.Profile, bool) { p, ok := b.set.Profiles[n]; return p, ok }
 
@@ -126,7 +176,7 @@ func (u *upstream) serve(ch ssh.Channel, reqs <-chan *ssh.Request) {
 
 func setup(t *testing.T) (*upstream, string, *ca.Authority) { u, a, c, _ := setupR(t); return u, a, c }
 
-func setupR(t *testing.T) (*upstream, string, *ca.Authority, *bool) {
+func setupR(t *testing.T) (*upstream, string, *ca.Authority, *sessionState) {
 	dir := t.TempDir()
 	_, ck, _ := ed25519.GenerateKey(rand.Reader)
 	block, _ := ssh.MarshalPrivateKey(ck, "")
@@ -160,12 +210,14 @@ profiles:
 	require.NoError(t, err)
 	authority, _ := ca.LoadOrCreate(filepath.Join(dir, "state"))
 	log := audit.New(zerolog.Nop())
-	revoked := new(bool)
-	srv := &Server{Backend: backend{set: set, revoked: revoked}, CA: authority, Creds: creds.NewStore(cfg.Credentials), Audit: log}
+	state := &sessionState{claims: claims.Set{}}
+	svc := set.Profiles["p"].SSH[0]
+	svc.Filters = append([]chain.Filter{claimRecorder{state: state}}, svc.Filters...)
+	srv := &Server{Backend: backend{set: set, state: state}, CA: authority, Creds: creds.NewStore(cfg.Credentials), Audit: log}
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	t.Cleanup(func() { _ = l.Close() })
 	go func() { _ = srv.Serve(l) }()
-	return up, l.Addr().String(), authority, revoked
+	return up, l.Addr().String(), authority, state
 }
 
 func client(_ *testing.T, bouncer string, authority *ca.Authority, token string) (*ssh.Client, error) {
@@ -289,16 +341,44 @@ func TestServe(t *testing.T) {
 		tester(t, testCase{token: "nope", wantErr: "unknown session token"})
 	})
 	t.Run("refuses new channels after revocation", func(t *testing.T) {
-		_, addr, authority, revoked := setupR(t)
+		_, addr, authority, state := setupR(t)
 		cl, err := client(t, addr, authority, "tok")
 		require.NoError(t, err)
 		defer func() { _ = cl.Close() }()
 		out, _, err := run(t, cl, "echo hi", nil)
 		require.NoError(t, err)
 		require.Equal(t, "hi\n", out)
-		*revoked = true
+		state.revoke()
 		_, err = cl.NewSession()
 		require.Error(t, err, "opened a new channel after the session was revoked")
+	})
+	t.Run("each request on a connection sees current claims", func(t *testing.T) {
+		_, addr, authority, state := setupR(t)
+		cl, err := client(t, addr, authority, "tok")
+		require.NoError(t, err)
+		defer func() { _ = cl.Close() }()
+		_, _, err = run(t, cl, "echo hi", nil)
+		require.NoError(t, err)
+		state.addClaim("repository", "g/a")
+		_, _, err = run(t, cl, "echo hi", nil)
+		require.NoError(t, err)
+		assert.Equal(t, []claims.Set{{}, {"repository": {"g/a"}}}, state.seenClaims())
+	})
+	t.Run("a request on a channel opened before revocation is refused", func(t *testing.T) {
+		_, addr, authority, state := setupR(t)
+		cl, err := client(t, addr, authority, "tok")
+		require.NoError(t, err)
+		defer func() { _ = cl.Close() }()
+		s, err := cl.NewSession()
+		require.NoError(t, err)
+		defer func() { _ = s.Close() }()
+		var stderr bytes.Buffer
+		s.Stderr = &stderr
+		state.revoke()
+		err = s.Run("echo hi")
+		require.Error(t, err)
+		assert.Contains(t, stderr.String(), "session is no longer valid")
+		assert.Empty(t, state.seenClaims(), "a filter ran for an ended session")
 	})
 }
 

@@ -1,0 +1,190 @@
+cases:
+  - name: issue in a seeded repository goes through without a prompt
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fproject/issues", body: "{}"}
+        expect: allow
+        expect_claim_requested: false
+        expect_claims: {repository: [gitlab.example.com/group/project]}
+  - name: unscoped project, operator adds it for the session
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: session
+        expect: allow
+        expect_claim_requested: {type: repository, value: gitlab.example.com/group/other}
+        expect_claims:
+          repository: [gitlab.example.com/group/other, gitlab.example.com/group/project]
+      - name: second issue in the same project no longer prompts
+        request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        expect: allow
+        expect_claim_requested: false
+  - name: allow once adds nothing, so the next issue asks again
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: once
+        expect: allow
+        expect_claim_requested: true
+        expect_claims: {}
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: deny
+        expect: deny
+        expect_reason: not one of this session's repositories
+  - name: a denial is not remembered
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: deny
+        expect: deny
+        expect_claim_requested: true
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: session
+        expect: allow
+        expect_claim_requested: true
+        expect_claims: {repository: [gitlab.example.com/group/other]}
+  - name: no answer in time denies
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        claim_answer: timeout
+        expect: deny
+        expect_claims: {}
+  - name: host and path casing do not matter
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://GitLab.Example.com/api/v4/projects/Group%2FProject/issues", body: "{}"}
+        expect: allow
+        expect_claim_requested: false
+  - name: a mixed-case request asks for and adds the lowercase claim
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/Group%2FOther/issues", body: "{}"}
+        claim_answer: session
+        expect: allow
+        expect_claim_requested: {type: repository, value: gitlab.example.com/group/other}
+        expect_claims:
+          repository: [gitlab.example.com/group/other, gitlab.example.com/group/project]
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues", body: "{}"}
+        expect: allow
+        expect_claim_requested: false
+  - name: a seed with capitals never matches
+    claims: {repository: [gitlab.example.com/Group/Project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/Group%2FProject/issues", body: "{}"}
+        expect: deny
+        expect_claim_requested: {type: repository, value: gitlab.example.com/group/project}
+  - name: a claim for another host does not match
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.other.com/api/v4/projects/group%2Fproject/issues", body: "{}"}
+        expect: deny
+        expect_claim_requested: {type: repository, value: gitlab.other.com/group/project}
+  - name: format suffix and trailing slash are still issue creation
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues.json", body: "{}"}
+        expect: deny
+        expect_claim_requested: true
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues/", body: "{}"}
+        expect: deny
+        expect_claim_requested: true
+  - name: numeric project IDs are denied without a prompt
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/1234/issues", body: "{}"}
+        claim_answer: session
+        expect: deny
+        expect_reason: not its numeric ID
+        expect_claim_requested: false
+  - name: graphql issue-creating mutations are denied without a prompt
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { createIssue(input:{projectPath:\"group/project\", title:\"t\"}) { issue { id } } }"}'
+        claim_answer: session
+        expect: deny
+        expect_reason: GraphQL mutation createIssue is not in allowMutations
+        expect_claim_requested: false
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { workItemCreate(input:{namespacePath:\"group/project\", title:\"t\", workItemTypeId:\"gid://gitlab/WorkItems::Type/1\"}) { workItem { id } } }"}'
+        expect: deny
+        expect_reason: GraphQL mutation workItemCreate is not in allowMutations
+  - name: graphql mutations the filter does not know are denied
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { jiraImportStart(input:{projectPath:\"group/other\", jiraProjectKey:\"J\"}) { errors } }"}'
+        claim_answer: session
+        expect: deny
+        expect_reason: GraphQL mutation jiraImportStart is not in allowMutations
+        expect_claim_requested: false
+      - name: a trailing slash is still the GraphQL endpoint
+        request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql/
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { jiraImportStart(input:{projectPath:\"group/other\", jiraProjectKey:\"J\"}) { errors } }"}'
+        expect: deny
+        expect_reason: jiraImportStart is not in allowMutations
+  - name: graphql mutations in allowMutations go through
+    filter_config: {allowMutations: [createNote, issueSetLabels]}
+    steps:
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { createNote(input:{noteableId:\"gid://gitlab/Issue/1\", body:\"hi\"}) { errors } }"}'
+        expect: allow
+      - name: one unlisted field denies the whole request
+        request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { a: issueSetLabels(input:{projectPath:\"g/p\", iid:\"1\", labelIds:[]}) { errors } b: issueMove(input:{projectPath:\"g/p\", iid:\"1\", targetProjectPath:\"g/other\"}) { issue { id } } }"}'
+        expect: deny
+        expect_reason: GraphQL mutation issueMove is not in allowMutations
+  - name: graphql mutations are denied with no allowMutations
+    steps:
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"mutation { createNote(input:{noteableId:\"gid://gitlab/Issue/1\", body:\"hi\"}) { errors } }"}'
+        expect: deny
+        expect_reason: GraphQL mutation createNote is not in allowMutations
+  - name: REST issue move and clone are denied without a prompt
+    claims: {repository: [gitlab.example.com/group/project]}
+    steps:
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fproject/issues/1/move", body: "to_project_id=6"}
+        claim_answer: session
+        expect: deny
+        expect_reason: issue move targets a project by numeric ID
+        expect_claim_requested: false
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fproject/issues/1/clone?to_project_id=6"}
+        expect: deny
+        expect_reason: issue clone targets a project by numeric ID
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fproject/issues/1/move.json/"}
+        expect: deny
+        expect_reason: issue move targets a project by numeric ID
+  - name: graphql queries go through
+    steps:
+      - request:
+          method: POST
+          url: https://gitlab.example.com/api/graphql
+          headers: {Content-Type: application/json}
+          body: '{"query":"query { project(fullPath:\"group/project\") { id } }"}'
+        expect: allow
+  - name: other requests go through untouched
+    steps:
+      - request: {method: GET, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues"}
+        expect: allow
+        expect_claim_requested: false
+      - request: {method: POST, url: "https://gitlab.example.com/api/v4/projects/group%2Fother/issues/5/notes", body: "{}"}
+        expect: allow
+        expect_claim_requested: false

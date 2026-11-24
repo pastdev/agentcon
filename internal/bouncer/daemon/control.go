@@ -4,10 +4,12 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
 	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
@@ -35,20 +37,40 @@ func (d *Daemon) Control() http.Handler {
 		})
 	})
 	mux.HandleFunc("POST /_bouncer/sessions", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ ID, Profile, Label, TTL string }
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var body struct {
+			ID, Profile, Label, TTL string
+			Claims                  map[string][]string
+		}
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// Claims are compared exactly, so input the decoder would change
+		// is refused rather than decoded.
+		err = checkStrictJSON(raw)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		err = json.Unmarshal(raw, &body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		seed, err := claims.FromMap(body.Claims)
+		if err != nil {
+			http.Error(w, "claims: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		var ttl time.Duration
 		if body.TTL != "" {
-			var err error
 			if ttl, err = time.ParseDuration(body.TTL); err != nil {
 				http.Error(w, "ttl: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 		}
-		rec, err := d.CreateSession(body.ID, body.Profile, body.Label, ttl)
+		rec, err := d.CreateSession(body.ID, body.Profile, body.Label, ttl, seed)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

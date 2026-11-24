@@ -3,6 +3,7 @@ package jsfilter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 )
 
 const (
@@ -80,6 +82,64 @@ func (i *instance) installHost() error {
 		i.wd.resume()
 		if err != nil {
 			i.log(zerolog.WarnLevel, "ask() failed: "+err.Error(), nil)
+		}
+		return i.resolved(vm.ToValue(ok))
+	})
+
+	host.Set("requestClaim", func(call goja.FunctionCall) goja.Value {
+		typ, okType := call.Argument(0).Export().(string)
+		value, okValue := call.Argument(1).Export().(string)
+		if !okType || !okValue {
+			panic(vm.NewTypeError("requestClaim(type, value, prompt) requires string type and value"))
+		}
+		prompt := ""
+		if a := call.Argument(2); !goja.IsUndefined(a) && !goja.IsNull(a) {
+			prompt = a.String()
+		}
+		var timeout time.Duration
+		if opts, ok := call.Argument(3).(*goja.Object); ok {
+			if t := opts.Get("timeout"); t != nil && !goja.IsUndefined(t) {
+				timeout = parseTTL(t)
+			}
+		}
+		// Invalid claims throw before anything else, even without a
+		// requester, so filter mistakes show up in tests.
+		err := claims.Valid(typ, value)
+		if err != nil {
+			panic(vm.NewTypeError("requestClaim: " + err.Error()))
+		}
+		req := i.cur
+		requester := i.f.opts.Env.Claims
+		if req == nil || requester == nil {
+			i.log(zerolog.WarnLevel, "requestClaim() denied: no claim requester configured", nil)
+			return i.resolved(vm.ToValue(false))
+		}
+		ctx := req.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if timeout > 0 {
+			var cancel func()
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+		i.wd.pause()
+		ok, err := requester.RequestClaim(ctx, chain.ClaimRequest{
+			Session: req.Session, Filter: i.f.name, Prompt: prompt,
+			Claim: claims.Claim{Type: typ, Value: value}, Request: req.Describe(),
+		})
+		i.wd.resume()
+		if errors.Is(err, chain.ErrClaimRejected) {
+			panic(vm.NewTypeError("requestClaim: " + err.Error()))
+		}
+		if err != nil {
+			// An allowed request with an error is a grant that could not
+			// be added, which the operator should hear about.
+			level := zerolog.WarnLevel
+			if ok {
+				level = zerolog.ErrorLevel
+			}
+			i.log(level, "requestClaim() failed: "+err.Error(), nil)
 		}
 		return i.resolved(vm.ToValue(ok))
 	})
@@ -202,6 +262,21 @@ func (i *instance) installHost() error {
 
 func (i *instance) log(level zerolog.Level, msg string, fields map[string]any) {
 	i.f.opts.Env.Log.WithLevel(level).Str("filter", i.f.name).Fields(fields).Msg(msg)
+}
+
+// freeze deeply freezes a plain JSON value with the Object.freeze captured
+// when the VM was created, so a filter replacing the global cannot defeat
+// it.
+func (i *instance) freeze(v goja.Value) goja.Value {
+	o, ok := v.(*goja.Object)
+	if !ok {
+		return v
+	}
+	for _, k := range o.Keys() {
+		i.freeze(o.Get(k))
+	}
+	_, _ = i.objectFreeze(goja.Undefined(), o)
+	return o
 }
 
 // context is the third argument to hooks.
@@ -445,7 +520,16 @@ func (i *instance) wrapRequest(req *chain.Request) *goja.Object {
 	o.Set("service", req.Service)
 	o.Set("profile", req.Profile)
 	if req.Session != nil {
-		o.Set("session", i.plain(req.Session))
+		sess := req.Session.Clone()
+		session := i.plain(sess).ToObject(vm)
+		// The filter sees a frozen copy: changing it cannot reach the
+		// session, and an attempt throws in strict mode.
+		claimsSet := sess.Claims
+		if claimsSet == nil {
+			claimsSet = claims.Set{}
+		}
+		_ = session.DefineDataProperty("claims", i.freeze(i.plain(claimsSet)), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+		o.Set("session", session)
 	} else {
 		o.Set("session", goja.Null())
 	}

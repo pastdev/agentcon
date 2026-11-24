@@ -69,6 +69,15 @@ func TestAnswerAtTerminal(t *testing.T) {
 	t.Run("confirm with closed input", func(t *testing.T) {
 		tester(t, testCase{kind: prompt.KindConfirm, input: "", wantErr: true})
 	})
+	t.Run("claim once", func(t *testing.T) {
+		tester(t, testCase{kind: prompt.KindClaim, input: "y\n", wantAnswer: &prompt.Answer{Allow: true}})
+	})
+	t.Run("claim refuses deny for session and asks again", func(t *testing.T) {
+		tester(t, testCase{kind: prompt.KindClaim, input: "d\ns\n", wantAnswer: &prompt.Answer{Allow: true, Remember: true}})
+	})
+	t.Run("claim deny", func(t *testing.T) {
+		tester(t, testCase{kind: prompt.KindClaim, input: "n\n", wantAnswer: &prompt.Answer{}})
+	})
 	t.Run("ctrl-c declines", func(t *testing.T) {
 		tester(t, testCase{kind: prompt.KindConfirm, input: "\x03", wantDeclined: true})
 	})

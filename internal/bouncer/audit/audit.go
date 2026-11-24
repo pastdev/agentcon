@@ -1,4 +1,6 @@
-// Package audit logs one event per policy decision.
+// Package audit logs one event per policy decision, session creation, and
+// claim addition. Every line carries an event field naming its kind. The
+// field names are stable, because hosts send audit logs to log ingestion.
 package audit
 
 import (
@@ -6,6 +8,15 @@ import (
 	"strings"
 
 	"github.com/rs/zerolog"
+
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
+)
+
+// Events recorded in the event field.
+const (
+	EventDecision       = "decision"
+	EventSessionCreated = "session_created"
+	EventClaimAdded     = "claim_added"
 )
 
 // Decisions recorded on an Entry.
@@ -18,6 +29,8 @@ const (
 
 // Entry is one audit record. Its JSON names match the logged fields.
 type Entry struct {
+	// Event is always EventDecision when logged.
+	Event      string `json:"event,omitempty"`
 	Session    string `json:"session,omitempty"`
 	Label      string `json:"label,omitempty"`
 	Profile    string `json:"profile,omitempty"`
@@ -50,6 +63,7 @@ func (l *Log) Write(e Entry) {
 			ev.Str(key, value)
 		}
 	}
+	ev.Str("event", EventDecision)
 	str("session", e.Session)
 	str("label", e.Label)
 	str("profile", e.Profile)
@@ -81,11 +95,7 @@ func level(decision string) zerolog.Level {
 
 // Summary is the one-line message for an entry.
 func Summary(e Entry) string {
-	who := e.Label
-	if who == "" {
-		who = e.Session
-	}
-	s := fmt.Sprintf("%-6s [%s] %s", strings.ToUpper(e.Decision), who, e.Request)
+	s := fmt.Sprintf("%-6s [%s] %s", strings.ToUpper(e.Decision), who(e.Label, e.Session), e.Request)
 	if e.Status != 0 && e.Decision == DecisionAllow {
 		s += fmt.Sprintf(" -> %d", e.Status)
 	}
@@ -96,4 +106,55 @@ func Summary(e Entry) string {
 		s += fmt.Sprintf("  (%s)", e.By)
 	}
 	return s
+}
+
+// SessionCreated logs a new session with its initial claims, {} when it
+// has none.
+func (l *Log) SessionCreated(session, label, profile string, c claims.Set) {
+	c = c.Clone()
+	l.log.Info().
+		Str("event", EventSessionCreated).
+		Str("session", session).
+		Str("label", label).
+		Str("profile", profile).
+		Interface("claims", c).
+		Msgf("SESSION [%s] created profile=%s claims=%d", who(label, session), profile, c.Count())
+}
+
+// ClaimEvent is one claim joining a session.
+type ClaimEvent struct {
+	Session string
+	Label   string
+	Claim   claims.Claim
+	// AddedBy is claims.AddedSeeded or claims.AddedOperator.
+	AddedBy string
+	// Filter and Prompt name the filter that asked and the prompt the
+	// operator answered. They are empty for seeded claims.
+	Filter string
+	Prompt string
+}
+
+// ClaimAdded logs a claim joining a session.
+func (l *Log) ClaimAdded(e ClaimEvent) {
+	ev := l.log.Info().
+		Str("event", EventClaimAdded).
+		Str("session", e.Session).
+		Str("label", e.Label).
+		Str("claim_type", e.Claim.Type).
+		Str("claim_value", e.Claim.Value).
+		Str("added_by", e.AddedBy)
+	if e.Filter != "" {
+		ev.Str("filter", e.Filter)
+	}
+	if e.Prompt != "" {
+		ev.Str("prompt", e.Prompt)
+	}
+	ev.Msgf("CLAIM  [%s] %s=%s (%s)", who(e.Label, e.Session), e.Claim.Type, e.Claim.Value, e.AddedBy)
+}
+
+func who(label, session string) string {
+	if label == "" {
+		return session
+	}
+	return label
 }

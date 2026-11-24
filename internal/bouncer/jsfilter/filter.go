@@ -165,8 +165,10 @@ type instance struct {
 	u8         goja.Value
 	jsonParse  goja.Callable
 	jsonStr    goja.Callable
-	wd         watchdog
-	broken     bool
+	// objectFreeze is Object.freeze as it was before filter code ran.
+	objectFreeze goja.Callable
+	wd           watchdog
+	broken       bool
 
 	// cur is the request being handled; host functions consult it.
 	cur *chain.Request
@@ -184,6 +186,7 @@ func (f *Filter) newInstance() (*instance, error) {
 	vm.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 	inst := &instance{f: f, vm: vm}
 	inst.wd.vm = vm
+	inst.objectFreeze, _ = goja.AssertFunction(vm.Get("Object").ToObject(vm).Get("freeze"))
 	if err := inst.installHost(); err != nil {
 		return nil, err
 	}

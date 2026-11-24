@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
 
@@ -86,6 +87,8 @@ type SessionRecord struct {
 	ID      string `json:"id"`
 	Label   string `json:"label"`
 	Profile string `json:"profile"`
+	// Claims are the session's current claims, {} when it has none.
+	Claims claims.Set `json:"claims"`
 	// Token is the session's proxy credential. Treat it as a secret.
 	// Only CreateSession returns it. Sessions leaves it empty.
 	Token   string    `json:"token"`
@@ -128,16 +131,42 @@ func (c *Client) Sessions(ctx context.Context) ([]SessionRecord, error) {
 	return list, err
 }
 
+// SessionOption configures session creation.
+type SessionOption func(*createSession)
+
+type createSession struct {
+	ID      string              `json:"id"`
+	Profile string              `json:"profile"`
+	Label   string              `json:"label"`
+	TTL     string              `json:"ttl"`
+	Claims  map[string][]string `json:"claims,omitempty"`
+}
+
+// WithClaims seeds the session's claims, a map from claim type to values.
+// When any claim is invalid or the set exceeds a limit (see package
+// claims), CreateSession fails without sending the request, and the daemon
+// would reject it too, creating no session.
+func WithClaims(c map[string][]string) SessionOption {
+	return func(s *createSession) { s.Claims = c }
+}
+
 // CreateSession registers a session. Empty profile means the default
 // profile, and empty ttl means until revoked.
-func (c *Client) CreateSession(ctx context.Context, id, profile, label, ttl string) (NewSession, error) {
+func (c *Client) CreateSession(ctx context.Context, id, profile, label, ttl string, opts ...SessionOption) (NewSession, error) {
+	body := createSession{ID: id, Profile: profile, Label: label, TTL: ttl}
+	for _, o := range opts {
+		o(&body)
+	}
+	// JSON encoding turns invalid UTF-8 into U+FFFD, which would change a
+	// value the daemon compares exactly, so check before sending.
+	if body.Claims != nil {
+		_, err := claims.FromMap(body.Claims)
+		if err != nil {
+			return NewSession{}, fmt.Errorf("claims: %w", err)
+		}
+	}
 	var rec NewSession
-	err := c.do(ctx, http.MethodPost, "/_bouncer/sessions", map[string]string{
-		"id":      id,
-		"profile": profile,
-		"label":   label,
-		"ttl":     ttl,
-	}, &rec)
+	err := c.do(ctx, http.MethodPost, "/_bouncer/sessions", body, &rec)
 	return rec, err
 }
 
