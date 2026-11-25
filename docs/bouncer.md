@@ -373,7 +373,16 @@ Git asks for a key with `-u <user.signingkey>`, so per-repository keys chosen by
 A long key ID matches a fingerprint that ends with it.
 Each `credential` must be `internal: true`, must have `private_key` as an armored OpenPGP private key, and may have `password` as its passphrase.
 After unlocking, the signer checks that the key, or one of its signing subkeys, has the configured ID.
+A subkey ID signs with exactly that subkey, like `gpg -u <subkey>!`.
+A primary key ID signs with the newest valid signing subkey, or the primary key when it has none, like `gpg -u <primary>`.
 An unlocked key is kept for the credential's `cache` TTL.
+
+`gpg --export-secret-keys <id>` exports the whole key, with every subkey, even when `<id>` names one subkey.
+Append `!` to export only the primary key and that subkey, which keeps expired and unrelated subkeys out of the credential:
+
+```bash
+gpg --armor --export-secret-keys 'C26E02CE599B53FF!'
+```
 
 `hosts` must be exact names, and a resolved profile may have only one signer service.
 A signer service may not set `credential`, `inject`, `allow_upgrade`, or `insecure`.

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ProtonMail/go-crypto/openpgp/packet"
+	openpgp "github.com/ProtonMail/go-crypto/openpgp/v2"
 	pgp "github.com/ProtonMail/gopenpgp/v3/crypto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -165,6 +167,62 @@ func TestOpenPGPSign(t *testing.T) {
 	})
 	t.Run("credential unavailable", func(t *testing.T) {
 		tester(t, testCase{key: "plain", fail: errors.New("vault locked"), wantErr: ErrUnavailable, wantMsg: "vault locked"})
+	})
+}
+
+// twoSigningSubkeys returns an armored key whose primary key can sign and
+// which has an older and a newer signing subkey, and the subkeys'
+// fingerprints, oldest first.
+func twoSigningSubkeys(t *testing.T) (armored, primary string, subkeys []string) {
+	t.Helper()
+	created := time.Unix(1764000000, 0)
+	cfg := &packet.Config{Algorithm: packet.PubKeyAlgoEdDSA, Time: func() time.Time { return created }}
+	e, err := openpgp.NewEntity("Agent", "", "agent@example.com", cfg)
+	require.NoError(t, err)
+	for range 2 {
+		created = created.Add(time.Hour)
+		err = e.AddSigningSubkey(cfg)
+		require.NoError(t, err)
+	}
+	k, err := pgp.NewKeyFromEntity(e)
+	require.NoError(t, err)
+	armored, err = k.Armor()
+	require.NoError(t, err)
+	for _, sub := range e.Subkeys {
+		if sub.PublicKey.PubKeyAlgo == packet.PubKeyAlgoEdDSA {
+			subkeys = append(subkeys, fingerprint(sub.PublicKey))
+		}
+	}
+	require.Len(t, subkeys, 2)
+	return armored, fingerprint(e.PrimaryKey), subkeys
+}
+
+func TestOpenPGPSigningKeySelection(t *testing.T) {
+	armored, primary, subkeys := twoSigningSubkeys(t)
+	type testCase struct {
+		id   string
+		want string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		fc := credsFor(testKey{armored: armored}, "", time.Minute)
+		o := &OpenPGP{Creds: fc, Now: func() time.Time { return time.Unix(1764100000, 0) }}
+		sig, err := o.Sign(t.Context(), config.OpenPGPKey{ID: tc.id, Credential: "sign"}, []byte(testCommit))
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, sig.Fingerprint)
+	}
+
+	t.Run("older subkey by fingerprint signs with that subkey", func(t *testing.T) {
+		tester(t, testCase{id: subkeys[0], want: subkeys[0]})
+	})
+	t.Run("older subkey by long id signs with that subkey", func(t *testing.T) {
+		tester(t, testCase{id: config.LongKeyID(subkeys[0]), want: subkeys[0]})
+	})
+	t.Run("newer subkey signs with that subkey", func(t *testing.T) {
+		tester(t, testCase{id: subkeys[1], want: subkeys[1]})
+	})
+	t.Run("primary id signs with the newest signing subkey", func(t *testing.T) {
+		tester(t, testCase{id: primary, want: subkeys[1]})
 	})
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 	openpgp "github.com/ProtonMail/go-crypto/openpgp/v2"
 	pgp "github.com/ProtonMail/gopenpgp/v3/crypto"
+	"github.com/ProtonMail/gopenpgp/v3/profile"
 
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
@@ -50,8 +51,16 @@ type Credentials interface {
 
 type cachedKey struct {
 	digest  [sha256.Size]byte
-	key     *pgp.Key
+	key     *unlockedKey
 	expires time.Time
+}
+
+// unlockedKey is an unlocked key and the key ID go-crypto signs with: 0
+// lets it pick the newest valid signing key, as gpg does for a primary key
+// ID, and a subkey's ID pins exactly that subkey.
+type unlockedKey struct {
+	key   *pgp.Key
+	keyID uint64
 }
 
 // OpenPGP signs with keys fetched from Credentials. An unlocked key is kept
@@ -80,24 +89,20 @@ func (o *OpenPGP) Sign(ctx context.Context, k config.OpenPGPKey, payload []byte)
 		return nil, err
 	}
 	now := o.now()
-	h, err := pgp.PGP().Sign().
-		SigningKey(key).
-		Detached().
-		SignTime(now.Unix()).
-		New()
+	cfg := profile.Default().SignConfig()
+	cfg.Time = func() time.Time { return now }
+	cfg.SigningKeyId = key.keyID
+	var raw bytes.Buffer
+	err = openpgp.DetachSign(&raw, []*openpgp.Entity{key.key.GetEntity()}, bytes.NewReader(payload), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrKey, err)
 	}
-	raw, err := h.Sign(payload, pgp.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrKey, err)
-	}
-	return describe(raw)
+	return describe(raw.Bytes())
 }
 
 // key returns the unlocked key for k, from the cache when its credential
 // values are unchanged.
-func (o *OpenPGP) key(ctx context.Context, k config.OpenPGPKey) (*pgp.Key, error) {
+func (o *OpenPGP) key(ctx context.Context, k config.OpenPGPKey) (*unlockedKey, error) {
 	cred, ok := o.Creds.Credential(k.Credential)
 	if !ok {
 		return nil, fmt.Errorf("%w: unknown credential %q", ErrUnavailable, k.Credential)
@@ -122,14 +127,15 @@ func (o *OpenPGP) key(ctx context.Context, k config.OpenPGPKey) (*pgp.Key, error
 	}
 	o.mu.Unlock()
 
-	key, err := unlock(armoredKey, pass)
+	locked, err := unlock(armoredKey, pass)
 	if err != nil {
 		return nil, err
 	}
-	err = checkID(key, k.ID, now)
+	keyID, err := checkID(locked, k.ID, now)
 	if err != nil {
 		return nil, err
 	}
+	key := &unlockedKey{key: locked, keyID: keyID}
 	if ttl := cred.CacheTTL(); ttl > 0 {
 		o.mu.Lock()
 		if o.cache == nil {
@@ -167,22 +173,24 @@ func unlock(armoredKey, pass string) (*pgp.Key, error) {
 }
 
 // checkID confirms the key's primary key, or one of its valid signing
-// subkeys, has the configured ID.
-func checkID(key *pgp.Key, id string, now time.Time) error {
+// subkeys, has the configured ID, and returns the key ID to sign with. A
+// primary key ID returns 0, so the newest valid signing key signs, as with
+// gpg -u <primary>. A subkey ID returns that subkey, as with gpg -u <subkey>!.
+func checkID(key *pgp.Key, id string, now time.Time) (uint64, error) {
 	e := key.GetEntity()
 	if config.KeyIDsMatch(id, fingerprint(e.PrimaryKey)) {
-		return nil
+		return 0, nil
 	}
 	for _, sub := range e.Subkeys {
 		if !config.KeyIDsMatch(id, fingerprint(sub.PublicKey)) {
 			continue
 		}
 		if _, ok := e.SigningKeyById(now, sub.PublicKey.KeyId, nil); ok {
-			return nil
+			return sub.PublicKey.KeyId, nil
 		}
-		return fmt.Errorf("%w: subkey %s cannot sign", ErrKey, id)
+		return 0, fmt.Errorf("%w: subkey %s cannot sign", ErrKey, id)
 	}
-	return fmt.Errorf("%w: credential holds key %s, not %s", ErrKey, fingerprint(e.PrimaryKey), id)
+	return 0, fmt.Errorf("%w: credential holds key %s, not %s", ErrKey, fingerprint(e.PrimaryKey), id)
 }
 
 func fingerprint(pk *packet.PublicKey) string {
