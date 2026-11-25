@@ -24,7 +24,9 @@ export const requestClaim = h.requestClaim;
 export const log = h.log;
 export const credential = h.credential;
 export const kv = h.kv;
-export default { defineFilter, deny, respond, ask, requestClaim, log, kv, credential };
+export const subrequest = h.subrequest;
+export const placeholder = h.placeholder;
+export default { defineFilter, deny, respond, ask, requestClaim, log, kv, credential, subrequest, placeholder };
 `
 
 var bouncerPlugin = api.Plugin{

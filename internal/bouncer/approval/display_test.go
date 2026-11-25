@@ -193,3 +193,24 @@ func TestClaimLines(t *testing.T) {
 		})
 	})
 }
+
+func TestOriginLine(t *testing.T) {
+	type testCase struct {
+		origin string
+		want   string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		assert.Equal(t, tc.want, OriginLine(prompt.Pending{Origin: tc.origin}, "  "))
+	}
+
+	t.Run("empty for an agent request", func(t *testing.T) {
+		tester(t, testCase{})
+	})
+	t.Run("one escaped line for a subrequest", func(t *testing.T) {
+		tester(t, testCase{
+			origin: "subrequest from f for POST x\x1b[2J",
+			want:   "  origin: subrequest from f for POST x\\u001b[2J\n",
+		})
+	})
+}

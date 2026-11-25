@@ -74,12 +74,12 @@ func readAnswer(ctx context.Context, in *os.File, out io.Writer, p prompt.Pendin
 	case prompt.KindConfirm, prompt.KindClaim:
 		letters := "y, s, n or d"
 		if p.Kind == prompt.KindConfirm {
-			_, _ = fmt.Fprintf(out, "=== approval needed [%s] source=%s\n  %s\n  request: %s\n  %s > ",
-				p.ID, d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), prompt.ConfirmChoices)
+			_, _ = fmt.Fprintf(out, "=== approval needed [%s] source=%s\n  %s\n  request: %s\n%s  %s > ",
+				p.ID, d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), approval.OriginLine(p, "  "), prompt.ConfirmChoices)
 		} else {
 			letters = "y, s or n"
 			_, _ = fmt.Fprintf(out, "=== claim requested [%s] source=%s\n  %s\n  request: %s\n%s  %s > ",
-				p.ID, d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), approval.ClaimLines(p, "  "), prompt.ClaimChoices)
+				p.ID, d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), approval.OriginLine(p, "  ")+approval.ClaimLines(p, "  "), prompt.ClaimChoices)
 		}
 		for {
 			line, err := readLine(out)

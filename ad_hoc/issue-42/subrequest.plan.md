@@ -47,7 +47,7 @@ import { defineFilter, deny, subrequest, placeholder } from "bouncer";
 
 const resp = await subrequest({
   method: "GET",                       // default GET
-  url: `https://api.github.com/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`,
+  url: `https://api.github.com/repos/${repo}/rules/branches/${branch.split("/").map(encodeURIComponent).join("/")}`,
   headers: { Accept: "application/vnd.github+json" },
   body: undefined,                     // string, Uint8Array, or object (JSON-encoded)
   redirect: "follow",                  // or "manual"
@@ -82,31 +82,40 @@ The time a filter spends waiting in `subrequest()` does not count toward its CPU
 A new package `internal/bouncer/subreq` holds the routing logic, so the proxy and the test runner share it.
 
 ```go
-type Spec struct {
-	Method   string
-	URL      string
-	Header   http.Header
-	Body     []byte
-	Manual   bool
-	Timeout  time.Duration
+// in chain
+type SubrequestSpec struct {
+	Method  string
+	URL     string
+	Header  http.Header
+	Body    []byte
+	Manual  bool
+	Timeout time.Duration
 }
 
+type SubrequestFunc func(parent *Request, filter string, spec SubrequestSpec) (*Response, *url.URL, error)
+
+// in subreq
 type Router struct {
 	// Session returns the live session for sess, with current claims.
 	Session  func(sess *chain.Session) (*chain.Session, bool)
 	Profile  func(name string) (*policy.Profile, bool)
 	// Terminal is the end of an intercepted service's chain.
-	Terminal func(svc *policy.Service) chain.Handler
+	Terminal func(svc *policy.Service, length int64) chain.Handler
 	// Tunnel forwards a request to an unmatched host.
-	Tunnel   func(ctx context.Context, allowPrivate bool, req *http.Request) (*http.Response, error)
+	Tunnel   func(prof *policy.Profile, req *chain.Request) (*chain.Response, error)
+	// Direct answers every hop when Profile is nil, for filter specs.
+	Direct   chain.Handler
 	Audit    func(e audit.Entry)
 }
 
-func (r *Router) Do(parent *chain.Request, filter string, spec Spec) (*chain.Response, error)
+func (r *Router) Do(parent *chain.Request, filter string, spec chain.SubrequestSpec) (*chain.Response, *url.URL, error)
 ```
 
-`chain.Env` gains `Subrequest func(parent *chain.Request, filter string, spec subreq.Spec) (*chain.Response, error)`.
-To avoid an import cycle, `Spec` lives in `chain` if `subreq` imports `chain`.
+`chain.Env` gains `Subrequest chain.SubrequestFunc` and `Placeholder func(name string) (string, error)`.
+The spec types live in `chain`, because `subreq` imports `chain`.
+
+The forwarder turns an upstream failure into a synthetic 502 for the agent.
+It also sets `chain.Response.UpstreamErr`, so the router can reject instead.
 
 `Do` works as follows.
 
@@ -121,7 +130,7 @@ To avoid an import cycle, `Spec` lives in `chain` if `subreq` imports `chain`.
    - Run the same method and path checks `intercept` runs.
      Factor them out of `proxy.intercept` into a shared function.
    - If the profile has an HTTP service for the host, build a `chain.Request` with the live session and `Subrequest` set.
-     Then run `chain.Build(svc.Filters, Terminal(svc))`.
+     Then run `chain.Build(svc.Filters, Terminal(svc, length))`.
    - Otherwise, if the profile tunnels the host, send it through `Tunnel` with no credential.
    - Otherwise, return a Bouncer denial response (`host not allowed by profile <name>`).
      This resolves with `denied` set, as the agent would see a 403.
@@ -152,14 +161,17 @@ Each hop of a followed redirect is its own entry.
 `chain.AskRequest` and `chain.ClaimRequest` gain an `Origin` string.
 It is empty for an agent request.
 For a subrequest it reads `subrequest from <filter> for <parent>`.
-The prompt display shows it under the request line.
+`prompt.Question` and `prompt.Pending` carry it as `origin`.
+Every prompt view shows it on one escaped line under the request.
 
 ```text
 Merge a pull request?
-PUT api.github.com/repos/your-org/your-repo/pulls/7/merge
-  subrequest from git-protect-branches
-  for POST github.com/your-org/your-repo.git/git-receive-pack
+request: PUT api.github.com/repos/your-org/your-repo/pulls/7/merge
+origin: subrequest from git-protect-branches for POST github.com/your-org/your-repo.git/git-receive-pack
 ```
+
+An agent prompt and a subrequest prompt for the same request do not share one pending question, since they show different origins.
+A remembered "allow for this session" answer still covers both.
 
 ## Types
 
@@ -180,7 +192,8 @@ steps:
       - url: https://api.github.com/repos/your-org/your-repo/rules/branches/main
         status: 200
         body: '[{"type": "update"}]'
-        expect_header: {Authorization: "Bearer test-github-pat"}
+        expect_header: {Accept: application/vnd.github+json}
+        expect_credential: true
       - method: GET
         url: https://api.github.com/repos/your-org/your-repo/rules/branches/feature
         error: connection refused
@@ -191,6 +204,9 @@ steps:
   It answers every matching call.
 - Fields are `status` (default 200), `headers`, `body`, or `error`, which makes `subrequest()` reject.
 - `expect_header` checks headers the fixture received, after the chain ran.
+- `expect_credential` checks whether the subrequest arrived with its service's credential.
+  It needs a bouncer spec.
+  The test runner injects no secrets, so a header check cannot show the credential.
 - A subrequest with no fixture fails the step with `unexpected subrequest <method> <url>`.
 - A fixture nothing called fails the step with `subrequest fixture <method> <url> was not used`.
 - In a bouncer spec, subrequests go through `subreq.Router` with the profile's real chain.
@@ -206,9 +222,9 @@ steps:
   For each pushed branch it calls `GET /repos/{repo}/rules/branches/{branch}` and denies when any returned rule is `update`, `deletion`, or `non_fast_forward` for the matching update type.
   It denies when the lookup fails or is denied.
   It skips the lookup when `req.subrequest` is set, as an example of the marker.
-  It uses `encodeURIComponent` on the branch.
-- Attach it in `docs/bouncer/reference/bouncers.yaml` on both the HTTP and SSH git rules.
-  Add an allow rule for `GET` on `rules/branches/**`.
+  It encodes each segment of the branch with `encodeURIComponent`, so a branch like `smoke/protected` keeps its slash and `#` or `%` cannot change the URL.
+- Attach it in `docs/bouncer/reference/bouncers.yaml` on the GitHub HTTP git rule and on a new `github-ssh` service.
+  The existing `github_repo` allow rule already covers the lookup, so no new rule is needed.
 - Add `docs/bouncer/reference/tests/ts/filters/github-branch-rules.test.yaml` and bouncer-level cases covering protected, unprotected, lookup error, lookup denied, and SSH.
 - Document `subrequest()`, `placeholder()`, `req.subrequest`, and the fixtures in `docs/bouncer-filters.md`.
   Say plainly that a subrequest has the session's authority and goes through the normal chain.

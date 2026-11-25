@@ -122,6 +122,25 @@ type Step struct {
 	// ExpectClaims is the session's full claim set after the step. {}
 	// asserts no claims.
 	ExpectClaims map[string][]string `yaml:"expect_claims"`
+	// Subrequests answer the filters' subrequests in this step. Every
+	// subrequest needs a fixture and every fixture must be used.
+	Subrequests []SubrequestFixture `yaml:"subrequests"`
+}
+
+// SubrequestFixture answers every subrequest with its method and URL.
+type SubrequestFixture struct {
+	Method  string            `yaml:"method"`
+	URL     string            `yaml:"url"`
+	Status  int               `yaml:"status"`
+	Headers map[string]string `yaml:"headers"`
+	Body    string            `yaml:"body"`
+	// Error makes the subrequest reject with this message instead.
+	Error string `yaml:"error"`
+	// ExpectHeader checks headers the fixture received, after the chain.
+	ExpectHeader map[string]string `yaml:"expect_header"`
+	// ExpectCredential checks whether the subrequest reached the fixture
+	// with its service's credential. It needs a bouncer spec.
+	ExpectCredential *bool `yaml:"expect_credential"`
 }
 
 type HTTPRequest struct {
@@ -320,6 +339,9 @@ func runCase(spec *Spec, c *Case, filterPath, policyPath string) (Result, error)
 	}
 	for i := range c.Steps {
 		err = checkClaimFields(&c.Steps[i])
+		if err == nil {
+			err = checkFixtures(&c.Steps[i], filterPath != "")
+		}
 		if err != nil {
 			return Result{}, fmt.Errorf("step %d: %w", i+1, err)
 		}
@@ -348,19 +370,23 @@ func runCase(spec *Spec, c *Case, filterPath, policyPath string) (Result, error)
 	if c.Profile != "" {
 		profile = c.Profile
 	}
-	httpChain, sshChain, err := chains(spec, c, filterPath, policyPath, profile, env, store)
+	httpChain, sshChain, profiles, err := chains(spec, c, filterPath, policyPath, profile, env, store)
 	if err != nil {
 		return Result{}, err
 	}
+	subs := &subrequests{}
+	env.Subrequest = subs.router(profiles, claimer).Do
 
 	for i := range c.Steps {
 		s := &c.Steps[i]
 		approver.answer, approver.asked = s.Approve != nil && *s.Approve, false
 		claimer.answer, claimer.requested = s.ClaimAnswer, nil
+		subs.reset(s.Subrequests)
 		msg, err := runStep(s, httpChain, sshChain, profile, approver, claimer)
 		if err != nil {
 			msg = err.Error()
 		}
+		msg = joinProblems(msg, subs.problems())
 		if msg == "" {
 			continue
 		}
@@ -380,7 +406,8 @@ func runCase(spec *Spec, c *Case, filterPath, policyPath string) (Result, error)
 
 // chains loads the case's filter, or compiles its policy and picks its
 // profile, and returns the filter chain lookups for HTTP and SSH.
-func chains(spec *Spec, c *Case, filterPath, policyPath, profile string, env *chain.Env, store *kv.Store) (chainFunc, chainFunc, error) {
+// The profile lookup is nil for a filter spec, which has no policy.
+func chains(spec *Spec, c *Case, filterPath, policyPath, profile string, env *chain.Env, store *kv.Store) (chainFunc, chainFunc, func(string) (*policy.Profile, bool), error) {
 	if filterPath != "" {
 		cfg := spec.FilterConfig
 		if c.FilterConfig != nil {
@@ -388,26 +415,36 @@ func chains(spec *Spec, c *Case, filterPath, policyPath, profile string, env *ch
 		}
 		f, err := jsfilter.Load(jsfilter.Options{Path: filterPath, Config: cfg, Env: env, KV: store})
 		if err != nil {
-			return nil, nil, fmt.Errorf("load filter: %w", err)
+			return nil, nil, nil, fmt.Errorf("load filter: %w", err)
 		}
 		one := func(string) (target, error) { return target{filters: []chain.Filter{f}, service: harnessName}, nil }
-		return one, one, nil
+		return one, one, nil, nil
 	}
 
 	if profile == "" {
-		return nil, nil, errors.New("no profile")
+		return nil, nil, nil, errors.New("no profile")
 	}
 	cfg, err := config.Load(policyPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load config: %w", err)
+		return nil, nil, nil, fmt.Errorf("load config: %w", err)
+	}
+	env.Placeholder = func(name string) (string, error) {
+		cred, ok := cfg.Credentials[name]
+		if !ok {
+			return "", fmt.Errorf("no credential named %q", name)
+		}
+		if cred.Internal {
+			return "", fmt.Errorf("credential %q is internal and is never injected", name)
+		}
+		return config.Placeholder(name), nil
 	}
 	set, err := policy.Compile(cfg, env, store)
 	if err != nil {
-		return nil, nil, fmt.Errorf("compile policy: %w", err)
+		return nil, nil, nil, fmt.Errorf("compile policy: %w", err)
 	}
 	prof, ok := set.Profiles[profile]
 	if !ok {
-		return nil, nil, fmt.Errorf("profile %q not found", profile)
+		return nil, nil, nil, fmt.Errorf("profile %q not found", profile)
 	}
 	httpChain := func(host string) (target, error) {
 		svc := prof.MatchHTTP(host)
@@ -427,7 +464,11 @@ func chains(spec *Spec, c *Case, filterPath, policyPath, profile string, env *ch
 		}
 		return target{filters: svc.Filters, service: svc.Config.Name, credential: svc.Config.Credential}, nil
 	}
-	return httpChain, sshChain, nil
+	profiles := func(name string) (*policy.Profile, bool) {
+		p, ok := set.Profiles[name]
+		return p, ok
+	}
+	return httpChain, sshChain, profiles, nil
 }
 
 func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scriptedApprover, cl *scriptedClaims) (string, error) {
@@ -469,7 +510,7 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 		hostport := u.Host
 		if u.Port() == "" {
 			port := "443"
-			if u.Scheme == "http" {
+			if u.Scheme == schemeHTTP {
 				port = "80"
 			}
 			hostport += ":" + port

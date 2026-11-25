@@ -15,6 +15,7 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
 	"github.com/pastdev/agentcon/pkg/bouncer/claims"
+	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
 const (
@@ -78,7 +79,7 @@ func (i *instance) installHost() error {
 			defer cancel()
 		}
 		i.wd.pause()
-		ok, err := env.Approver.Ask(ctx, chain.AskRequest{Session: req.Session, Filter: i.f.name, Prompt: prompt, Key: key, Request: req.Describe()})
+		ok, err := env.Approver.Ask(ctx, chain.AskRequest{Session: req.Session, Filter: i.f.name, Prompt: prompt, Key: key, Request: req.Describe(), Origin: req.Subrequest.Origin()})
 		i.wd.resume()
 		if err != nil {
 			i.log(zerolog.WarnLevel, "ask() failed: "+err.Error(), nil)
@@ -126,7 +127,7 @@ func (i *instance) installHost() error {
 		i.wd.pause()
 		ok, err := requester.RequestClaim(ctx, chain.ClaimRequest{
 			Session: req.Session, Filter: i.f.name, Prompt: prompt,
-			Claim: claims.Claim{Type: typ, Value: value}, Request: req.Describe(),
+			Claim: claims.Claim{Type: typ, Value: value}, Request: req.Describe(), Origin: req.Subrequest.Origin(),
 		})
 		i.wd.resume()
 		if errors.Is(err, chain.ErrClaimRejected) {
@@ -163,6 +164,24 @@ func (i *instance) installHost() error {
 		v, err := get(ctx, name)
 		if err != nil {
 			panic(vm.ToValue(err.Error()))
+		}
+		return vm.ToValue(v)
+	})
+
+	host.Set("subrequest", i.subrequest)
+
+	host.Set("placeholder", func(call goja.FunctionCall) goja.Value {
+		name, ok := call.Argument(0).Export().(string)
+		if !ok || name == "" {
+			panic(vm.NewTypeError("placeholder(name) requires a credential name"))
+		}
+		get := i.f.opts.Env.Placeholder
+		if get == nil {
+			return vm.ToValue(config.Placeholder(name))
+		}
+		v, err := get(name)
+		if err != nil {
+			panic(vm.NewTypeError("placeholder: " + err.Error()))
 		}
 		return vm.ToValue(v)
 	})
@@ -534,6 +553,11 @@ func (i *instance) wrapRequest(req *chain.Request) *goja.Object {
 		o.Set("session", goja.Null())
 	}
 	o.Set("describe", func() string { return req.Describe() })
+	if req.Subrequest != nil {
+		o.Set("subrequest", i.freeze(i.plain(req.Subrequest)))
+	} else {
+		o.Set("subrequest", goja.Null())
+	}
 
 	if req.Transport == chain.TransportHTTP {
 		o.Set("method", req.Method)

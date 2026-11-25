@@ -1,0 +1,168 @@
+cases:
+  - name: a branch GitHub restricts is refused
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main
+            body: '[{"type": "update"}, {"type": "deletion"}]'
+            expect_header: {Accept: application/vnd.github+json}
+        expect: deny
+        expect_reason: "GitHub rule 'update' protects branch 'main'"
+
+  - name: a branch that needs a pull request is refused
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main
+            body: '[{"type": "pull_request"}]'
+        expect: deny
+        expect_reason: "'pull_request'"
+
+  - name: a branch with no rules is allowed
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/feature}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature
+            body: '[]'
+        expect: allow
+
+  - name: rules that do not block an update are ignored
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/feature}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature
+            body: '[{"type": "deletion"}, {"type": "required_signatures"}]'
+        expect: allow
+
+  - name: deleting a branch with a deletion rule is refused
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/release, type: delete}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/release
+            body: '[{"type": "deletion"}]'
+        expect: deny
+        expect_reason: "'deletion'"
+
+  - name: creating a branch with a creation rule is refused
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/release/2.0, type: create}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/release/2.0
+            body: '[{"type": "creation"}]'
+        expect: deny
+        expect_reason: "'creation'"
+
+  - name: block config replaces the rule types for an update kind
+    filter_config: {block: {update: [non_fast_forward]}}
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main
+            body: '[{"type": "update"}, {"type": "non_fast_forward"}]'
+        expect: deny
+        expect_reason: "'non_fast_forward'"
+
+  - name: branch names are encoded per segment
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: "refs/heads/fix/a#b"}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/fix/a%23b
+            body: '[]'
+        expect: allow
+
+  - name: each branch is looked up once
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/a}, {ref: refs/heads/b}, {ref: refs/heads/a}]
+        subrequests:
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/a", body: "[]"}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/b", body: "[]"}
+        expect: allow
+
+  - name: tags are not looked up
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/tags/v1.0.0}]
+        expect: allow
+
+  - name: a failed lookup refuses the push
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/feature}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature
+            error: connection refused
+        expect: deny
+        expect_reason: "branch rules lookup for 'feature' failed: subrequest: connection refused"
+
+  - name: a lookup that is not 200 refuses the push
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/feature}]
+        subrequests:
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/feature", status: 404}
+        expect: deny
+        expect_reason: "answered 404"
+
+  - name: ssh pushes are checked too
+    steps:
+      - ssh:
+          host: github.com
+          user: git
+          command: "git-receive-pack 'myorg/myrepo.git'"
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main
+            body: '[{"type": "update"}]'
+        expect: deny
+        expect_reason: "'update'"
+
+  - name: api config points at another host
+    filter_config: {api: "https://github.example.com/api/v3/"}
+    steps:
+      - request:
+          method: POST
+          url: https://github.example.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - {url: "https://github.example.com/api/v3/repos/myorg/myrepo/rules/branches/main", body: "[]"}
+        expect: allow
+
+  - name: fetches are not checked
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-upload-pack
+        expect: allow

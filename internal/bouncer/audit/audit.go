@@ -42,6 +42,16 @@ type Entry struct {
 	Reason     string `json:"reason,omitempty"`
 	Status     int    `json:"status,omitempty"`
 	DurationMS int64  `json:"duration_ms"`
+	// Subrequest is set when a filter made the request with subrequest().
+	Subrequest *Subrequest `json:"subrequest,omitempty"`
+}
+
+// Subrequest names the filter that made a subrequest, its nesting depth,
+// and the request that caused it.
+type Subrequest struct {
+	Filter string `json:"filter"`
+	Depth  int    `json:"depth"`
+	Parent string `json:"parent"`
 }
 
 // Log writes entries to a logger.
@@ -77,6 +87,9 @@ func (l *Log) Write(e Entry) {
 		ev.Int("status", e.Status)
 	}
 	ev.Int64("duration_ms", e.DurationMS)
+	if sr := e.Subrequest; sr != nil {
+		ev.Dict("subrequest", zerolog.Dict().Str("filter", sr.Filter).Int("depth", sr.Depth).Str("parent", sr.Parent))
+	}
 	ev.Msg(Summary(e))
 }
 
@@ -104,6 +117,9 @@ func Summary(e Entry) string {
 		s += fmt.Sprintf("  (%s: %s)", e.By, e.Reason)
 	case e.By != "":
 		s += fmt.Sprintf("  (%s)", e.By)
+	}
+	if e.Subrequest != nil {
+		s += fmt.Sprintf("  [subrequest from %s]", e.Subrequest.Filter)
 	}
 	return s
 }

@@ -144,3 +144,37 @@ func TestAsk(t *testing.T) {
 		assert.False(t, ok, "approval remembered for a shared session")
 	})
 }
+
+func TestAskOrigin(t *testing.T) {
+	t.Run("a subrequest prompt carries its origin and does not join an agent prompt", func(t *testing.T) {
+		b := prompt.NewBroker(time.Minute)
+		m := NewManager(b)
+		events, cancel := b.Subscribe()
+		defer cancel()
+		sess := &chain.Session{ID: "s1"}
+		done := make(chan struct{}, 2)
+		for _, origin := range []string{"", "subrequest from f for POST x"} {
+			go func() {
+				_, _ = m.Ask(context.Background(), chain.AskRequest{Session: sess, Prompt: "merge?", Request: "PUT y", Origin: origin})
+				done <- struct{}{}
+			}()
+		}
+		origins := map[string]bool{}
+		var ids []string
+		for len(ids) < 2 {
+			ev := <-events
+			if ev.Type != "pending" {
+				continue
+			}
+			origins[ev.Pending.Origin] = true
+			ids = append(ids, ev.Pending.ID)
+		}
+		for _, id := range ids {
+			err := b.Answer(id, prompt.Answer{Allow: true})
+			require.NoError(t, err)
+		}
+		<-done
+		<-done
+		assert.Equal(t, map[string]bool{"": true, "subrequest from f for POST x": true}, origins)
+	})
+}

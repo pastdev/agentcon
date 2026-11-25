@@ -48,6 +48,9 @@ bouncers:
       gitlab-ssh:
         private_key:
           source: ssh-agent              # keys from your running ssh-agent
+      github-ssh:
+        private_key:
+          source: ssh-agent
       sandbox-key:
         private_key:
           source: file
@@ -152,6 +155,10 @@ bouncers:
                     config: {branches: [main, "release/*"]}
                   - path: ts/filters/push-rate-limit.ts
                     config: {max: 20, window: 1h}
+                  # Asks GitHub for the branch rules in force now, through a
+                  # subrequest to api.github.com. The github_repo rule below
+                  # allows that lookup and injects the token.
+                  - ts/filters/github-branch-rules.ts
               - action: allow
                 methods: [PUT]
                 github_repo: [myorg/myrepo]
@@ -214,6 +221,18 @@ bouncers:
                 filters:
                   - path: ts/filters/git-protect-branches.ts
                     config: {branches: [main, "release/*"]}
+
+          # The same GitHub branch rules lookup guards SSH pushes. Its
+          # subrequest goes to api.github.com through the github http service.
+          - name: github-ssh
+            hosts: [github.com]
+            user: git
+            credential: github-ssh
+            allow: [git]
+            rules:
+              - action: allow
+                github_repo: [myorg/myrepo]
+                filters: [ts/filters/github-branch-rules.ts]
 
           # A sandbox VM the agent may log into. Once connected it can do
           # anything there, so a human approves each session. Agent forwarding

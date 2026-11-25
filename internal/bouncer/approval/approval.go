@@ -53,7 +53,7 @@ func (m *Manager) Ask(ctx context.Context, a chain.AskRequest) (bool, error) {
 	rk := rememberKey(sid, key)
 	// Only identical requests share a pending prompt, so the human always
 	// sees the request their answer applies to.
-	jk := rk + "\x00" + a.Request
+	jk := rk + "\x00" + a.Request + "\x00" + a.Origin
 
 	m.mu.Lock()
 	if v, ok := m.remembered[rk]; ok {
@@ -72,7 +72,7 @@ func (m *Manager) Ask(ctx context.Context, a chain.AskRequest) (bool, error) {
 		}
 	}
 	t := m.b.Raise(prompt.Question{
-		Kind: prompt.KindConfirm, Source: "filter:" + a.Filter, Message: a.Prompt, Detail: a.Request,
+		Kind: prompt.KindConfirm, Source: "filter:" + a.Filter, Message: a.Prompt, Detail: a.Request, Origin: a.Origin,
 		SessionID: sid, SessionLabel: label, Profile: profile,
 	})
 	w := &waiting{id: t.ID(), key: rk, done: make(chan struct{})}

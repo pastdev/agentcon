@@ -119,7 +119,7 @@ func (c *Claims) RequestClaim(ctx context.Context, r chain.ClaimRequest) (bool, 
 	}
 	claim := r.Claim
 	t := c.b.Raise(prompt.Question{
-		Kind: prompt.KindClaim, Source: "filter:" + r.Filter, Message: r.Prompt, Detail: r.Request,
+		Kind: prompt.KindClaim, Source: "filter:" + r.Filter, Message: r.Prompt, Detail: r.Request, Origin: r.Origin,
 		SessionID: sess.ID, SessionLabel: sess.Label, Profile: sess.Profile,
 		Claim: &claim, SessionClaims: current,
 	})

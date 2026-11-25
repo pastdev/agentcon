@@ -182,12 +182,12 @@ func showPrompt(out io.Writer, p prompt.Pending) {
 	}
 	switch p.Kind {
 	case prompt.KindConfirm:
-		_, _ = fmt.Fprintf(out, "\n=== approval needed [%s] session=%s profile=%s source=%s\n  %s\n  request: %s\n  %s > ",
-			p.ID, d(session, 60), d(p.Profile, 60), d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), prompt.ConfirmChoices)
+		_, _ = fmt.Fprintf(out, "\n=== approval needed [%s] session=%s profile=%s source=%s\n  %s\n  request: %s\n%s  %s > ",
+			p.ID, d(session, 60), d(p.Profile, 60), d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), approval.OriginLine(p, "  "), prompt.ConfirmChoices)
 		return
 	case prompt.KindClaim:
 		// Raw mode follows, so lines end with a carriage return too.
-		lines := strings.ReplaceAll(approval.ClaimLines(p, "  "), "\n", "\r\n")
+		lines := strings.ReplaceAll(approval.OriginLine(p, "  ")+approval.ClaimLines(p, "  "), "\n", "\r\n")
 		_, _ = fmt.Fprintf(out, "\n=== claim requested [%s] session=%s profile=%s source=%s\n  %s\n  request: %s\n%s  %s > ",
 			p.ID, d(session, 60), d(p.Profile, 60), d(p.Source, 60), d(p.Message, 300), d(p.Detail, 300), lines, prompt.ClaimChoices)
 		return

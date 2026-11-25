@@ -94,6 +94,8 @@ type Request struct {
 	// SignerRequest marks a request to a signer service. Describe then adds
 	// the requested key and a digest of the object, never its contents.
 	SignerRequest bool
+	// Subrequest is set when a filter made this request with subrequest().
+	Subrequest *SubrequestInfo
 
 	gitOnce sync.Once
 	git     *gitproto.Info
@@ -348,6 +350,10 @@ type Response struct {
 	// Upgrade is the upstream connection after a 101 Switching Protocols.
 	Upgrade io.ReadWriteCloser
 	Denial  *Denial
+	// UpstreamErr is set when the upstream could not be reached and Status
+	// is a synthetic 502. The agent sees only the 502. A subrequest rejects
+	// with this error instead, since there is no upstream response.
+	UpstreamErr error
 }
 
 // Denial explains why a request was refused.

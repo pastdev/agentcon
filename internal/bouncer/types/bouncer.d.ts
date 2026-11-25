@@ -83,6 +83,16 @@ declare module "bouncer" {
     fields: string[];
   }
 
+  /** Marks a request a filter made with subrequest(). Bouncer sets it, so the agent cannot forge it. */
+  export interface SubrequestInfo {
+    /** The filter that made the subrequest. */
+    readonly filter: string;
+    /** Nesting level: 1 for a subrequest made while handling an agent request, at most 4. */
+    readonly depth: number;
+    /** describe() of the request that caused the subrequest. */
+    readonly parent: string;
+  }
+
   interface BaseRequest {
     host: string;
     /** Name of the matched service (or ssh service) in the config. */
@@ -93,6 +103,8 @@ declare module "bouncer" {
     git: Git | null;
     /** One-line description, e.g. "POST gitlab.com/api/v4/projects/1/issues". */
     describe(): string;
+    /** Set when a filter made this request with subrequest(), frozen. Null for an agent request. */
+    readonly subrequest: SubrequestInfo | null;
   }
 
   export interface HttpRequest extends BaseRequest {
@@ -198,6 +210,48 @@ declare module "bouncer" {
    * never gains claims: "for this session" counts as once there.
    */
   export function requestClaim(type: string, value: string, prompt: string, opts?: { timeout?: string | number }): Promise<boolean>;
+
+  export interface SubrequestInit {
+    /** Absolute http or https URL. URL-encode values taken from the request. */
+    url: string;
+    /** Default GET. */
+    method?: string;
+    headers?: Record<string, string>;
+    /** Objects are JSON-encoded and default Content-Type to application/json. */
+    body?: string | Uint8Array | object;
+    /** "follow" (default) follows up to 5 redirects, each through the chain. "manual" returns the 3xx. */
+    redirect?: "follow" | "manual";
+    /** Bounds the whole subrequest, redirects and prompts included. "10s"-style string or seconds. */
+    timeout?: string | number;
+  }
+
+  export interface SubrequestResponse extends Response {
+    /** The final URL, after any redirects. */
+    readonly url: string;
+  }
+
+  /**
+   * Send an HTTP request through Bouncer as this request's session. It goes
+   * through the chain of the service its host matches (rules, filters, and
+   * credential injection) or the profile's tunnel rules, exactly as an
+   * agent request to the same URL would. Filters there see
+   * `req.subrequest`.
+   *
+   * Resolves for every response, including upstream errors and Bouncer
+   * denials (see `denied`). Rejects only when there is no response: an
+   * invalid URL or method, nesting deeper than 4, more than 5 redirects, a
+   * connection failure, a timeout, or a cancelled parent request. An
+   * uncaught rejection denies the request being filtered.
+   */
+  export function subrequest(init: SubrequestInit): Promise<SubrequestResponse>;
+
+  /**
+   * The named credential's placeholder. Put it where the service expects
+   * its credential, for a service without an `inject` spec; the forwarder
+   * replaces it, as it does for the agent. Throws for an unknown or
+   * internal credential.
+   */
+  export function placeholder(name: string): string;
 
   export function log(message: string, fields?: Record<string, any>): void;
 

@@ -44,6 +44,14 @@ func (b *fakeBackend) Profile(name string) (*policy.Profile, bool) {
 	p, ok := b.set.Profiles[name]
 	return p, ok
 }
+func (b *fakeBackend) LiveSession(sess *chain.Session) (*chain.Session, bool) {
+	for _, s := range b.sessions {
+		if s.ID == sess.ID {
+			return s.Clone(), true
+		}
+	}
+	return nil, false
+}
 func (b *fakeBackend) Control() http.Handler { return http.NotFoundHandler() }
 
 // entryWriter decodes each logged audit event back into an Entry.
