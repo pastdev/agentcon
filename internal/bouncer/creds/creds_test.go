@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -428,5 +429,63 @@ func TestInternalCredential(t *testing.T) {
 	})
 	t.Run("ssh signers refuse a credential a reload made internal", func(t *testing.T) {
 		tester(t, testCase{store: madeInternalByReload, read: sshSigners, wantErr: true})
+	})
+}
+
+func TestSlotCacheAcrossReload(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, value string) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, []byte(value), 0o600))
+		return p
+	}
+	public := write("public", "public-value")
+	secret := write("secret", "internal-value")
+	record := func(file string, internal bool) *config.Credential {
+		return &config.Credential{
+			Name:     "x",
+			Internal: internal,
+			Token:    &config.ValueSource{Source: "file", File: file},
+			Cache:    &config.Duration{D: time.Hour},
+		}
+	}
+	type testCase struct {
+		run  func(t *testing.T, s *Store) string
+		want string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		s := NewStore(map[string]*config.Credential{"x": record(public, false)})
+		assert.Equal(t, tc.want, tc.run(t, s))
+	}
+	slot := func(c *config.Credential) config.Slot { return config.Slot{Name: config.SlotToken, Source: c.Token} }
+
+	t.Run("a lookup from before a reload does not read the new record's cached value", func(t *testing.T) {
+		tester(t, testCase{want: "public-value", run: func(t *testing.T, s *Store) string {
+			t.Helper()
+			old, _, err := s.lookup("x")
+			require.NoError(t, err)
+			s.Update(map[string]*config.Credential{"x": record(secret, true)})
+			v, err := s.GetSlot(t.Context(), "x", config.SlotToken)
+			require.NoError(t, err)
+			require.Equal(t, "internal-value", v)
+			v, err = s.slotValue(t.Context(), old, slot(old))
+			require.NoError(t, err)
+			return v
+		}})
+	})
+	t.Run("a fetch from before a reload does not feed the new record", func(t *testing.T) {
+		tester(t, testCase{want: "internal-value", run: func(t *testing.T, s *Store) string {
+			t.Helper()
+			old, _, err := s.lookup("x")
+			require.NoError(t, err)
+			s.Update(map[string]*config.Credential{"x": record(secret, true)})
+			v, err := s.slotValue(t.Context(), old, slot(old))
+			require.NoError(t, err)
+			require.Equal(t, "public-value", v)
+			v, err = s.GetSlot(t.Context(), "x", config.SlotToken)
+			require.NoError(t, err)
+			return v
+		}})
 	})
 }

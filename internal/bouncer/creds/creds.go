@@ -51,9 +51,13 @@ type Store struct {
 	env map[string]string
 }
 
+// cached is a fetched slot value. cred is the record that fetched it: a
+// lookup holding another record, such as one from before a reload, does not
+// read it.
 type cached struct {
 	value   string
 	expires time.Time
+	cred    *config.Credential
 }
 
 // Secret is the resolved slots of one credential.
@@ -356,7 +360,7 @@ func (s *Store) slotValue(ctx context.Context, c *config.Credential, slot config
 	}
 	cacheKey := key
 	s.mu.Lock()
-	if e, ok := s.cache[cacheKey]; ok && time.Now().Before(e.expires) {
+	if e, ok := s.cache[cacheKey]; ok && e.cred == c && time.Now().Before(e.expires) {
 		s.mu.Unlock()
 		return e.value, nil
 	}
@@ -371,7 +375,11 @@ func (s *Store) slotValue(ctx context.Context, c *config.Credential, slot config
 	}
 	if ttl := c.CacheTTL(); ttl > 0 {
 		s.mu.Lock()
-		s.cache[cacheKey] = cached{value: v, expires: time.Now().Add(ttl)}
+		// A fetch that finishes after a reload must not replace a value the
+		// current record fetched.
+		if cur, ok := s.creds[c.Name]; ok && cur == c {
+			s.cache[cacheKey] = cached{value: v, expires: time.Now().Add(ttl), cred: c}
+		}
 		s.mu.Unlock()
 	}
 	return v, nil
