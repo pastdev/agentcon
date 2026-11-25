@@ -201,11 +201,11 @@ func New(opts Options) (*Daemon, error) {
 	d.creds = creds.NewStore(cfg.Credentials)
 	d.creds.SetProvided(opts.Provided)
 	d.env.Credential = func(ctx context.Context, name string) (string, error) {
-		if c, ok := d.Config().Credentials[name]; ok && c.Internal {
+		sec, err := d.creds.Get(ctx, name)
+		if errors.Is(err, creds.ErrInternal) {
 			d.log.Warn().Str("credential", name).Msg("filter asked for an internal credential")
 			return "", creds.Unavailable(name)
 		}
-		sec, err := d.creds.Get(ctx, name)
 		if err != nil {
 			creds.LogError(d.log.Warn(), err).Str("credential", name).Msg("credential unavailable to a filter")
 			return "", creds.Unavailable(name)

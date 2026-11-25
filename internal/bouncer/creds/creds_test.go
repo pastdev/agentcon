@@ -2,6 +2,7 @@ package creds
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -355,5 +356,77 @@ func TestCommandError(t *testing.T) {
 	})
 	t.Run("caps stderr", func(t *testing.T) {
 		tester(t, testCase{script: "head -c 10000 /dev/zero | tr '\\0' x >&2; exit 1", wantLen: crederr.MaxStderr})
+	})
+}
+
+func TestInternalCredential(t *testing.T) {
+	signing := func(internal bool) *config.Credential {
+		return &config.Credential{
+			Name:       "sign",
+			Internal:   internal,
+			PrivateKey: &config.ValueSource{Source: "provided"},
+			Password:   &config.ValueSource{Source: "provided"},
+		}
+	}
+	newStore := func(internal bool) *Store {
+		s := NewStore(map[string]*config.Credential{"sign": signing(internal)})
+		s.SetProvided(map[string]string{
+			config.ProvidedKey("sign", config.SlotPrivateKey): "key",
+			config.ProvidedKey("sign", config.SlotPassword):   "pass",
+		})
+		return s
+	}
+	type testCase struct {
+		store   func() *Store
+		read    func(*Store) error
+		wantErr bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		err := tc.read(tc.store())
+		if tc.wantErr {
+			require.ErrorIs(t, err, ErrInternal)
+			return
+		}
+		require.NoError(t, err)
+	}
+	get := func(s *Store) error {
+		_, err := s.Get(t.Context(), "sign")
+		return err
+	}
+	sshSigners := func(s *Store) error {
+		_, err := s.SSHSigners(t.Context(), "sign")
+		return err
+	}
+	getSlot := func(s *Store) error {
+		v, err := s.GetSlot(t.Context(), "sign", config.SlotPassword)
+		if err == nil && v != "pass" {
+			return fmt.Errorf("got %q", v)
+		}
+		return err
+	}
+	madeInternalByReload := func() *Store {
+		s := newStore(false)
+		s.Update(map[string]*config.Credential{"sign": signing(true)})
+		return s
+	}
+
+	t.Run("get refuses an internal credential", func(t *testing.T) {
+		tester(t, testCase{store: func() *Store { return newStore(true) }, read: get, wantErr: true})
+	})
+	t.Run("ssh signers refuse an internal credential", func(t *testing.T) {
+		tester(t, testCase{store: func() *Store { return newStore(true) }, read: sshSigners, wantErr: true})
+	})
+	t.Run("get slot reads an internal credential", func(t *testing.T) {
+		tester(t, testCase{store: func() *Store { return newStore(true) }, read: getSlot})
+	})
+	t.Run("get reads a credential that is not internal", func(t *testing.T) {
+		tester(t, testCase{store: func() *Store { return newStore(false) }, read: get})
+	})
+	t.Run("get refuses a credential a reload made internal", func(t *testing.T) {
+		tester(t, testCase{store: madeInternalByReload, read: get, wantErr: true})
+	})
+	t.Run("ssh signers refuse a credential a reload made internal", func(t *testing.T) {
+		tester(t, testCase{store: madeInternalByReload, read: sshSigners, wantErr: true})
 	})
 }

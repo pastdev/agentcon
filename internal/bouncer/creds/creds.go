@@ -29,6 +29,11 @@ const KeyringService = "agent-bouncer"
 
 const commandTimeout = 60 * time.Second
 
+// ErrInternal means a credential is internal: only in-process consumers such
+// as the signer may read it, through GetSlot. Get and SSHSigners, which hand
+// values to filters and upstreams, refuse it.
+var ErrInternal = errors.New("credential is internal")
+
 // Store resolves credentials by name, caching per each credential's TTL.
 type Store struct {
 	mu    sync.Mutex
@@ -293,11 +298,16 @@ func (s *Store) Credential(name string) (*config.Credential, bool) {
 	return c, ok
 }
 
-// Get returns the resolved slots for a credential.
+// Get returns the resolved slots for a credential. It refuses an internal
+// credential, judged on the same record whose slots it reads, so a reload
+// cannot slip one past the check.
 func (s *Store) Get(ctx context.Context, name string) (Secret, error) {
 	c, m, err := s.lookup(name)
 	if err != nil {
 		return Secret{}, err
+	}
+	if c.Internal {
+		return Secret{}, fmt.Errorf("credential %q: %w", name, ErrInternal)
 	}
 	m.Lock()
 	defer m.Unlock()
@@ -315,12 +325,17 @@ func (s *Store) Get(ctx context.Context, name string) (Secret, error) {
 	return out, nil
 }
 
-// GetSlot returns one named slot.
+// GetSlot returns one named slot, internal or not. Its callers keep the
+// value in process.
 func (s *Store) GetSlot(ctx context.Context, name, slotName string) (string, error) {
 	c, m, err := s.lookup(name)
 	if err != nil {
 		return "", err
 	}
+	return s.getSlot(ctx, name, c, m, slotName)
+}
+
+func (s *Store) getSlot(ctx context.Context, name string, c *config.Credential, m *sync.Mutex, slotName string) (string, error) {
 	src := c.Slot(slotName)
 	if src == nil {
 		return "", fmt.Errorf("credential %q has no %s", name, slotName)
@@ -426,11 +441,15 @@ func (s *Store) fetchPayload(ctx context.Context, credName string, src *config.V
 }
 
 // SSHSigners returns signers for an SSH credential: the parsed private key
-// for secret-bearing sources, or keys from the running ssh-agent.
+// for secret-bearing sources, or keys from the running ssh-agent. It refuses
+// an internal credential, judged on the record it reads the key from.
 func (s *Store) SSHSigners(ctx context.Context, name string) ([]ssh.Signer, error) {
-	c, _, err := s.lookup(name)
+	c, m, err := s.lookup(name)
 	if err != nil {
 		return nil, err
+	}
+	if c.Internal {
+		return nil, fmt.Errorf("credential %q: %w", name, ErrInternal)
 	}
 	src := c.PrivateKey
 	if src == nil {
@@ -441,7 +460,7 @@ func (s *Store) SSHSigners(ctx context.Context, name string) ([]ssh.Signer, erro
 			return agentSigners(c.Name, src)
 		}
 	}
-	pem, err := s.GetSlot(ctx, name, config.SlotPrivateKey)
+	pem, err := s.getSlot(ctx, name, c, m, config.SlotPrivateKey)
 	if err != nil {
 		return nil, err
 	}
