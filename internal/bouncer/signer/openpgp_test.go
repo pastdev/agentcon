@@ -269,3 +269,49 @@ func TestOpenPGPCache(t *testing.T) {
 		tester(t, testCase{ttl: 0, wantUnlock: true})
 	})
 }
+
+func TestOpenPGPEviction(t *testing.T) {
+	k := generated(t, "plain")
+	key := config.OpenPGPKey{ID: k.fingerprint, Credential: "sign"}
+	type testCase struct {
+		ttl  time.Duration
+		act  func(*testing.T, *OpenPGP)
+		want int
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		o := &OpenPGP{Creds: credsFor(k, "", tc.ttl)}
+		_, err := o.key(t.Context(), key)
+		require.NoError(t, err)
+		require.Equal(t, 1, o.Cached())
+		tc.act(t, o)
+		assert.Equal(t, tc.want, o.Cached())
+	}
+
+	t.Run("evicts the key when its ttl ends", func(t *testing.T) {
+		tester(t, testCase{ttl: 20 * time.Millisecond, act: func(t *testing.T, o *OpenPGP) {
+			t.Helper()
+			require.Eventually(t, func() bool { return o.Cached() == 0 }, 5*time.Second, 5*time.Millisecond)
+		}})
+	})
+	t.Run("reset evicts every key", func(t *testing.T) {
+		tester(t, testCase{ttl: time.Hour, act: func(_ *testing.T, o *OpenPGP) { o.Reset() }})
+	})
+	t.Run("replacing an entry stops its timer", func(t *testing.T) {
+		tester(t, testCase{ttl: time.Hour, want: 1, act: func(t *testing.T, o *OpenPGP) {
+			t.Helper()
+			o.mu.Lock()
+			old := o.cache[key.Credential]
+			o.mu.Unlock()
+			// Re-armored: different credential bytes, so the key unlocks
+			// again and replaces the entry.
+			o.Creds.(*fakeCreds).values["sign.private_key"] += "\n"
+			_, err := o.key(t.Context(), key)
+			require.NoError(t, err)
+			o.mu.Lock()
+			assert.NotSame(t, old, o.cache[key.Credential])
+			o.mu.Unlock()
+			assert.False(t, old.timer.Stop(), "the replaced entry's timer was not stopped")
+		}})
+	})
+}

@@ -53,6 +53,7 @@ type cachedKey struct {
 	digest  [sha256.Size]byte
 	key     *unlockedKey
 	expires time.Time
+	timer   *time.Timer
 }
 
 // unlockedKey is an unlocked key and the key ID go-crypto signs with: 0
@@ -64,15 +65,56 @@ type unlockedKey struct {
 }
 
 // OpenPGP signs with keys fetched from Credentials. An unlocked key is kept
-// for its credential's cache TTL, and dropped as soon as the credential's
-// values change.
+// for its credential's cache TTL and evicted when the TTL ends, when the
+// credential's values change, or on Reset.
 type OpenPGP struct {
 	Creds Credentials
-	// Now is the clock. Nil means time.Now.
+	// Now is the clock for reuse decisions. Nil means time.Now. Eviction at
+	// expiry runs on a real timer.
 	Now func() time.Time
 
 	mu    sync.Mutex
-	cache map[string]cachedKey
+	cache map[string]*cachedKey
+}
+
+// Reset evicts every unlocked key. The daemon calls it on each config load,
+// so a changed or removed credential leaves nothing behind.
+func (o *OpenPGP) Reset() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for name, c := range o.cache {
+		c.timer.Stop()
+		delete(o.cache, name)
+	}
+}
+
+// Cached reports how many unlocked keys are held.
+func (o *OpenPGP) Cached() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.cache)
+}
+
+// store caches key for ttl, replacing and stopping any previous entry, and
+// evicts it when ttl ends unless a newer entry has replaced it.
+func (o *OpenPGP) store(name string, digest [sha256.Size]byte, key *unlockedKey, now time.Time, ttl time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.cache == nil {
+		o.cache = map[string]*cachedKey{}
+	}
+	if old, ok := o.cache[name]; ok {
+		old.timer.Stop()
+	}
+	entry := &cachedKey{digest: digest, key: key, expires: now.Add(ttl)}
+	entry.timer = time.AfterFunc(ttl, func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		if o.cache[name] == entry {
+			delete(o.cache, name)
+		}
+	})
+	o.cache[name] = entry
 }
 
 func (o *OpenPGP) now() time.Time {
@@ -137,12 +179,7 @@ func (o *OpenPGP) key(ctx context.Context, k config.OpenPGPKey) (*unlockedKey, e
 	}
 	key := &unlockedKey{key: locked, keyID: keyID}
 	if ttl := cred.CacheTTL(); ttl > 0 {
-		o.mu.Lock()
-		if o.cache == nil {
-			o.cache = map[string]cachedKey{}
-		}
-		o.cache[k.Credential] = cachedKey{digest: digest, key: key, expires: now.Add(ttl)}
-		o.mu.Unlock()
+		o.store(k.Credential, digest, key, now, ttl)
 	}
 	return key, nil
 }

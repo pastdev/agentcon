@@ -375,7 +375,8 @@ Each `credential` must be `internal: true`, must have `private_key` as an armore
 After unlocking, the signer checks that the key, or one of its signing subkeys, has the configured ID.
 A subkey ID signs with exactly that subkey, like `gpg -u <subkey>!`.
 A primary key ID signs with the newest valid signing subkey, or the primary key when it has none, like `gpg -u <primary>`.
-An unlocked key is kept for the credential's `cache` TTL.
+An unlocked key is kept for the credential's `cache` TTL, then evicted.
+A config reload evicts every unlocked key.
 
 `gpg --export-secret-keys <id>` exports the whole key, with every subkey, even when `<id>` names one subkey.
 Append `!` to export only the primary key and that subkey, which keeps expired and unrelated subkeys out of the credential:

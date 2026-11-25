@@ -13,10 +13,12 @@ import (
 	"testing"
 	"time"
 
+	pgp "github.com/ProtonMail/gopenpgp/v3/crypto"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/pastdev/agentcon/pkg/bouncer/config"
 	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
 	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
 )
@@ -860,4 +862,33 @@ profiles:
 	t.Run("provided values", func(t *testing.T) {
 		tester(t, testCase{cred: "from-provided", put: (*mgmt.Client).PutProvided, set: map[string]string{"from-provided.token": "s3cret"}})
 	})
+}
+
+func TestReloadEvictsSigningKeys(t *testing.T) {
+	key, err := pgp.PGP().KeyGeneration().AddUserId("Agent", "agent@example.com").New().GenerateKey()
+	require.NoError(t, err)
+	armored, err := key.Armor()
+	require.NoError(t, err)
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.yaml")
+	err = os.WriteFile(cfg, []byte(`default_profile: p
+prompts: {notify: false}
+credentials:
+  sign:
+    internal: true
+    cache: 1h
+    private_key: {source: provided}
+profiles:
+  p: {}
+`), 0o600)
+	require.NoError(t, err)
+	d, err := New(Options{ConfigPath: cfg, StateDir: filepath.Join(dir, "state"), Provided: map[string]string{"sign.private_key": armored}})
+	require.NoError(t, err)
+	_, err = d.signer.Sign(t.Context(), config.OpenPGPKey{ID: strings.ToUpper(key.GetFingerprint()), Credential: "sign"}, []byte("tree 9bedf67800b2923982bdf60c89c57ce6986c4c5b\n"))
+	require.NoError(t, err)
+	require.Equal(t, 1, d.signer.Cached())
+
+	err = d.Reload()
+	require.NoError(t, err)
+	assert.Equal(t, 0, d.signer.Cached())
 }

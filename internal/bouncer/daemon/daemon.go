@@ -78,6 +78,7 @@ type Daemon struct {
 	Prompts   *prompt.Broker
 	claims    *approval.Claims
 	creds     *creds.Store
+	signer    *signer.OpenPGP
 	kv        *kv.Store
 	audit     *audit.Log
 	env       *chain.Env
@@ -200,6 +201,7 @@ func New(opts Options) (*Daemon, error) {
 	creds.ConfigureBitwarden(opts.StateDir, component(opts.Log, "bitwarden"), d.Prompts)
 	d.creds = creds.NewStore(cfg.Credentials)
 	d.creds.SetProvided(opts.Provided)
+	d.signer = &signer.OpenPGP{Creds: d.creds}
 	d.env.Credential = func(ctx context.Context, name string) (string, error) {
 		sec, err := d.creds.Get(ctx, name)
 		if errors.Is(err, creds.ErrInternal) {
@@ -350,6 +352,7 @@ func (d *Daemon) apply(cfg *config.Config) error {
 		return fmt.Errorf("compile policy: %w", err)
 	}
 	d.creds.Update(cfg.Credentials)
+	d.signer.Reset()
 	d.Prompts.SetTimeout(cfg.Prompts.TimeoutOrDefault())
 	if cfg.Prompts.NotifyEnabled() {
 		d.Prompts.SetNotify(func(p prompt.Pending) {
@@ -796,7 +799,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	px := &proxy.Server{Backend: d, CA: d.CA, Creds: d.creds, Audit: d.audit, Transport: d.transport,
-		Signer: &signer.OpenPGP{Creds: d.creds},
+		Signer: d.signer,
 		Dialer: &net.Dialer{Timeout: 30 * time.Second}, Log: component(d.opts.Log, "proxy"), DisableControl: plan.split}
 	httpSrv := &http.Server{Handler: px, ReadHeaderTimeout: 30 * time.Second}
 	sshSrv := &sshproxy.Server{Backend: d, CA: d.CA, Creds: d.creds, Audit: d.audit, Log: component(d.opts.Log, "ssh")}
