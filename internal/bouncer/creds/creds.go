@@ -34,6 +34,10 @@ const commandTimeout = 60 * time.Second
 // values to filters and upstreams, refuse it.
 var ErrInternal = errors.New("credential is internal")
 
+// ErrStale means a reload replaced the credential record a lookup was
+// holding before it read a provided value. Nothing was read.
+var ErrStale = errors.New("credential changed during lookup")
+
 // Store resolves credentials by name, caching per each credential's TTL.
 type Store struct {
 	mu    sync.Mutex
@@ -158,6 +162,23 @@ func (s *Store) lookupEnv(name string) (string, bool) {
 		return v, true
 	}
 	return os.LookupEnv(name)
+}
+
+// recordProvided returns the provided value for key on behalf of record c.
+// Provided values are matched by name and outlive reloads, so the record is
+// checked under the same lock as the read: a record a reload replaced reads
+// nothing.
+func (s *Store) recordProvided(c *config.Credential, key string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.provided[key]
+	if !ok {
+		return "", false, nil
+	}
+	if cur, ok := s.creds[c.Name]; !ok || cur != c {
+		return "", false, fmt.Errorf("credential %q: %w", c.Name, ErrStale)
+	}
+	return v, true, nil
 }
 
 func (s *Store) providedValue(name string) (string, bool) {
@@ -355,7 +376,11 @@ func (s *Store) getSlot(ctx context.Context, name string, c *config.Credential, 
 
 func (s *Store) slotValue(ctx context.Context, c *config.Credential, slot config.Slot) (string, error) {
 	key := config.ProvidedKey(c.Name, slot.Name)
-	if v, ok := s.providedValue(key); ok {
+	v, ok, err := s.recordProvided(c, key)
+	if err != nil {
+		return "", err
+	}
+	if ok {
 		return v, nil
 	}
 	cacheKey := key
@@ -366,7 +391,7 @@ func (s *Store) slotValue(ctx context.Context, c *config.Credential, slot config
 	}
 	s.mu.Unlock()
 
-	v, err := s.fetchValue(ctx, c.Name, slot.Source)
+	v, err = s.fetchValue(ctx, c.Name, slot.Source)
 	if err != nil {
 		return "", err
 	}

@@ -489,3 +489,61 @@ func TestSlotCacheAcrossReload(t *testing.T) {
 		}})
 	})
 }
+
+func TestProvidedAcrossReload(t *testing.T) {
+	record := func(internal bool) *config.Credential {
+		return &config.Credential{Name: "x", Internal: internal, Token: &config.ValueSource{Source: "provided"}}
+	}
+	key := config.ProvidedKey("x", config.SlotToken)
+	type testCase struct {
+		run     func(t *testing.T, s *Store, old *config.Credential) (string, error)
+		want    string
+		wantErr error
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		old := record(false)
+		s := NewStore(map[string]*config.Credential{"x": old})
+		s.SetProvided(map[string]string{key: "public-value"})
+		got, err := tc.run(t, s, old)
+		if tc.wantErr != nil {
+			require.ErrorIs(t, err, tc.wantErr)
+			assert.NotContains(t, err.Error(), "internal-value")
+			assert.Empty(t, got)
+			return
+		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
+	}
+	reloadInternal := func(s *Store) *config.Credential {
+		nw := record(true)
+		s.Update(map[string]*config.Credential{"x": nw})
+		s.SetProvided(map[string]string{key: "internal-value"})
+		return nw
+	}
+	read := func(t *testing.T, s *Store, c *config.Credential) (string, error) {
+		t.Helper()
+		return s.slotValue(t.Context(), c, config.Slot{Name: config.SlotToken, Source: c.Token})
+	}
+
+	t.Run("a lookup from before a reload does not read the new provided value", func(t *testing.T) {
+		tester(t, testCase{wantErr: ErrStale, run: func(t *testing.T, s *Store, old *config.Credential) (string, error) {
+			t.Helper()
+			reloadInternal(s)
+			return read(t, s, old)
+		}})
+	})
+	t.Run("the current record reads the new provided value", func(t *testing.T) {
+		tester(t, testCase{want: "internal-value", run: func(t *testing.T, s *Store, _ *config.Credential) (string, error) {
+			t.Helper()
+			return read(t, s, reloadInternal(s))
+		}})
+	})
+	t.Run("a provided value replaced without a reload is read", func(t *testing.T) {
+		tester(t, testCase{want: "replaced", run: func(t *testing.T, s *Store, old *config.Credential) (string, error) {
+			t.Helper()
+			s.SetProvided(map[string]string{key: "replaced"})
+			return read(t, s, old)
+		}})
+	})
+}
