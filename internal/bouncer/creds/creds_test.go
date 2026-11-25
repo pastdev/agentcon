@@ -2,9 +2,11 @@ package creds
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -355,5 +357,193 @@ func TestCommandError(t *testing.T) {
 	})
 	t.Run("caps stderr", func(t *testing.T) {
 		tester(t, testCase{script: "head -c 10000 /dev/zero | tr '\\0' x >&2; exit 1", wantLen: crederr.MaxStderr})
+	})
+}
+
+func TestInternalCredential(t *testing.T) {
+	signing := func(internal bool) *config.Credential {
+		return &config.Credential{
+			Name:       "sign",
+			Internal:   internal,
+			PrivateKey: &config.ValueSource{Source: "provided"},
+			Password:   &config.ValueSource{Source: "provided"},
+		}
+	}
+	newStore := func(internal bool) *Store {
+		s := NewStore(map[string]*config.Credential{"sign": signing(internal)})
+		s.SetProvided(map[string]string{
+			config.ProvidedKey("sign", config.SlotPrivateKey): "key",
+			config.ProvidedKey("sign", config.SlotPassword):   "pass",
+		})
+		return s
+	}
+	type testCase struct {
+		store   func() *Store
+		read    func(*Store) error
+		wantErr bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		err := tc.read(tc.store())
+		if tc.wantErr {
+			require.ErrorIs(t, err, ErrInternal)
+			return
+		}
+		require.NoError(t, err)
+	}
+	get := func(s *Store) error {
+		_, err := s.Get(t.Context(), "sign")
+		return err
+	}
+	sshSigners := func(s *Store) error {
+		_, err := s.SSHSigners(t.Context(), "sign")
+		return err
+	}
+	getSlot := func(s *Store) error {
+		v, err := s.GetSlot(t.Context(), "sign", config.SlotPassword)
+		if err == nil && v != "pass" {
+			return fmt.Errorf("got %q", v)
+		}
+		return err
+	}
+	madeInternalByReload := func() *Store {
+		s := newStore(false)
+		s.Update(map[string]*config.Credential{"sign": signing(true)})
+		return s
+	}
+
+	t.Run("get refuses an internal credential", func(t *testing.T) {
+		tester(t, testCase{store: func() *Store { return newStore(true) }, read: get, wantErr: true})
+	})
+	t.Run("ssh signers refuse an internal credential", func(t *testing.T) {
+		tester(t, testCase{store: func() *Store { return newStore(true) }, read: sshSigners, wantErr: true})
+	})
+	t.Run("get slot reads an internal credential", func(t *testing.T) {
+		tester(t, testCase{store: func() *Store { return newStore(true) }, read: getSlot})
+	})
+	t.Run("get reads a credential that is not internal", func(t *testing.T) {
+		tester(t, testCase{store: func() *Store { return newStore(false) }, read: get})
+	})
+	t.Run("get refuses a credential a reload made internal", func(t *testing.T) {
+		tester(t, testCase{store: madeInternalByReload, read: get, wantErr: true})
+	})
+	t.Run("ssh signers refuse a credential a reload made internal", func(t *testing.T) {
+		tester(t, testCase{store: madeInternalByReload, read: sshSigners, wantErr: true})
+	})
+}
+
+func TestSlotCacheAcrossReload(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, value string) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, []byte(value), 0o600))
+		return p
+	}
+	public := write("public", "public-value")
+	secret := write("secret", "internal-value")
+	record := func(file string, internal bool) *config.Credential {
+		return &config.Credential{
+			Name:     "x",
+			Internal: internal,
+			Token:    &config.ValueSource{Source: "file", File: file},
+			Cache:    &config.Duration{D: time.Hour},
+		}
+	}
+	type testCase struct {
+		run  func(t *testing.T, s *Store) string
+		want string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		s := NewStore(map[string]*config.Credential{"x": record(public, false)})
+		assert.Equal(t, tc.want, tc.run(t, s))
+	}
+	slot := func(c *config.Credential) config.Slot { return config.Slot{Name: config.SlotToken, Source: c.Token} }
+
+	t.Run("a lookup from before a reload does not read the new record's cached value", func(t *testing.T) {
+		tester(t, testCase{want: "public-value", run: func(t *testing.T, s *Store) string {
+			t.Helper()
+			old, _, err := s.lookup("x")
+			require.NoError(t, err)
+			s.Update(map[string]*config.Credential{"x": record(secret, true)})
+			v, err := s.GetSlot(t.Context(), "x", config.SlotToken)
+			require.NoError(t, err)
+			require.Equal(t, "internal-value", v)
+			v, err = s.slotValue(t.Context(), old, slot(old))
+			require.NoError(t, err)
+			return v
+		}})
+	})
+	t.Run("a fetch from before a reload does not feed the new record", func(t *testing.T) {
+		tester(t, testCase{want: "internal-value", run: func(t *testing.T, s *Store) string {
+			t.Helper()
+			old, _, err := s.lookup("x")
+			require.NoError(t, err)
+			s.Update(map[string]*config.Credential{"x": record(secret, true)})
+			v, err := s.slotValue(t.Context(), old, slot(old))
+			require.NoError(t, err)
+			require.Equal(t, "public-value", v)
+			v, err = s.GetSlot(t.Context(), "x", config.SlotToken)
+			require.NoError(t, err)
+			return v
+		}})
+	})
+}
+
+func TestProvidedAcrossReload(t *testing.T) {
+	record := func(internal bool) *config.Credential {
+		return &config.Credential{Name: "x", Internal: internal, Token: &config.ValueSource{Source: "provided"}}
+	}
+	key := config.ProvidedKey("x", config.SlotToken)
+	type testCase struct {
+		run     func(t *testing.T, s *Store, old *config.Credential) (string, error)
+		want    string
+		wantErr error
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		old := record(false)
+		s := NewStore(map[string]*config.Credential{"x": old})
+		s.SetProvided(map[string]string{key: "public-value"})
+		got, err := tc.run(t, s, old)
+		if tc.wantErr != nil {
+			require.ErrorIs(t, err, tc.wantErr)
+			assert.NotContains(t, err.Error(), "internal-value")
+			assert.Empty(t, got)
+			return
+		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
+	}
+	reloadInternal := func(s *Store) *config.Credential {
+		nw := record(true)
+		s.Update(map[string]*config.Credential{"x": nw})
+		s.SetProvided(map[string]string{key: "internal-value"})
+		return nw
+	}
+	read := func(t *testing.T, s *Store, c *config.Credential) (string, error) {
+		t.Helper()
+		return s.slotValue(t.Context(), c, config.Slot{Name: config.SlotToken, Source: c.Token})
+	}
+
+	t.Run("a lookup from before a reload does not read the new provided value", func(t *testing.T) {
+		tester(t, testCase{wantErr: ErrStale, run: func(t *testing.T, s *Store, old *config.Credential) (string, error) {
+			t.Helper()
+			reloadInternal(s)
+			return read(t, s, old)
+		}})
+	})
+	t.Run("the current record reads the new provided value", func(t *testing.T) {
+		tester(t, testCase{want: "internal-value", run: func(t *testing.T, s *Store, _ *config.Credential) (string, error) {
+			t.Helper()
+			return read(t, s, reloadInternal(s))
+		}})
+	})
+	t.Run("a provided value replaced without a reload is read", func(t *testing.T) {
+		tester(t, testCase{want: "replaced", run: func(t *testing.T, s *Store, old *config.Credential) (string, error) {
+			t.Helper()
+			s.SetProvided(map[string]string{key: "replaced"})
+			return read(t, s, old)
+		}})
 	})
 }

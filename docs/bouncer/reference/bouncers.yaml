@@ -57,6 +57,17 @@ bouncers:
           source: env                    # read from the daemon's environment
           env: SLACK_BOT_TOKEN
         export_env: [SLACK_TOKEN]
+      # An OpenPGP key for signing commits and tags.
+      # internal: true keeps it inside the bouncer: no service may inject it,
+      # it may not set export_env, and credential() in a filter cannot read it.
+      # Only a signer service may name it.
+      signing:
+        internal: true
+        private_key:
+          source: file                   # an armored private key
+          file: ~/.config/agentcon/signing-key.asc
+        password:                        # its passphrase; omit for an unprotected key
+          source: keyring
       # gitlab-bw:
       #   token:
       #     source: bitwarden
@@ -161,6 +172,21 @@ bouncers:
                 filters:
                   - ts/filters/github-graphql-guard.ts
                   - ts/filters/require-approval-merge.ts
+
+          # A pseudo service. Its last step signs inside the bouncer instead of
+          # forwarding, and nothing is ever sent to this host. The agent's
+          # git-sign helper posts the object git wants signed here; agentcon
+          # run sets BOUNCER_SIGNER_URL to https://<first host>/openpgp/sign.
+          # The signer only signs unsigned git commits and tags, with the key
+          # whose id git asks for (user.signingkey).
+          # Without a filter it signs for every session, so scope it.
+          - name: signing
+            hosts: [signer.bouncer.internal]
+            signer:
+              openpgp:
+                keys:
+                  - {id: 0123456789ABCDEF, credential: signing}
+            filters: [ts/filters/signing-repository-scope.ts]
 
           # A credential-less service: intercepted only to apply a filter.
           - name: npm

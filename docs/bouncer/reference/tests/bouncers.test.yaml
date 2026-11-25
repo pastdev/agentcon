@@ -147,3 +147,58 @@ cases:
     steps:
       - request: {method: POST, url: "https://gitlab.com/mygroup/myproject.git/git-upload-pack"}
         expect: allow
+  - name: a commit for a claimed repository is signed
+    claims: {repository: [github.com/myorg/myrepo]}
+    steps:
+      - request:
+          method: POST
+          url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789abcdef&repository=github.com%2Fmyorg%2Fmyrepo"
+          body: "tree 9bedf67800b2923982bdf60c89c57ce6986c4c5b\nparent bd3539c4e2f1a0b1c2d3e4f5a6b7c8d9e0f1a2b3\nauthor Agent <agent@example.com> 1764000000 +0000\ncommitter Agent <agent@example.com> 1764000000 +0000\n\nAdd a feature.\n"
+        expect: allow
+        expect_claim_requested: false
+        expect_body_contains: ["BEGIN PGP SIGNATURE"]
+  - name: a tag for a claimed repository is signed
+    claims: {repository: [github.com/myorg/myrepo]}
+    steps:
+      - request:
+          method: POST
+          url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=github.com%2Fmyorg%2Fmyrepo"
+          body: "object bd3539c4e2f1a0b1c2d3e4f5a6b7c8d9e0f1a2b3\ntype commit\ntag v1.2.3\ntagger Agent <agent@example.com> 1764000000 +0000\n\nRelease v1.2.3.\n"
+        expect: allow
+  - name: an unclaimed repository signs nothing when the operator denies it
+    claims: {repository: [github.com/myorg/myrepo]}
+    steps:
+      - request:
+          method: POST
+          url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=github.com%2Fsomeone%2Felse"
+          body: "tree 9bedf67800b2923982bdf60c89c57ce6986c4c5b\nauthor Agent <agent@example.com> 1764000000 +0000\ncommitter Agent <agent@example.com> 1764000000 +0000\n\nmsg\n"
+        claim_answer: deny
+        expect: deny
+        expect_claim_requested: {type: repository, value: github.com/someone/else}
+  - name: arbitrary bytes are never signed
+    claims: {repository: [github.com/myorg/myrepo]}
+    steps:
+      - request:
+          method: POST
+          url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=github.com%2Fmyorg%2Fmyrepo"
+          body: "I approve this release.\n"
+        expect: deny
+        expect_reason: not an unsigned git commit or tag
+  - name: an already-signed commit is refused
+    claims: {repository: [github.com/myorg/myrepo]}
+    steps:
+      - request:
+          method: POST
+          url: "https://signer.bouncer.internal/openpgp/sign?key=0123456789ABCDEF&repository=github.com%2Fmyorg%2Fmyrepo"
+          body: "tree 9bedf67800b2923982bdf60c89c57ce6986c4c5b\nauthor Agent <agent@example.com> 1764000000 +0000\ncommitter Agent <agent@example.com> 1764000000 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n -----END PGP SIGNATURE-----\n\nmsg\n"
+        expect: deny
+        expect_reason: already signed
+  - name: a key the signer does not hold is refused
+    claims: {repository: [github.com/myorg/myrepo]}
+    steps:
+      - request:
+          method: POST
+          url: "https://signer.bouncer.internal/openpgp/sign?key=1111111111111111&repository=github.com%2Fmyorg%2Fmyrepo"
+          body: "tree 9bedf67800b2923982bdf60c89c57ce6986c4c5b\nauthor Agent <agent@example.com> 1764000000 +0000\ncommitter Agent <agent@example.com> 1764000000 +0000\n\nmsg\n"
+        expect: deny
+        expect_reason: unknown signing key

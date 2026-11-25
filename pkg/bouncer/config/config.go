@@ -204,6 +204,10 @@ type Credential struct {
 	// ExportEnv lists environment variables set on the agent to this
 	// credential's placeholder so agent tooling believes it has a token.
 	ExportEnv []string `yaml:"export_env"`
+	// Internal limits the credential to in-process handlers such as an
+	// OpenPGP signer. It is never injected, exported, or readable by a
+	// filter.
+	Internal bool `yaml:"internal"`
 
 	Name string `yaml:"-"`
 }
@@ -352,6 +356,9 @@ type Service struct {
 	// Filters run on every request to this service, before rules.
 	// Attach a filter to a rule instead when it should run only on that match.
 	Filters []FilterRef `yaml:"filters"`
+	// Signer, when set, makes this a pseudo service whose terminal handler
+	// signs the request body in process instead of forwarding upstream.
+	Signer *Signer `yaml:"signer"`
 }
 
 func (s *Service) DefaultAction() string {
@@ -645,6 +652,9 @@ func (c *Config) normalize() error {
 		if len(slots) == 0 {
 			return fmt.Errorf("credential %q: need username, password, token, private_key, or certificate", name)
 		}
+		if cr.Internal && len(cr.ExportEnv) > 0 {
+			return fmt.Errorf("credential %q: an internal credential may not set export_env", name)
+		}
 		for _, slot := range slots {
 			err := slot.Source.init(name, slot.Name, c.Dir)
 			if err != nil {
@@ -685,6 +695,10 @@ func (c *Config) normalize() error {
 		if err := c.validateProfile(p); err != nil {
 			return fmt.Errorf("profile %q: %w", name, err)
 		}
+	}
+	err = c.validateSigners()
+	if err != nil {
+		return err
 	}
 	if c.DefaultProfile != "" {
 		if _, ok := c.Profiles[c.DefaultProfile]; !ok {
@@ -729,8 +743,17 @@ func (c *Config) validateProfile(p *Profile) error {
 			s.Hosts[j] = strings.ToLower(h)
 		}
 		if s.Credential != "" {
-			if _, ok := c.Credentials[s.Credential]; !ok {
+			cr, ok := c.Credentials[s.Credential]
+			if !ok {
 				return fmt.Errorf("http %q: unknown credential %q", s.Name, s.Credential)
+			}
+			if cr.Internal {
+				return fmt.Errorf("http %q: credential %q is internal and cannot be injected", s.Name, s.Credential)
+			}
+		}
+		if s.Signer != nil {
+			if err := c.validateSigner(s); err != nil {
+				return fmt.Errorf("http %q: %w", s.Name, err)
 			}
 		}
 		if s.Inject != nil && s.Credential == "" {
@@ -765,8 +788,12 @@ func (c *Config) validateProfile(p *Profile) error {
 		if s.Credential == "" {
 			return fmt.Errorf("ssh %q: credential is required", s.Name)
 		}
-		if _, ok := c.Credentials[s.Credential]; !ok {
+		cr, ok := c.Credentials[s.Credential]
+		if !ok {
 			return fmt.Errorf("ssh %q: unknown credential %q", s.Name, s.Credential)
+		}
+		if cr.Internal {
+			return fmt.Errorf("ssh %q: credential %q is internal and cannot be used for ssh", s.Name, s.Credential)
 		}
 		for _, k := range s.Allow {
 			switch k {
@@ -964,7 +991,7 @@ func (s *ValueSource) init(cred, slot, dir string) error {
 	if s == nil {
 		return fmt.Errorf("credential %q %s: empty", cred, slot)
 	}
-	if s.Source == "ssh-agent" && slot != SlotPrivateKey {
+	if s.Source == SourceSSHAgent && slot != SlotPrivateKey {
 		return fmt.Errorf("credential %q %s: source ssh-agent is only valid on private_key", cred, slot)
 	}
 	err := s.check(dir)
@@ -979,7 +1006,7 @@ func (s *ValueSource) init(cred, slot, dir string) error {
 func (s *ValueSource) check(dir string) error {
 	switch s.Source {
 	case "keyring", "provided":
-	case "ssh-agent":
+	case SourceSSHAgent:
 	case "command":
 		if len(s.Command) == 0 {
 			return fmt.Errorf("source command requires command")

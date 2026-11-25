@@ -64,6 +64,25 @@ credentials:
 			},
 		})
 	})
+	t.Run("passes an armored OpenPGP key through without an ssh passphrase prompt", func(t *testing.T) {
+		const pgpKey = "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nxVgEaQ==\n-----END PGP PRIVATE KEY BLOCK-----" //nolint:gosec // not a real key
+		tester(t, testCase{
+			policy: `
+credentials:
+  signing:
+    internal: true
+    private_key:
+      source: provided
+    password:
+      source: provided
+`,
+			provided: map[string]string{"signing.private_key": pgpKey, "signing.password": "hunter2"},
+			want: Credentials{
+				Env:      map[string]string{},
+				Provided: map[string]string{"signing.private_key": pgpKey, "signing.password": "hunter2"},
+			},
+		})
+	})
 	t.Run("forwards a bitwarden env password", func(t *testing.T) {
 		tester(t, testCase{
 			policy: `prompts: {cli: false}

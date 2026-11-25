@@ -108,6 +108,9 @@ type NewSession struct {
 	// SSHHosts lists every configured SSH service host pattern, the only
 	// hosts the generated known_hosts trusts the bouncer SSH CA for.
 	SSHHosts []string `json:"ssh_hosts"`
+	// SignerURL is where the agent sends signing requests, empty when the
+	// session's profile has no signer service.
+	SignerURL string `json:"signer_url,omitempty"`
 }
 
 // Status reports the daemon's policy, sessions, and startup state.

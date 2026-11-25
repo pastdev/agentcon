@@ -1,8 +1,10 @@
 package testrunner
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -497,5 +499,79 @@ cases:
 `,
 			wantErr: "expect_claims: claim type",
 		})
+	})
+}
+
+func TestRunFileSigner(t *testing.T) {
+	type testCase struct {
+		steps      string
+		wantPassed bool
+		wantMsg    string
+		wantErr    string
+	}
+	const policy = `
+default_profile: p
+credentials:
+  sign:
+    internal: true
+    private_key: {source: provided}
+profiles:
+  p:
+    http:
+      - name: signing
+        hosts: [signer.bouncer.internal]
+        signer:
+          openpgp:
+            keys: [{id: C26E02CE599B53FF, credential: sign}]
+`
+	const commit = "tree 9bedf67800b2923982bdf60c89c57ce6986c4c5b\n" +
+		"author A <a@example.com> 1764000000 +0000\n" +
+		"committer A <a@example.com> 1764000000 +0000\n\nmsg\n"
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		dir := t.TempDir()
+		policyPath := filepath.Join(dir, "policy.yaml")
+		require.NoError(t, os.WriteFile(policyPath, []byte(policy), 0o600))
+		specPath := filepath.Join(dir, "signer.test.yaml")
+		require.NoError(t, os.WriteFile(specPath, []byte("profile: p\ncases:\n  - name: c\n    steps:\n"+tc.steps), 0o600))
+		results, err := RunFile(specPath, Options{Policy: policyPath})
+		if tc.wantErr != "" {
+			require.ErrorContains(t, err, tc.wantErr)
+			return
+		}
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		assert.Equal(t, tc.wantPassed, results[0].Passed, results[0].Message)
+		assert.Contains(t, results[0].Message, tc.wantMsg)
+	}
+	step := func(url, body, expect string, extra ...string) string {
+		// A JSON string is a YAML double-quoted scalar.
+		b, err := json.Marshal(body)
+		require.NoError(t, err)
+		s := "      - request:\n          method: POST\n          url: \"" + url + "\"\n          body: " + strings.TrimSpace(string(b)) + "\n        expect: " + expect + "\n"
+		for _, e := range extra {
+			s += "        " + e + "\n"
+		}
+		return s
+	}
+	const signURL = "https://signer.bouncer.internal/openpgp/sign?key=c26e02ce599b53ff"
+
+	t.Run("an allowed commit gets the test signature", func(t *testing.T) {
+		tester(t, testCase{steps: step(signURL, commit, "allow", "expect_body_contains: [bouncer-test-signature]"), wantPassed: true})
+	})
+	t.Run("arbitrary bytes are refused", func(t *testing.T) {
+		tester(t, testCase{steps: step(signURL, "hello", "deny", "expect_reason: not an unsigned git commit or tag"), wantPassed: true})
+	})
+	t.Run("an unknown key is refused", func(t *testing.T) {
+		tester(t, testCase{steps: step("https://signer.bouncer.internal/openpgp/sign?key=1111111111111111", commit, "deny", "expect_reason: unknown signing key"), wantPassed: true})
+	})
+	t.Run("a wrong expectation fails", func(t *testing.T) {
+		tester(t, testCase{steps: step(signURL, "hello", "allow"), wantMsg: "expected allow, got deny"})
+	})
+	t.Run("upstream on a signer step is an error", func(t *testing.T) {
+		tester(t, testCase{steps: step(signURL, commit, "allow", "upstream: {status: 200}"), wantMsg: "upstream is not allowed on signer service signing"})
+	})
+	t.Run("expect_credential on a signer step is an error", func(t *testing.T) {
+		tester(t, testCase{steps: step(signURL, commit, "allow", "expect_credential: true"), wantMsg: "expect_credential is not allowed"})
 	})
 }

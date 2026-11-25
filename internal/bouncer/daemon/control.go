@@ -75,7 +75,7 @@ func (d *Daemon) Control() http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		writeJSON(w, mgmt.NewSession{SessionRecord: rec.wire(), ProxyAddr: d.proxyAddr, SSHAddr: d.sshAddr, Placeholders: d.Placeholders(), SSHHosts: d.SSHHosts()})
+		writeJSON(w, mgmt.NewSession{SessionRecord: rec.wire(), ProxyAddr: d.proxyAddr, SSHAddr: d.sshAddr, Placeholders: d.Placeholders(), SSHHosts: d.SSHHosts(), SignerURL: d.SignerURL(rec.Profile)})
 	})
 	mux.HandleFunc("GET /_bouncer/sessions", func(w http.ResponseWriter, _ *http.Request) {
 		recs := d.listSessions()

@@ -29,6 +29,15 @@ const KeyringService = "agent-bouncer"
 
 const commandTimeout = 60 * time.Second
 
+// ErrInternal means a credential is internal: only in-process consumers such
+// as the signer may read it, through GetSlot. Get and SSHSigners, which hand
+// values to filters and upstreams, refuse it.
+var ErrInternal = errors.New("credential is internal")
+
+// ErrStale means a reload replaced the credential record a lookup was
+// holding before it read a provided value. Nothing was read.
+var ErrStale = errors.New("credential changed during lookup")
+
 // Store resolves credentials by name, caching per each credential's TTL.
 type Store struct {
 	mu    sync.Mutex
@@ -46,9 +55,13 @@ type Store struct {
 	env map[string]string
 }
 
+// cached is a fetched slot value. cred is the record that fetched it: a
+// lookup holding another record, such as one from before a reload, does not
+// read it.
 type cached struct {
 	value   string
 	expires time.Time
+	cred    *config.Credential
 }
 
 // Secret is the resolved slots of one credential.
@@ -149,6 +162,23 @@ func (s *Store) lookupEnv(name string) (string, bool) {
 		return v, true
 	}
 	return os.LookupEnv(name)
+}
+
+// recordProvided returns the provided value for key on behalf of record c.
+// Provided values are matched by name and outlive reloads, so the record is
+// checked under the same lock as the read: a record a reload replaced reads
+// nothing.
+func (s *Store) recordProvided(c *config.Credential, key string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.provided[key]
+	if !ok {
+		return "", false, nil
+	}
+	if cur, ok := s.creds[c.Name]; !ok || cur != c {
+		return "", false, fmt.Errorf("credential %q: %w", c.Name, ErrStale)
+	}
+	return v, true, nil
 }
 
 func (s *Store) providedValue(name string) (string, bool) {
@@ -285,11 +315,24 @@ func (s *Store) lookup(name string) (*config.Credential, *sync.Mutex, error) {
 	return c, m, nil
 }
 
-// Get returns the resolved slots for a credential.
+// Credential returns the configured credential, without fetching it.
+func (s *Store) Credential(name string) (*config.Credential, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.creds[name]
+	return c, ok
+}
+
+// Get returns the resolved slots for a credential. It refuses an internal
+// credential, judged on the same record whose slots it reads, so a reload
+// cannot slip one past the check.
 func (s *Store) Get(ctx context.Context, name string) (Secret, error) {
 	c, m, err := s.lookup(name)
 	if err != nil {
 		return Secret{}, err
+	}
+	if c.Internal {
+		return Secret{}, fmt.Errorf("credential %q: %w", name, ErrInternal)
 	}
 	m.Lock()
 	defer m.Unlock()
@@ -307,12 +350,17 @@ func (s *Store) Get(ctx context.Context, name string) (Secret, error) {
 	return out, nil
 }
 
-// GetSlot returns one named slot.
+// GetSlot returns one named slot, internal or not. Its callers keep the
+// value in process.
 func (s *Store) GetSlot(ctx context.Context, name, slotName string) (string, error) {
 	c, m, err := s.lookup(name)
 	if err != nil {
 		return "", err
 	}
+	return s.getSlot(ctx, name, c, m, slotName)
+}
+
+func (s *Store) getSlot(ctx context.Context, name string, c *config.Credential, m *sync.Mutex, slotName string) (string, error) {
 	src := c.Slot(slotName)
 	if src == nil {
 		return "", fmt.Errorf("credential %q has no %s", name, slotName)
@@ -328,18 +376,22 @@ func (s *Store) GetSlot(ctx context.Context, name, slotName string) (string, err
 
 func (s *Store) slotValue(ctx context.Context, c *config.Credential, slot config.Slot) (string, error) {
 	key := config.ProvidedKey(c.Name, slot.Name)
-	if v, ok := s.providedValue(key); ok {
+	v, ok, err := s.recordProvided(c, key)
+	if err != nil {
+		return "", err
+	}
+	if ok {
 		return v, nil
 	}
 	cacheKey := key
 	s.mu.Lock()
-	if e, ok := s.cache[cacheKey]; ok && time.Now().Before(e.expires) {
+	if e, ok := s.cache[cacheKey]; ok && e.cred == c && time.Now().Before(e.expires) {
 		s.mu.Unlock()
 		return e.value, nil
 	}
 	s.mu.Unlock()
 
-	v, err := s.fetchValue(ctx, c.Name, slot.Source)
+	v, err = s.fetchValue(ctx, c.Name, slot.Source)
 	if err != nil {
 		return "", err
 	}
@@ -348,7 +400,11 @@ func (s *Store) slotValue(ctx context.Context, c *config.Credential, slot config
 	}
 	if ttl := c.CacheTTL(); ttl > 0 {
 		s.mu.Lock()
-		s.cache[cacheKey] = cached{value: v, expires: time.Now().Add(ttl)}
+		// A fetch that finishes after a reload must not replace a value the
+		// current record fetched.
+		if cur, ok := s.creds[c.Name]; ok && cur == c {
+			s.cache[cacheKey] = cached{value: v, expires: time.Now().Add(ttl), cred: c}
+		}
 		s.mu.Unlock()
 	}
 	return v, nil
@@ -418,11 +474,15 @@ func (s *Store) fetchPayload(ctx context.Context, credName string, src *config.V
 }
 
 // SSHSigners returns signers for an SSH credential: the parsed private key
-// for secret-bearing sources, or keys from the running ssh-agent.
+// for secret-bearing sources, or keys from the running ssh-agent. It refuses
+// an internal credential, judged on the record it reads the key from.
 func (s *Store) SSHSigners(ctx context.Context, name string) ([]ssh.Signer, error) {
-	c, _, err := s.lookup(name)
+	c, m, err := s.lookup(name)
 	if err != nil {
 		return nil, err
+	}
+	if c.Internal {
+		return nil, fmt.Errorf("credential %q: %w", name, ErrInternal)
 	}
 	src := c.PrivateKey
 	if src == nil {
@@ -433,7 +493,7 @@ func (s *Store) SSHSigners(ctx context.Context, name string) ([]ssh.Signer, erro
 			return agentSigners(c.Name, src)
 		}
 	}
-	pem, err := s.GetSlot(ctx, name, config.SlotPrivateKey)
+	pem, err := s.getSlot(ctx, name, c, m, config.SlotPrivateKey)
 	if err != nil {
 		return nil, err
 	}

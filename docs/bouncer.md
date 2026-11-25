@@ -316,6 +316,112 @@ profiles:
 
 A full GitHub overlay is the [GitHub starting point](#github-starting-point).
 
+### internal
+
+`internal: true` limits a credential to handlers that run inside the sidecar, such as an [OpenPGP signer](#commit-signing).
+Policy load refuses an internal credential named by an HTTP or SSH service `credential`, and one that sets `export_env`.
+A filter's `credential(name)` reports it as unavailable and the sidecar logs the attempt.
+
+```yaml
+credentials:
+  signing:
+    internal: true
+    private_key:
+      source: bitwarden
+      account: agent
+      item: gpg-signing
+      path: $.notes
+    password:
+      source: bitwarden
+      account: agent
+      item: gpg-signing
+      path: $.login.password
+```
+
+## Commit signing
+
+An agent can sign its own commits and tags with an OpenPGP key that only the sidecar holds.
+The signer is a pseudo service.
+It is an `http` service like any other, matched by host, with profile, service, and rule filters.
+Its last step signs the request body inside the sidecar instead of forwarding it, and nothing is sent to its hosts.
+
+```yaml
+credentials:
+  signing-work:
+    internal: true
+    private_key: {source: bitwarden, account: agent, item: gpg-work, path: $.notes}
+    password:    {source: bitwarden, account: agent, item: gpg-work, path: $.login.password}
+  signing-oss:
+    internal: true
+    private_key: {source: bitwarden, account: agent, item: gpg-oss, path: $.notes}
+    password:    {source: bitwarden, account: agent, item: gpg-oss, path: $.login.password}
+profiles:
+  default:
+    http:
+      - name: commit-signing
+        hosts: [signer.bouncer.internal]
+        signer:
+          openpgp:
+            keys:
+              - {id: 7C44826B7B1878A0, credential: signing-work}
+              - {id: C26E02CE599B53FF, credential: signing-oss}
+        filters: [ts/filters/signing-repository-scope.ts]
+```
+
+Each `id` is a 16-digit long key ID or a full fingerprint.
+Git asks for a key with `-u <user.signingkey>`, so per-repository keys chosen by the agent's own git config keep working.
+A long key ID matches a fingerprint that ends with it.
+Each `credential` must be `internal: true`, must have `private_key` as an armored OpenPGP private key, and may have `password` as its passphrase.
+After unlocking, the signer checks that the key, or one of its signing subkeys, has the configured ID.
+A subkey ID signs with exactly that subkey, like `gpg -u <subkey>!`.
+A primary key ID signs with the newest valid signing subkey, or the primary key when it has none, like `gpg -u <primary>`.
+An unlocked key is kept for the credential's `cache` TTL, then evicted.
+A config reload evicts every unlocked key.
+
+`gpg --export-secret-keys <id>` exports the whole key, with every subkey, even when `<id>` names one subkey.
+Append `!` to export only the primary key and that subkey, which keeps expired and unrelated subkeys out of the credential:
+
+```bash
+gpg --armor --export-secret-keys 'C26E02CE599B53FF!'
+```
+
+`hosts` must be exact names, and a resolved profile may have only one signer service.
+A signer service may not set `credential`, `inject`, `allow_upgrade`, or `insecure`.
+
+The signer refuses, with no signature:
+
+- anything but `POST /openpgp/sign` over HTTPS
+- a request no rule allowed, such as a leftover path under `unmatched: tunnel`
+- a `key` it does not hold, without naming the keys it does hold
+- a body that is not an unsigned git commit or tag object, up to 1 MiB
+
+So the key can never vouch for arbitrary bytes.
+The audit line names the key, the object type, its size, and its SHA-256, never its contents.
+
+The signer does not read claims.
+**Without a filter, it signs for every session that reaches it.**
+[`signing-repository-scope.ts`](bouncer/reference/ts/filters/signing-repository-scope.ts) signs without a prompt for a repository in the session's `repository` claims, and asks the operator to add any other.
+
+### Agent side
+
+The agent tar includes `/opt/agentcon/bin/git-sign`, a one-line wrapper around `agentcon bouncer git-sign`.
+`agentcon run` sets `BOUNCER_SIGNER_URL` to `https://<first host>/openpgp/sign` when the session's profile has a signer service.
+It does not change the agent's git config.
+Point git at the wrapper wherever the agent's git config lives:
+
+```ini
+[gpg]
+        format = openpgp
+[gpg "openpgp"]
+        program = /opt/agentcon/bin/git-sign
+```
+
+`git commit -S` and `git tag -s` then send the object, `key`, and `repository` to the signer.
+`repository` is `git config agentcon.signing.repository`, or the `origin` remote as `host/path`.
+A refusal prints the sidecar's reason, and git aborts with the index unchanged.
+`git verify-commit` runs the `gpg` on `PATH`, so verifying needs gpg and the public key in the agent.
+`agentcon bouncer git-sign --help` describes each step, and `--dry-run` prints the request without sending it.
+
 ## GitHub starting point
 
 [docs/bouncer/github](github) is a starting point, not a product policy.
@@ -519,6 +625,7 @@ Agent tar, copied later:
 - `/opt/agentcon/ca-bundle.pem`
 - `/opt/agentcon/ssh/config`
 - `/opt/agentcon/ssh/known_hosts`
+- `/opt/agentcon/bin/git-sign`
 
 ```bash
 docker create \
