@@ -75,6 +75,9 @@ type OpenPGP struct {
 
 	mu    sync.Mutex
 	cache map[string]*cachedKey
+	// gen counts Resets. A request caches its key only if no Reset ran
+	// since it began.
+	gen uint64
 }
 
 // Reset evicts every unlocked key. The daemon calls it on each config load,
@@ -82,6 +85,7 @@ type OpenPGP struct {
 func (o *OpenPGP) Reset() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.gen++
 	for name, c := range o.cache {
 		c.timer.Stop()
 		delete(o.cache, name)
@@ -96,10 +100,14 @@ func (o *OpenPGP) Cached() int {
 }
 
 // store caches key for ttl, replacing and stopping any previous entry, and
-// evicts it when ttl ends unless a newer entry has replaced it.
-func (o *OpenPGP) store(name string, digest [sha256.Size]byte, key *unlockedKey, now time.Time, ttl time.Duration) {
+// evicts it when ttl ends unless a newer entry has replaced it. It caches
+// nothing when a Reset ran since gen was read.
+func (o *OpenPGP) store(gen uint64, name string, digest [sha256.Size]byte, key *unlockedKey, now time.Time, ttl time.Duration) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if gen != o.gen {
+		return
+	}
 	if o.cache == nil {
 		o.cache = map[string]*cachedKey{}
 	}
@@ -145,6 +153,9 @@ func (o *OpenPGP) Sign(ctx context.Context, k config.OpenPGPKey, payload []byte)
 // key returns the unlocked key for k, from the cache when its credential
 // values are unchanged.
 func (o *OpenPGP) key(ctx context.Context, k config.OpenPGPKey) (*unlockedKey, error) {
+	o.mu.Lock()
+	gen := o.gen
+	o.mu.Unlock()
 	cred, ok := o.Creds.Credential(k.Credential)
 	if !ok {
 		return nil, fmt.Errorf("%w: unknown credential %q", ErrUnavailable, k.Credential)
@@ -179,7 +190,7 @@ func (o *OpenPGP) key(ctx context.Context, k config.OpenPGPKey) (*unlockedKey, e
 	}
 	key := &unlockedKey{key: locked, keyID: keyID}
 	if ttl := cred.CacheTTL(); ttl > 0 {
-		o.store(k.Credential, digest, key, now, ttl)
+		o.store(gen, k.Credential, digest, key, now, ttl)
 	}
 	return key, nil
 }

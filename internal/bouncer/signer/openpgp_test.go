@@ -29,6 +29,8 @@ type fakeCreds struct {
 	values  map[string]string
 	fail    error
 	fetches int
+	// onFetch, when set, runs on each GetSlot, as a reload landing mid-request.
+	onFetch func()
 }
 
 func (f *fakeCreds) Credential(name string) (*config.Credential, bool) {
@@ -37,6 +39,9 @@ func (f *fakeCreds) Credential(name string) (*config.Credential, bool) {
 }
 
 func (f *fakeCreds) GetSlot(_ context.Context, name, slot string) (string, error) {
+	if f.onFetch != nil {
+		f.onFetch()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.fetches++
@@ -313,5 +318,32 @@ func TestOpenPGPEviction(t *testing.T) {
 			o.mu.Unlock()
 			assert.False(t, old.timer.Stop(), "the replaced entry's timer was not stopped")
 		}})
+	})
+}
+
+func TestOpenPGPResetDuringRequest(t *testing.T) {
+	k := generated(t, "plain")
+	key := config.OpenPGPKey{ID: k.fingerprint, Credential: "sign"}
+	type testCase struct {
+		reset bool
+		want  int
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		fc := credsFor(k, "", time.Hour)
+		o := &OpenPGP{Creds: fc}
+		if tc.reset {
+			fc.onFetch = o.Reset
+		}
+		_, err := o.key(t.Context(), key)
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, o.Cached())
+	}
+
+	t.Run("a request that began before a reset caches nothing", func(t *testing.T) {
+		tester(t, testCase{reset: true, want: 0})
+	})
+	t.Run("a request with no reset caches its key", func(t *testing.T) {
+		tester(t, testCase{want: 1})
 	})
 }
