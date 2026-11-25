@@ -10,6 +10,9 @@
 //	go build -o /tmp/agentcon ./cmd/agentcon
 //	go run -tags issue40 ./ad_hoc/issue-40/smoke -agentcon /tmp/agentcon
 //
+// With -bitwarden-email it instead signs with real keys held in Bitwarden
+// items. See bitwarden.go.
+//
 // It ends with SMOKE PASSED or SMOKE FAILED: <reason>.
 package main
 
@@ -47,8 +50,17 @@ const (
 
 func main() {
 	bin := flag.String("agentcon", "", "agentcon binary to run as the bouncer and git-sign")
+	bw := flag.String("bitwarden-email", "", "sign with real keys from this Bitwarden account instead of a generated key")
+	pubs := flag.String("public-keys", "", "with -bitwarden-email: armored public keys of every -key")
+	var keys keyFlags
+	flag.Var(&keys, "key", "with -bitwarden-email: <item>=<fingerprint>, repeatable")
 	flag.Parse()
-	err := run(*bin)
+	var err error
+	if *bw != "" {
+		err = runBitwarden(*bin, *bw, *pubs, keys)
+	} else {
+		err = run(*bin)
+	}
 	if err != nil {
 		fmt.Printf("SMOKE FAILED: %v\n", err)
 		os.Exit(1)
@@ -260,7 +272,9 @@ func run(bin string) error {
 	return s.checkAudit(sess.ID, fpr)
 }
 
-func (s *smoke) writePolicy(keyID string) error {
+// copyFilter copies the reference signing-repository-scope.ts filter next
+// to the policy.
+func (s *smoke) copyFilter() error {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		return errors.New("no caller")
@@ -277,6 +291,14 @@ func (s *smoke) writePolicy(keyID string) error {
 	err = os.WriteFile(filepath.Join(s.dir, "ts", "signing-repository-scope.ts"), filter, 0o600)
 	if err != nil {
 		return fmt.Errorf("write filter: %w", err)
+	}
+	return nil
+}
+
+func (s *smoke) writePolicy(keyID string) error {
+	err := s.copyFilter()
+	if err != nil {
+		return err
 	}
 	proxyPort, err := freePort()
 	if err != nil {

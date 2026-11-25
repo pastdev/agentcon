@@ -335,7 +335,12 @@ It starts a real `agentcon bouncer serve`, PUTs a generated passphrase-protected
 It covers every check below except the Bitwarden source.
 
 The Bitwarden source needs a handoff script, because it needs the operator's vault and a passphrase-protected key in it.
-It runs a real `agentcon run` session against a throwaway repository with a seeded `repository` claim.
+The same program runs it with `-bitwarden-email`, see `ad_hoc/issue-40/smoke/bitwarden.go`.
+It starts a real `agentcon bouncer serve` whose internal credentials come from two Bitwarden items, with the armored key in notes and the passphrase in a custom field.
+The sidecar unlocks the vault, and its master password and verification code prompts are answered at the operator's terminal.
+It then signs and verifies a commit and a tag with each key in a throwaway repository with a seeded `repository` claim, and checks that git reports the configured subkey's fingerprint.
+Both keys are ed25519 signing subkeys of RSA primary keys, and one export has no primary secret (`sec#`).
+It passed on 2026-11-25.
 
 - `git commit -S` with `gpg.openpgp.program=/opt/agentcon/bin/git-sign` succeeds.
   `git verify-commit HEAD` passes against the exported public key.
