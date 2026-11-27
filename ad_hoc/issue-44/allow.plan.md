@@ -24,7 +24,13 @@ The agent cannot name that credential, by accident or on purpose.
 - Agent requests keep the static placeholder, replaced only in headers, as today.
 - `placeholder(name)` throws for an unknown credential and for one whose `allow` lacks `subrequest`.
   Failing at the call is clearer than a string that is never replaced.
-- A rule's `subrequest: [<filter>...]` makes it match only subrequests from those filters.
+- An elevated credential is one whose `allow` lacks `agent`, such as `allow: [subrequest]`.
+- A rule's `subrequest` block makes it match only subrequests.
+  `subrequest.filters` limits it to subrequests from those filters.
+  `subrequest.credentials` lists the elevated credentials a matching subrequest may use on that route.
+  An elevated credential is usable nowhere else, so the policy file shows every route it can reach.
+  This guards against filter mistakes, such as naming the wrong credential or building a URL from unchecked agent data.
+- Credentials that allow both `agent` and `subrequest` stay usable on any route the service allows, with no rule listing.
 - `credential(name)` and `chain.Env.Credential` are removed.
 - Old keys fail the load with a message naming the replacement.
   There is no compatibility shim.
@@ -48,12 +54,21 @@ bouncers:
               credential: github
               git: {basic: {username: x-access-token}}
             rules:
-              - action: allow
+              - action: allow                     # filter's lookup, elevated token
                 methods: [GET]
                 github_repo: [myorg/myrepo]
                 github_subpaths: ["actions/secrets"]
-                subrequest: [github-ci-safety]
+                subrequest:
+                  filters: [github-ci-safety]     # optional: only these filters
+                  credentials: [github-audit]     # elevated creds usable on this route
+              - action: allow                     # agent's own access, ordinary token
+                methods: [GET]
+                github_repo: [myorg/myrepo]
+                github_subpaths: ["actions/secrets"]
 ```
+
+When the agent and a filter use the same endpoint with different tokens, the subrequest rule comes first.
+The agent's request skips it and falls through to its own rule.
 
 ### Load checks
 
@@ -69,7 +84,10 @@ Each check fails with a message in the existing `credential %q: ...` or `http %q
 - A `credentials` entry that is unknown or `internal`.
 - `inject` without `inject.credential`, or `inject.credential` not in `credentials`.
 - `inject.git.credential` is set.
-- A rule `subrequest: []`, or `subrequest` on an `ssh` rule.
+- A rule `subrequest` block with neither `filters` nor `credentials`, or an empty list in either.
+- A `subrequest` block on an `ssh` rule.
+- A `subrequest.credentials` entry that is not in the service's `credentials`, or that allows `agent`.
+- `inject.credential` that is elevated.
 
 ## Forwarder
 
@@ -77,6 +95,7 @@ Each check fails with a message in the existing `credential %q: ...` or `http %q
 
 1. The request kind is `subrequest` when `req.Subrequest != nil`, else `agent`.
 2. The usable set is every credential in `svc.Config.Credentials` whose `allow` has that kind.
+   For a subrequest, an elevated credential is usable only when it is in `req.RuleCredentials`.
 3. For an agent request, replace the static placeholder of each usable credential in the placeholder headers, as `Inject` does today.
 4. For a subrequest, replace each one-time placeholder in `req.Placeholders` whose credential is usable, in headers, query, and body.
    Body replacement escapes the secret for `application/json` and `application/x-www-form-urlencoded`, and is raw otherwise.
@@ -103,8 +122,10 @@ The map is dropped when the run returns, so a string kept in a closure or KV mat
 
 ## Rules
 
-`config.Rule` gains `Subrequest []string`.
-`chain` rule matching skips a rule with `Subrequest` when `req.Subrequest` is nil or its `Filter` is not listed.
+`config.Rule` gains `Subrequest *SubrequestMatch` with `Filters []string` and `Credentials []string`.
+`chain` rule matching skips a rule with `Subrequest` when `req.Subrequest` is nil, or when `Filters` is set and does not list `req.Subrequest.Filter`.
+A matched rule sets `req.RuleCredentials` from `Subrequest.Credentials`, the same way it sets `SkipCredential`.
+Each redirect hop is matched again, so a same-host redirect to another route loses the elevated credential.
 
 ## Audit and tests
 
@@ -131,7 +152,8 @@ The map is dropped when the run returns, so a string kept in a closure or KV mat
 - Config: every load check above, one case each.
 - Forwarder: agent vs subrequest usable sets, static placeholder ignored in subrequests, one-time placeholder in header, query, JSON body, and form body, inject precedence, `SkipCredential` stripping, query scrubbing, credentials recorded.
 - jsfilter: `placeholder()` uniqueness, throws for non-`subrequest` credentials, strings expire after the run.
-- Rules: `subrequest` matches only the listed filters and lets agent requests fall through.
+- Rules: `subrequest` matches only subrequests, only the listed filters when set, and lets agent requests fall through.
+- Elevated credentials: a placeholder is replaced on a rule listing the credential, and left as text on another allowed route of the same service and on a redirect hop to one.
 - Store: `Get` refuses by kind.
 - Test runner: `expect_credentials` in steps and fixtures.
 
