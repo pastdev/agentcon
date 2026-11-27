@@ -26,11 +26,14 @@ The agent cannot name that credential, by accident or on purpose.
   Failing at the call is clearer than a string that is never replaced.
 - An elevated credential is one whose `allow` lacks `agent`, such as `allow: [subrequest]`.
 - A rule's `subrequest` block makes it match only subrequests.
-  `subrequest.filters` limits it to subrequests from those filters.
+  `subrequest.filters` limits it to subrequests from the filter placements with those ids.
   `subrequest.credentials` lists the elevated credentials a matching subrequest may use on that route.
   An elevated credential is usable nowhere else, so the policy file shows every route it can reach.
   This guards against filter mistakes, such as naming the wrong credential or building a URL from unchecked agent data.
 - Credentials that allow both `agent` and `subrequest` stay usable on any route the service allows, with no rule listing.
+- A filter placement (`FilterRef`) has an optional policy-assigned `id`.
+  `subrequest.filters` names ids, never filter names.
+  A filter's name comes from its file's basename or from `defineFilter({name})`, so distinct filters, or one file placed twice, can share it.
 - `credential(name)` and `chain.Env.Credential` are removed.
 - Old keys fail the load with a message naming the replacement.
   There is no compatibility shim.
@@ -65,6 +68,12 @@ bouncers:
                 methods: [GET]
                 github_repo: [myorg/myrepo]
                 github_subpaths: ["actions/secrets"]
+              - action: allow                     # pushes, checked by the filter
+                git: {}
+                github_repo: [myorg/myrepo]
+                filters:
+                  - path: ts/filters/github-ci-safety.ts
+                    id: github-ci-safety          # policy-assigned, unique
 ```
 
 When the agent and a filter use the same endpoint with different tokens, the subrequest rule comes first.
@@ -85,6 +94,8 @@ Each check fails with a message in the existing `credential %q: ...` or `http %q
 - `inject` without `inject.credential`, or `inject.credential` not in `credentials`.
 - `inject.git.credential` is set.
 - A rule `subrequest` block with neither `filters` nor `credentials`, or an empty list in either.
+- A filter `id` used by more than one placement anywhere in the policy.
+- A `subrequest.filters` entry that is not the `id` of any placement.
 - A `subrequest` block on an `ssh` rule.
 - A `subrequest.credentials` entry that is not in the service's `credentials`, or that allows `agent`.
 - `inject.credential` that is elevated.
@@ -123,14 +134,19 @@ The map is dropped when the run returns, so a string kept in a closure or KV mat
 ## Rules
 
 `config.Rule` gains `Subrequest *SubrequestMatch` with `Filters []string` and `Credentials []string`.
-`chain` rule matching skips a rule with `Subrequest` when `req.Subrequest` is nil, or when `Filters` is set and does not list `req.Subrequest.Filter`.
+`config.FilterRef` gains `ID string`, passed through `policy` to the `jsfilter.Filter` for that placement.
+`chain.Subrequest` gains `ID`, set by the router from the calling placement, and `req.subrequest.id` exposes it to filters (`null` when the placement has none).
+`filter` stays the display name.
+`chain` rule matching skips a rule with `Subrequest` when `req.Subrequest` is nil, or when `Filters` is set and does not list `req.Subrequest.ID`.
+The TypeScript `name` plays no part in matching.
 A matched rule sets `req.RuleCredentials` from `Subrequest.Credentials`, the same way it sets `SkipCredential`.
 Each redirect hop is matched again, so a same-host redirect to another route loses the elevated credential.
 
 ## Audit and tests
 
 - `audit.Entry` gains `Credentials []string`.
-  The summary shows `[subrequest from <filter> as <cred>,...]`, and `[as <cred>]` for agent requests.
+  The summary shows `[subrequest from <id or filter> as <cred>,...]`, and `[as <cred>]` for agent requests.
+- `audit.Subrequest` gains `ID`.
 - `expect_credential` (bool) becomes `expect_credentials` (list compared as a set) in steps and subrequest fixtures.
   `[]` means unauthenticated, and an omitted key skips the check.
   The test runner's fake terminal applies the same usable-set logic, so it reports the same names as the forwarder.
@@ -152,7 +168,9 @@ Each redirect hop is matched again, so a same-host redirect to another route los
 - Config: every load check above, one case each.
 - Forwarder: agent vs subrequest usable sets, static placeholder ignored in subrequests, one-time placeholder in header, query, JSON body, and form body, inject precedence, `SkipCredential` stripping, query scrubbing, credentials recorded.
 - jsfilter: `placeholder()` uniqueness, throws for non-`subrequest` credentials, strings expire after the run.
-- Rules: `subrequest` matches only subrequests, only the listed filters when set, and lets agent requests fall through.
+- Rules: `subrequest` matches only subrequests, only the listed ids when set, and lets agent requests fall through.
+  A filter whose basename or `defineFilter({name})` equals a listed id, but whose placement has a different or no id, does not match.
+- Config: duplicate and unknown ids fail the load.
 - Elevated credentials: a placeholder is replaced on a rule listing the credential, and left as text on another allowed route of the same service and on a redirect hop to one.
 - Store: `Get` refuses by kind.
 - Test runner: `expect_credentials` in steps and fixtures.
