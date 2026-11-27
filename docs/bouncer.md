@@ -73,6 +73,8 @@ Choose `deny` when:
 
 `deny` limits destinations, not content.
 An agent allowed to push to a GitHub repo can still put data in that repo.
+It can also run code in that repo's CI.
+See [GitHub](github.md) for the settings that keep CI from exposing secrets.
 Use `rules` and filters on intercepted services to control what reaches them.
 
 To move from `tunnel` to `deny`, run with `tunnel` and `--log audit=debug`, and collect the tunneled hosts from the sidecar log.
