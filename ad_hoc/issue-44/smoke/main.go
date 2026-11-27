@@ -168,7 +168,7 @@ func (s *smoke) run(bin, email, tokenItem, tokenPath, auditItem, auditPath strin
 	case err == nil:
 		s.created = branch
 		defer s.cleanup()
-		fmt.Println("   allowed: the repo has no Actions secrets: " + firstLine(out, "[new branch]"))
+		fmt.Println("   allowed: the repo has no repository Actions secrets: " + firstLine(out, "[new branch]"))
 		fmt.Println("7. delete " + branch + "; the filter looks up again and allows it")
 		out, err = s.git("push", "origin", ":refs/heads/"+branch)
 		if err != nil {
@@ -177,8 +177,8 @@ func (s *smoke) run(bin, email, tokenItem, tokenPath, auditItem, auditPath strin
 		s.created = ""
 		lookups++
 		fmt.Println("   " + firstLine(out, "[deleted]"))
-	case strings.Contains(out, "denied by "+filter) && strings.Contains(out, "has Actions secrets"):
-		fmt.Println("   denied: the repo has Actions secrets: " + firstLine(out, "denied by "+filter))
+	case strings.Contains(out, "denied by "+filter) && strings.Contains(out, "has repository Actions secrets"):
+		fmt.Println("   denied: the repo has repository Actions secrets: " + firstLine(out, "denied by "+filter))
 		fmt.Println("7. skipped: nothing to delete")
 	default:
 		return fmt.Errorf("push %s failed without the filter's verdict: %s", branch, strings.TrimSpace(out))

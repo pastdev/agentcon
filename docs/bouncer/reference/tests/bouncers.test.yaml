@@ -116,7 +116,7 @@ cases:
             expect_credentials: [github-audit]
         expect: allow
         expect_credentials: [github]
-  - name: github push to a repo with Actions secrets is refused
+  - name: github push to a repo with repository Actions secrets is refused
     steps:
       - request: {method: POST, url: "https://github.com/myorg/myrepo.git/git-receive-pack", git_push: [{ref: refs/heads/feature}]}
         subrequests:
@@ -126,7 +126,7 @@ cases:
             body: '{"total_count": 2, "secrets": []}'
             expect_credentials: [github-audit]
         expect: deny
-        expect_reason: "has Actions secrets"
+        expect_reason: "has repository Actions secrets"
   - name: github ssh push looks up Actions secrets with the elevated token
     steps:
       - ssh: {host: github.com, user: git, command: "git-receive-pack 'myorg/myrepo.git'", git_push: [{ref: refs/heads/feature}]}

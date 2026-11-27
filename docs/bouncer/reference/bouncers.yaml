@@ -197,10 +197,10 @@ bouncers:
                   # subrequest to api.github.com. The github_repo rule below
                   # allows that lookup and injects the token.
                   - ts/filters/github-branch-rules.ts
-                  # Refuses the push when the repo has Actions secrets. Its
-                  # lookup uses github-audit through the first rule. id names
-                  # this placement for subrequest.filters, and is unique in
-                  # the policy.
+                  # Refuses the push when the repo has repository Actions
+                  # secrets. Its lookup uses github-audit through the first
+                  # rule. id names this placement for subrequest.filters, and
+                  # is unique in the policy.
                   - path: ts/filters/github-ci-safety.ts
                     id: github-ci-safety
               - action: allow

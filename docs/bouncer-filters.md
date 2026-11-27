@@ -319,7 +319,8 @@ Bouncer does not enforce the following.
 Each subrequest is a real request to the provider, made while the agent's request waits.
 A filter that looks something up for every push adds that lookup's latency to every push, and counts against the token's rate limit.
 
-[github-ci-safety.ts](bouncer/reference/ts/filters/github-ci-safety.ts) refuses a push to a repo with Actions secrets.
+[github-ci-safety.ts](bouncer/reference/ts/filters/github-ci-safety.ts) refuses a push to a repo with repository Actions secrets.
+It does not check organization secrets shared with the repo or environment secrets, so it is an example of the pattern, not a complete secrets guard.
 It lists them with an elevated `github-audit` credential, which the [reference policy](bouncer/reference/bouncers.yaml) binds to that one route.
 
 ### Context and helpers

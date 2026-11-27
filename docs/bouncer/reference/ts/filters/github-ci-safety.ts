@@ -1,7 +1,11 @@
-// Refuse git pushes to a GitHub repo that has Actions secrets, over both
-// HTTPS and SSH. A pushed branch can carry a changed workflow, and a
-// workflow run on that push can read the repo's secrets. This filter keeps
-// the agent from pushing anywhere that would hand it those secrets.
+// Refuse git pushes to a GitHub repo that has repository Actions secrets,
+// over both HTTPS and SSH. A pushed branch can carry a changed workflow, and
+// a workflow run on that push can read the repo's secrets.
+//
+// It checks repository secrets only. Organization secrets shared with the
+// repo and environment secrets have their own endpoints, which it does not
+// read, so a push it allows may still run workflows that can reach those.
+// It is an example of an elevated lookup, not a complete secrets guard.
 //
 // Listing a repo's secrets needs more access than the agent's own token
 // should have, so the lookup uses an elevated credential: one whose allow
@@ -64,7 +68,7 @@ async function check(req: HttpRequest | SshRequest, git: Git | null, cfg: Config
   const body = (await r.body.json()) as { total_count?: unknown };
   if (typeof body.total_count !== "number") return deny(`${what} did not answer a count`);
   if (body.total_count > 0) {
-    return deny(`${git.repo} has Actions secrets that a pushed workflow could read; ask a maintainer to push`);
+    return deny(`${git.repo} has repository Actions secrets that a pushed workflow could read; ask a maintainer to push`);
   }
   return null;
 }
