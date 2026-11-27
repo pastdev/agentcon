@@ -96,7 +96,7 @@ func generated(t *testing.T, name string) testKey {
 }
 
 func credsFor(k testKey, pass string, ttl time.Duration) *fakeCreds {
-	cred := &config.Credential{Name: "sign", Internal: true, PrivateKey: &config.ValueSource{Source: "provided"}, Cache: &config.Duration{D: ttl}}
+	cred := &config.Credential{Name: "sign", Allow: []string{config.AllowInternal}, PrivateKey: &config.ValueSource{Source: "provided"}, Cache: &config.Duration{D: ttl}}
 	values := map[string]string{"sign.private_key": k.armored}
 	if pass != "" {
 		cred.Password = &config.ValueSource{Source: "provided"}

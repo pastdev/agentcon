@@ -117,7 +117,7 @@ func TestMaterializeBouncer(t *testing.T) {
 				Bouncers: map[string]*BouncerSpec{
 					"github": {Config: bouncercfg.Config{
 						Credentials: map[string]*bouncercfg.Credential{
-							"gl": {Token: &bouncercfg.ValueSource{Source: "command"}},
+							"gl": {Allow: []string{bouncercfg.AllowAgent}, Token: &bouncercfg.ValueSource{Source: "command"}},
 						},
 					}},
 				},
@@ -345,7 +345,7 @@ func TestLoadBouncerService(t *testing.T) {
 	t.Run("invalid policy", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "policy.yaml")
-		err := os.WriteFile(path, []byte("credentials:\n  gl:\n    token:\n      source: command\n"), 0o600)
+		err := os.WriteFile(path, []byte("credentials:\n  gl:\n    allow: [agent]\n    token:\n      source: command\n"), 0o600)
 		require.NoError(t, err)
 		tester(t, testCase{
 			path:    path,

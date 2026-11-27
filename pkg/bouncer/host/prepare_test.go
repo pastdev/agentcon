@@ -49,10 +49,12 @@ func TestPrepareCredentials(t *testing.T) {
 			policy: `
 credentials:
   gh:
+    allow: [agent, subrequest]
     token:
       source: env
       env: AGENTCON_TEST_GH
   gl:
+    allow: [agent, subrequest]
     token:
       source: provided
 `,
@@ -70,7 +72,7 @@ credentials:
 			policy: `
 credentials:
   signing:
-    internal: true
+    allow: [internal]
     private_key:
       source: provided
     password:
@@ -92,6 +94,7 @@ bitwarden:
     password: {source: env, env: AGENTCON_TEST_BW_MASTER}
 credentials:
   vault:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work
@@ -111,6 +114,7 @@ bitwarden:
     password: {source: provided}
 credentials:
   vault:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work
@@ -129,6 +133,7 @@ bitwarden:
     email: user@example.com
 credentials:
   bw:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work
@@ -151,10 +156,12 @@ credentials:
 			policy: `
 credentials:
   gh:
+    allow: [agent, subrequest]
     token:
       source: env
       env: AGENTCON_TEST_GH
   cmd:
+    allow: [agent, subrequest]
     token:
       source: command
       command: [sh, -c, "echo s3cret-stderr >&2; exit 1"]
@@ -176,6 +183,7 @@ func TestPrepareCredentialsCommandStderr(t *testing.T) {
 		_, err := PrepareCredentials(t.Context(), CredentialOptions{Policy: []byte(`
 credentials:
   cmd:
+    allow: [agent, subrequest]
     token:
       source: command
       command: [sh, -c, "echo vault locked >&2; exit 1"]

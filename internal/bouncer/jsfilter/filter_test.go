@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -275,27 +274,18 @@ export default defineFilter({
 		assert.Nil(t, resp.Denial)
 		assert.Equal(t, 200, resp.Status)
 	})
-	t.Run("responds with a credential value", func(t *testing.T) {
-		env := &chain.Env{Credential: func(_ context.Context, name string) (string, error) {
-			if name != "smoke" {
-				return "", errors.New("unknown credential")
-			}
-			return "from-vault", nil
-		}}
+	t.Run("a filter that calls the removed credential() fails closed", func(t *testing.T) {
 		f := load(t, `
-import { defineFilter, credential, respond } from "bouncer";
+import * as bouncer from "bouncer";
 export default defineFilter({
   onRequest() {
-    return respond(200, credential("smoke") + "\n", { "Content-Type": "text/plain" });
+    return bouncer.respond(200, (bouncer as any).credential("smoke") + "\n");
   },
-});`, Options{Env: env})
+});
+import { defineFilter } from "bouncer";`, Options{})
 		h := chain.Build([]chain.Filter{f}, upstream("should-not-run"))
-		tester(t, testCase{
-			h:          h,
-			req:        req(t, "GET", "https://vault.test/", nil),
-			wantStatus: 200,
-			wantBody:   "from-vault\n",
-		})
+		allow := false
+		tester(t, testCase{h: h, req: req(t, "GET", "https://vault.test/", nil), allow: &allow})
 	})
 	t.Run("responds with json for a disallowed channel", func(t *testing.T) {
 		f := load(t, `

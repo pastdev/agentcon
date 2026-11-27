@@ -37,6 +37,7 @@ func TestEnvCreds(t *testing.T) {
 			policy: `
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: env
       env: SMOKE_TOKEN
@@ -50,6 +51,7 @@ credentials:
 			policy: `
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: env
       env: SMOKE_TOKEN
@@ -64,10 +66,12 @@ credentials:
 			policy: `
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: env
       env: SMOKE_TOKEN
   other:
+    allow: [agent, subrequest]
     token:
       source: env
       env: OTHER_TOKEN
@@ -100,6 +104,7 @@ credentials:
 	})
 	t.Run("names a variable shared by a slot and an account once", func(t *testing.T) {
 		_, err := envCreds([]byte(bitwardenPolicy("{source: env, env: AGENTCON_TEST_UNSET}")+`  tok:
+    allow: [agent]
     token:
       source: env
       env: AGENTCON_TEST_UNSET
@@ -131,6 +136,7 @@ bitwarden:
     password: ` + password + `
 credentials:
   bw:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work

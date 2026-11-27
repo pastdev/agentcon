@@ -11,13 +11,14 @@ import (
 const signerCreds = `
 credentials:
   sign-a:
-    internal: true
+    allow: [internal]
     private_key: {source: provided}
     password: {source: provided}
   sign-b:
-    internal: true
+    allow: [internal]
     private_key: {source: provided}
   plain:
+    allow: [agent, subrequest]
     token: {source: provided}
 `
 
@@ -76,7 +77,7 @@ profiles:
 	t.Run("refuses a credential that is not internal", func(t *testing.T) {
 		tester(t, testCase{
 			yaml:    signerProfile("              - {id: 7C44826B7B1878A0, credential: plain}\n"),
-			wantErr: "must set internal: true",
+			wantErr: "must be allow: [internal]",
 		})
 	})
 	t.Run("refuses a bad key id", func(t *testing.T) {
@@ -99,7 +100,7 @@ profiles:
 			wantErr: "keys is required",
 		})
 	})
-	for _, field := range []string{"credential: plain", "allow_upgrade: true", "insecure: true"} {
+	for _, field := range []string{"credentials: [plain]", "allow_upgrade: true", "insecure: true"} {
 		t.Run("refuses a signer with "+field, func(t *testing.T) {
 			tester(t, testCase{
 				yaml: signerCreds + `
@@ -122,7 +123,7 @@ profiles:
 			yaml: `
 credentials:
   sign-a:
-    internal: true
+    allow: [internal]
     private_key: {source: provided}
     token: {source: provided}
 profiles:
@@ -142,7 +143,7 @@ profiles:
 			yaml: `
 credentials:
   sign-a:
-    internal: true
+    allow: [internal]
     private_key: {source: ssh-agent}
 profiles:
   p:
@@ -222,9 +223,9 @@ profiles:
     http:
       - name: gh
         hosts: [github.com]
-        credential: sign-a
+        credentials: [sign-a]
 `,
-			wantErr: "is internal and cannot be injected",
+			wantErr: `credential "sign-a" is internal and is never sent`,
 		})
 	})
 	t.Run("refuses an internal credential on an ssh service", func(t *testing.T) {
@@ -237,7 +238,7 @@ profiles:
         hosts: [github.com]
         credential: sign-b
 `,
-			wantErr: "is internal and cannot be used for ssh",
+			wantErr: `credential "sign-b" must allow agent`,
 		})
 	})
 	t.Run("refuses an internal credential with export_env", func(t *testing.T) {
@@ -245,11 +246,11 @@ profiles:
 			yaml: `
 credentials:
   sign-a:
-    internal: true
+    allow: [internal]
     private_key: {source: provided}
     export_env: [GPG_KEY]
 `,
-			wantErr: "may not set export_env",
+			wantErr: "export_env requires allow agent",
 		})
 	})
 }

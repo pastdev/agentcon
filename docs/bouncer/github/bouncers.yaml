@@ -18,6 +18,7 @@ bouncers:
         email: you@example.com
     credentials:
       github-pat:
+        allow: [agent]
         token:
           source: bitwarden
           account: agent
@@ -25,6 +26,7 @@ bouncers:
           path: $.notes
         export_env: [GH_TOKEN, GITHUB_TOKEN]
       github-ssh:
+        allow: [agent]
         private_key:
           source: bitwarden
           account: agent
@@ -37,8 +39,9 @@ bouncers:
         http:
           - name: github
             hosts: [github.com, api.github.com]
-            credential: github-pat
+            credentials: [github-pat]
             inject:
+              credential: github-pat
               bearer: true
               git: {basic: {username: x-access-token}}
             rules:

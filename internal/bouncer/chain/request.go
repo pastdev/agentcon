@@ -96,6 +96,15 @@ type Request struct {
 	SignerRequest bool
 	// Subrequest is set when a filter made this request with subrequest().
 	Subrequest *SubrequestInfo
+	// Placeholders maps each one-time placeholder the calling filter run
+	// issued to its credential name. Only a subrequest carries them.
+	Placeholders map[string]string
+	// RuleCredentials are the elevated credentials the matched rule's
+	// subrequest.credentials lets this request use.
+	RuleCredentials []string
+	// Credentials names the credentials the request was sent with, set by
+	// the terminal handler for the audit log.
+	Credentials []string
 
 	gitOnce sync.Once
 	git     *gitproto.Info

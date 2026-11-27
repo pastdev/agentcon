@@ -118,10 +118,12 @@ func TestSSHKeyCredentialNames(t *testing.T) {
 		got, err := sshKeyCredentialNames([]byte(`
 credentials:
   deploy:
+    allow: [agent, subrequest]
     private_key:
       source: file
       file: /tmp/id
   tok:
+    allow: [agent, subrequest]
     token:
       source: file
       file: /tmp/token

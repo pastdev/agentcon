@@ -46,6 +46,7 @@ func TestProvidedCreds(t *testing.T) {
 			policy: `
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: file
       file: ` + path + `
@@ -59,6 +60,7 @@ credentials:
 			policy: `
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: command
       command: ["sh", "-c", "printf from-cmd"]
@@ -71,6 +73,7 @@ credentials:
 			policy: `
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: provided
 `,
@@ -87,6 +90,7 @@ credentials:
 			policy: `
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: file
       file: ` + path + `
@@ -100,6 +104,7 @@ credentials:
 			policy: `
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: provided
 `,
@@ -111,6 +116,7 @@ credentials:
 			policy: `
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: file
       file: /no/such/agentcon-secret
@@ -126,6 +132,7 @@ credentials:
 		policy := `
 credentials:
   login:
+    allow: [agent, subrequest]
     username:
       source: env
       env: SMOKE_USER
@@ -160,6 +167,7 @@ bitwarden:
       command: [sh, -c, "exit 1"]
 credentials:
   a:
+    allow: [agent, subrequest]
     username:
       source: bitwarden
       account: work
@@ -171,6 +179,7 @@ credentials:
       item: GitLab
       path: $.login.password
   b:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work
@@ -195,6 +204,7 @@ bitwarden:
     password: {source: provided}
 credentials:
   bw:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work
@@ -213,16 +223,19 @@ bitwarden:
     password: {source: env, env: UNUSED}
 credentials:
   envtok:
+    allow: [agent, subrequest]
     token:
       source: env
       env: UNUSED
   bw:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work
       item: GitLab
       path: $.login.password
   key:
+    allow: [agent, subrequest]
     private_key:
       source: ssh-agent
 `,
@@ -237,6 +250,7 @@ credentials:
 			policy: `
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: keyring
 `,
@@ -271,6 +285,7 @@ func TestSSHAuthSock(t *testing.T) {
 			policy: `
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: env
       env: UNUSED
@@ -283,6 +298,7 @@ credentials:
 			policy: `
 credentials:
   key:
+    allow: [agent, subrequest]
     private_key:
       source: ssh-agent
 `,
@@ -301,6 +317,7 @@ credentials:
 			policy: `
 credentials:
   key:
+    allow: [agent, subrequest]
     private_key:
       source: ssh-agent
 `,

@@ -28,6 +28,7 @@ func TestCheckPromptable(t *testing.T) {
     email: unused@example.com
 credentials:
   bw:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work

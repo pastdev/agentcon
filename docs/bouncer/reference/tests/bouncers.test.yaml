@@ -110,9 +110,41 @@ cases:
         subrequests:
           - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100&page=1
             body: '[]'
-            expect_credential: true
+            expect_credentials: [github]
+          - url: https://api.github.com/repos/myorg/myrepo/actions/secrets?per_page=1
+            body: '{"total_count": 0, "secrets": []}'
+            expect_credentials: [github-audit]
         expect: allow
-        expect_credential: true
+        expect_credentials: [github]
+  - name: github push to a repo with Actions secrets is refused
+    steps:
+      - request: {method: POST, url: "https://github.com/myorg/myrepo.git/git-receive-pack", git_push: [{ref: refs/heads/feature}]}
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100&page=1
+            body: '[]'
+          - url: https://api.github.com/repos/myorg/myrepo/actions/secrets?per_page=1
+            body: '{"total_count": 2, "secrets": []}'
+            expect_credentials: [github-audit]
+        expect: deny
+        expect_reason: "has Actions secrets"
+  - name: github ssh push looks up Actions secrets with the elevated token
+    steps:
+      - ssh: {host: github.com, user: git, command: "git-receive-pack 'myorg/myrepo.git'", git_push: [{ref: refs/heads/feature}]}
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100&page=1
+            body: '[]'
+            expect_credentials: [github]
+          - url: https://api.github.com/repos/myorg/myrepo/actions/secrets?per_page=1
+            body: '{"total_count": 0, "secrets": []}'
+            expect_credentials: [github-audit]
+        expect: allow
+  - name: the agent reads Actions secrets with its own token, never the elevated one
+    steps:
+      - request:
+          url: https://api.github.com/repos/myorg/myrepo/actions/secrets
+          headers: {Authorization: "Bearer bouncer-placeholder-github-audit"}
+        expect: allow
+        expect_credentials: [github]
   - name: github push to a branch a ruleset restricts
     steps:
       - request: {method: POST, url: "https://github.com/myorg/myrepo.git/git-receive-pack", git_push: [{ref: refs/heads/staging}]}
@@ -127,7 +159,7 @@ cases:
         subrequests:
           - url: https://api.github.com/repos/myorg/myrepo/rules/branches/staging?per_page=100&page=1
             body: '[{"type": "update"}]'
-            expect_credential: true
+            expect_credentials: [github]
         expect: deny
         expect_reason: "'update'"
   - name: github ssh push to another repo never looks anything up

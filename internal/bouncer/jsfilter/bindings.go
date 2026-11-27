@@ -15,7 +15,6 @@ import (
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
 	"github.com/pastdev/agentcon/pkg/bouncer/claims"
-	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
 const (
@@ -145,46 +144,9 @@ func (i *instance) installHost() error {
 		return i.resolved(vm.ToValue(ok))
 	})
 
-	host.Set("credential", func(call goja.FunctionCall) goja.Value {
-		name := ""
-		if a := call.Argument(0); !goja.IsUndefined(a) && !goja.IsNull(a) {
-			name = a.String()
-		}
-		if name == "" {
-			panic(vm.ToValue("credential() requires a credential name"))
-		}
-		get := i.f.opts.Env.Credential
-		if get == nil {
-			panic(vm.ToValue("credential() is not configured"))
-		}
-		ctx := context.Background()
-		if i.cur != nil && i.cur.Ctx != nil {
-			ctx = i.cur.Ctx
-		}
-		v, err := get(ctx, name)
-		if err != nil {
-			panic(vm.ToValue(err.Error()))
-		}
-		return vm.ToValue(v)
-	})
-
 	host.Set("subrequest", i.subrequest)
 
-	host.Set("placeholder", func(call goja.FunctionCall) goja.Value {
-		name, ok := call.Argument(0).Export().(string)
-		if !ok || name == "" {
-			panic(vm.NewTypeError("placeholder(name) requires a credential name"))
-		}
-		get := i.f.opts.Env.Placeholder
-		if get == nil {
-			return vm.ToValue(config.Placeholder(name))
-		}
-		v, err := get(name)
-		if err != nil {
-			panic(vm.NewTypeError("placeholder: " + err.Error()))
-		}
-		return vm.ToValue(v)
-	})
+	host.Set("placeholder", i.placeholder)
 
 	host.Set("log", func(call goja.FunctionCall) goja.Value {
 		var fields map[string]any
@@ -553,8 +515,18 @@ func (i *instance) wrapRequest(req *chain.Request) *goja.Object {
 		o.Set("session", goja.Null())
 	}
 	o.Set("describe", func() string { return req.Describe() })
-	if req.Subrequest != nil {
-		o.Set("subrequest", i.freeze(i.plain(req.Subrequest)))
+	if sr := req.Subrequest; sr != nil {
+		var id *string
+		if sr.ID != "" {
+			id = &sr.ID
+		}
+		view := struct {
+			Filter string  `json:"filter"`
+			ID     *string `json:"id"`
+			Depth  int     `json:"depth"`
+			Parent string  `json:"parent"`
+		}{sr.Filter, id, sr.Depth, sr.Parent}
+		o.Set("subrequest", i.freeze(i.plain(view)))
 	} else {
 		o.Set("subrequest", goja.Null())
 	}

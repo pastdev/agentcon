@@ -33,39 +33,57 @@ bouncers:
     # Where secrets come from. The agent only ever sees placeholders.
     # Each credential is a composite of slots (token, username, password, private_key).
     # Each slot is a source plus optional JSONPath on the source payload.
+    # allow (required) lists the kinds of requests that may use it:
+    #   agent       the agent's own requests and SSH connections
+    #   subrequest  requests a filter makes with subrequest()
+    #   internal    handlers inside the bouncer, such as the OpenPGP signer; alone
+    # None of them lets filter code read the secret.
     credentials:
       gitlab:
+        allow: [agent]
         token:
           source: keyring
         export_env: [GITLAB_TOKEN]       # glab etc. see a placeholder token
       github:
+        allow: [agent, subrequest]       # github-branch-rules looks up with it too
         # The escape hatch: any command that prints the secret on stdout.
         token:
           source: command
           command: [bw, get, password, github-agent-pat]
         cache: 15m
         export_env: [GH_TOKEN]
+      # An elevated credential: only filter subrequests may use it, and only
+      # on a rule that lists it in subrequest.credentials. The agent can
+      # never send it, even by naming its placeholder.
+      github-audit:
+        allow: [subrequest]
+        token:
+          source: command
+          command: [bw, get, password, github-audit-pat]
       gitlab-ssh:
+        allow: [agent]
         private_key:
           source: ssh-agent              # keys from your running ssh-agent
       github-ssh:
+        allow: [agent]
         private_key:
           source: ssh-agent
       sandbox-key:
+        allow: [agent]
         private_key:
           source: file
           file: ~/.ssh/id_ed25519_sandbox
       slack:
+        allow: [agent]
         token:
           source: env                    # read from the daemon's environment
           env: SLACK_BOT_TOKEN
         export_env: [SLACK_TOKEN]
       # An OpenPGP key for signing commits and tags.
-      # internal: true keeps it inside the bouncer: no service may inject it,
-      # it may not set export_env, and credential() in a filter cannot read it.
-      # Only a signer service may name it.
+      # allow: [internal] keeps it inside the bouncer: no service may send it,
+      # and it may not set export_env. Only a signer service may name it.
       signing:
-        internal: true
+        allow: [internal]
         private_key:
           source: file                   # an armored private key
           file: ~/.config/agentcon/signing-key.asc
@@ -77,6 +95,7 @@ bouncers:
       #     account: me                  # a key of the bitwarden map above
       #     item: GitLab                 # name or id; folder disambiguates
       #     path: $.login.password       # decrypted cipher JSON
+      #   allow: [agent]
       #   export_env: [GITLAB_TOKEN]
 
     profiles:
@@ -96,10 +115,17 @@ bouncers:
           # credential; all other APIs should be blocked."
           - name: gitlab
             hosts: [gitlab.com]
-            credential: gitlab
+            # credentials lists what may be sent to these hosts; inject names
+            # the one it attaches.
+            credentials: [gitlab]
             inject:
+              credential: gitlab
               header: PRIVATE-TOKEN
               git: {basic: {username: oauth2}}   # git over HTTPS wants Basic auth
+            # Rules name projects by path, but API URLs often use the numeric
+            # ID. The bouncer looks the ID up with this credential, which
+            # must allow agent.
+            lookup_credential: gitlab
             default: deny
             # First matching rule wins. default: deny keeps leftover GitLab paths
             # off-limits even though the profile unmatched mode is tunnel.
@@ -141,12 +167,24 @@ bouncers:
 
           - name: github
             hosts: [github.com, api.github.com, uploads.github.com]
-            credential: github
+            credentials: [github, github-audit]
             inject:
+              credential: github
               bearer: true
               git: {basic: {username: x-access-token}}
             default: deny
             rules:
+              # Only github-ci-safety's lookups match this rule, and only they
+              # may use github-audit, and only here. It comes first, so an
+              # agent request to the same path falls through to the rules
+              # below and their ordinary token.
+              - action: allow
+                methods: [GET]
+                github_repo: [myorg/myrepo]
+                github_subpaths: ["actions/secrets"]
+                subrequest:
+                  filters: [github-ci-safety, github-ci-safety-ssh]   # filter placement ids
+                  credentials: [github-audit]
               - action: allow
                 git: {}
                 github_repo: [myorg/myrepo]
@@ -159,6 +197,12 @@ bouncers:
                   # subrequest to api.github.com. The github_repo rule below
                   # allows that lookup and injects the token.
                   - ts/filters/github-branch-rules.ts
+                  # Refuses the push when the repo has Actions secrets. Its
+                  # lookup uses github-audit through the first rule. id names
+                  # this placement for subrequest.filters, and is unique in
+                  # the policy.
+                  - path: ts/filters/github-ci-safety.ts
+                    id: github-ci-safety
               - action: allow
                 methods: [PUT]
                 github_repo: [myorg/myrepo]
@@ -202,8 +246,8 @@ bouncers:
 
           - name: slack
             hosts: [slack.com]
-            credential: slack
-            inject: {bearer: true}
+            credentials: [slack]
+            inject: {credential: slack, bearer: true}
             filters:
               - path: ts/filters/slack-channel-allowlist.ts
                 config: {channels: [C0123AGENT]}
@@ -222,8 +266,9 @@ bouncers:
                   - path: ts/filters/git-protect-branches.ts
                     config: {branches: [main, "release/*"]}
 
-          # The same GitHub branch rules lookup guards SSH pushes. Its
-          # subrequest goes to api.github.com through the github http service.
+          # The same GitHub lookups guard SSH pushes. Their subrequests go to
+          # api.github.com through the github http service. This placement
+          # of github-ci-safety has its own id.
           - name: github-ssh
             hosts: [github.com]
             user: git
@@ -232,7 +277,10 @@ bouncers:
             rules:
               - action: allow
                 github_repo: [myorg/myrepo]
-                filters: [ts/filters/github-branch-rules.ts]
+                filters:
+                  - ts/filters/github-branch-rules.ts
+                  - path: ts/filters/github-ci-safety.ts
+                    id: github-ci-safety-ssh
 
           # A sandbox VM the agent may log into. Once connected it can do
           # anything there, so a human approves each session. Agent forwarding

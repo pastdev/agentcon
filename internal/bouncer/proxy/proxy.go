@@ -397,6 +397,7 @@ func (s *Server) intercept(w http.ResponseWriter, r *http.Request, sess *chain.S
 		return
 	}
 	e.Decision, e.By, e.Status = audit.DecisionAllow, req.AllowedBy, resp.Status
+	e.Credentials = req.Credentials
 	s.writeResponse(w, resp)
 }
 
@@ -614,7 +615,7 @@ func (noSigner) Sign(context.Context, config.OpenPGPKey, []byte) (*signer.Signat
 // Subrequest implements chain.SubrequestFunc. A filter's subrequest goes
 // through the chain of the service its host matches, or the profile's
 // tunnel rules, exactly as an agent request to the same URL would.
-func (s *Server) Subrequest(parent *chain.Request, filter string, spec chain.SubrequestSpec) (*chain.Response, *url.URL, error) {
+func (s *Server) Subrequest(parent *chain.Request, caller chain.SubrequestCaller, spec chain.SubrequestSpec) (*chain.Response, *url.URL, error) {
 	r := &subreq.Router{
 		Session:  s.Backend.LiveSession,
 		Profile:  s.Backend.Profile,
@@ -622,7 +623,7 @@ func (s *Server) Subrequest(parent *chain.Request, filter string, spec chain.Sub
 		Tunnel:   s.tunnelSubrequest,
 		Audit:    s.Audit.Write,
 	}
-	return r.Do(parent, filter, spec) //nolint:wrapcheck // the router's errors are the messages filters see
+	return r.Do(parent, caller, spec) //nolint:wrapcheck // the router's errors are the messages filters see
 }
 
 // tunnelSubrequest sends a subrequest to a host the profile has no service

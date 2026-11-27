@@ -55,7 +55,7 @@ func Compile(cfg *config.Config, env *chain.Env, store *kv.Store) (*Set, error) 
 		load := func(refs []config.FilterRef) ([]chain.Filter, error) {
 			var out []chain.Filter
 			for _, ref := range refs {
-				f, err := jsfilter.Load(jsfilter.Options{Path: ref.Path, Config: ref.Config, Timeout: ref.Timeout.D, Env: env, KV: store})
+				f, err := jsfilter.Load(jsfilter.Options{Path: ref.Path, ID: ref.ID, Config: ref.Config, Timeout: ref.Timeout.D, Env: env, KV: store})
 				if err != nil {
 					return nil, fmt.Errorf("profile %q: %w", name, err)
 				}

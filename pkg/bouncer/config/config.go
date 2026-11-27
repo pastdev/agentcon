@@ -204,12 +204,50 @@ type Credential struct {
 	// ExportEnv lists environment variables set on the agent to this
 	// credential's placeholder so agent tooling believes it has a token.
 	ExportEnv []string `yaml:"export_env"`
-	// Internal limits the credential to in-process handlers such as an
-	// OpenPGP signer. It is never injected, exported, or readable by a
-	// filter.
-	Internal bool `yaml:"internal"`
+	// Allow lists the kinds of requests that may use the credential:
+	// agent, subrequest, or internal alone. It is required.
+	Allow []string `yaml:"allow"`
+	// RemovedInternal is decoded only to reject it with a pointer to
+	// allow: [internal].
+	RemovedInternal *bool `yaml:"internal,omitempty"`
 
 	Name string `yaml:"-"`
+}
+
+// Request kinds a credential's allow list names.
+const (
+	// AllowAgent is the agent's own requests and SSH connections.
+	AllowAgent = "agent"
+	// AllowSubrequest is requests a filter makes with subrequest().
+	AllowSubrequest = "subrequest"
+	// AllowInternal is handlers inside Bouncer, such as the OpenPGP
+	// signer. The secret is never sent.
+	AllowInternal = "internal"
+)
+
+// Allows reports whether requests of kind may use the credential.
+func (c *Credential) Allows(kind string) bool {
+	return slices.Contains(c.Allow, kind)
+}
+
+// CheckSubrequestCredential reports why a filter may not send credential
+// name in a subrequest, or nil when it may.
+func (c *Config) CheckSubrequestCredential(name string) error {
+	cr, ok := c.Credentials[name]
+	if !ok {
+		return fmt.Errorf("no credential named %q", name)
+	}
+	if !cr.Allows(AllowSubrequest) {
+		return fmt.Errorf("credential %q does not allow subrequest", name)
+	}
+	return nil
+}
+
+// Elevated reports whether only filter subrequests may use the credential.
+// An elevated credential is usable only on a rule that lists it in
+// subrequest.credentials.
+func (c *Credential) Elevated() bool {
+	return c.Allows(AllowSubrequest) && !c.Allows(AllowAgent)
 }
 
 // ValueSource locates one string. Fetch the source payload, then if Path is
@@ -337,8 +375,16 @@ type Profile struct {
 type Service struct {
 	Name  string   `yaml:"name"`
 	Hosts []string `yaml:"hosts"`
-	// Credential to inject (optional; a service with no credential is still filtered).
-	Credential string `yaml:"credential"`
+	// Credentials lists the credentials that may be sent to the service's
+	// hosts. A service with none is still filtered.
+	Credentials []string `yaml:"credentials"`
+	// LookupCredential is the credential Bouncer itself uses when a matcher
+	// needs data from the service, such as a GitLab project path to ID
+	// lookup. It must be listed in Credentials and allow agent.
+	LookupCredential string `yaml:"lookup_credential"`
+	// RemovedCredential is decoded only to reject it with a pointer to
+	// credentials and inject.credential.
+	RemovedCredential string `yaml:"credential,omitempty"`
 	// AllowUpgrade permits protocol upgrades (WebSockets) on a credentialed
 	// service. After the upgrade, traffic is a raw stream that filters never
 	// see, authenticated by the injected credential.
@@ -371,11 +417,15 @@ func (s *Service) DefaultAction() string {
 	return ActionAllow
 }
 
-// Inject describes how the credential is attached to upstream requests.
-// Bouncer always replaces the credential's placeholder where it appears in
-// Authorization (including inside Basic), Private-Token, the inject header,
-// and any placeholder_headers; then it applies the inject spec, if any.
+// Inject describes how a credential is attached to upstream requests.
+// For an agent request, Bouncer replaces the placeholder of each credential
+// the request may use where it appears in Authorization (including inside
+// Basic), Private-Token, the inject header, and any placeholder_headers;
+// then it applies the inject spec.
 type Inject struct {
+	// Credential is the credential the spec attaches. It must be listed in
+	// the service's credentials. Git uses it too.
+	Credential string `yaml:"credential"`
 	// Header and Value set a header; "{{secret}}" in Value is replaced. Value defaults to "{{secret}}".
 	Header string `yaml:"header"`
 	Value  string `yaml:"value"`
@@ -487,6 +537,8 @@ type Rule struct {
 	Git            *GitMatch    `yaml:"git"`
 	GraphQL        *GraphQLRule `yaml:"graphql"`
 	SSH            *SSHMatch    `yaml:"ssh"`
+	// Subrequest makes the rule match only filter subrequests.
+	Subrequest *SubrequestMatch `yaml:"subrequest"`
 
 	// Filters run after this rule matches with allow, or an approved ask.
 	// They are not run on deny, on other rules, or on the service default.
@@ -537,6 +589,15 @@ type GraphQLRule struct {
 	Fields []string `yaml:"fields"`
 }
 
+// SubrequestMatch limits a rule to filter subrequests.
+type SubrequestMatch struct {
+	// Filters are filter placement ids. Set, the rule matches only
+	// subrequests made by those placements.
+	Filters []string `yaml:"filters"`
+	// Credentials are elevated credentials a matching subrequest may use.
+	Credentials []string `yaml:"credentials"`
+}
+
 type SSHMatch struct {
 	Kinds   []string `yaml:"kinds"`
 	Command string   `yaml:"command"` // regex over the exec command
@@ -547,7 +608,10 @@ type SSHMatch struct {
 // FilterRef points at a TypeScript/JavaScript filter. It accepts a scalar
 // path or a mapping with per-filter config.
 type FilterRef struct {
-	Path    string         `yaml:"path"`
+	Path string `yaml:"path"`
+	// ID names this placement for subrequest.filters. It is unique across
+	// the policy.
+	ID      string         `yaml:"id"`
 	Config  map[string]any `yaml:"config"`
 	Timeout Duration       `yaml:"timeout"`
 }
@@ -652,8 +716,9 @@ func (c *Config) normalize() error {
 		if len(slots) == 0 {
 			return fmt.Errorf("credential %q: need username, password, token, private_key, or certificate", name)
 		}
-		if cr.Internal && len(cr.ExportEnv) > 0 {
-			return fmt.Errorf("credential %q: an internal credential may not set export_env", name)
+		err := cr.validateAllow()
+		if err != nil {
+			return err
 		}
 		for _, slot := range slots {
 			err := slot.Source.init(name, slot.Name, c.Dir)
@@ -695,6 +760,10 @@ func (c *Config) normalize() error {
 		if err := c.validateProfile(p); err != nil {
 			return fmt.Errorf("profile %q: %w", name, err)
 		}
+	}
+	err = c.validateFilterIDs()
+	if err != nil {
+		return err
 	}
 	err = c.validateSigners()
 	if err != nil {
@@ -742,27 +811,21 @@ func (c *Config) validateProfile(p *Profile) error {
 		for j, h := range s.Hosts {
 			s.Hosts[j] = strings.ToLower(h)
 		}
-		if s.Credential != "" {
-			cr, ok := c.Credentials[s.Credential]
-			if !ok {
-				return fmt.Errorf("http %q: unknown credential %q", s.Name, s.Credential)
-			}
-			if cr.Internal {
-				return fmt.Errorf("http %q: credential %q is internal and cannot be injected", s.Name, s.Credential)
-			}
-		}
 		if s.Signer != nil {
 			if err := c.validateSigner(s); err != nil {
 				return fmt.Errorf("http %q: %w", s.Name, err)
 			}
 		}
-		if s.Inject != nil && s.Credential == "" {
-			return fmt.Errorf("http %q: inject requires credential", s.Name)
+		if err := c.validateServiceCredentials(s); err != nil {
+			return fmt.Errorf("http %q: %w", s.Name, err)
 		}
 		if err := validateAction(s.Default, true); err != nil {
 			return fmt.Errorf("http %q default: %w", s.Name, err)
 		}
 		if err := normalizeRules(s.Rules); err != nil {
+			return fmt.Errorf("http %q: %w", s.Name, err)
+		}
+		if err := c.validateHTTPRules(s); err != nil {
 			return fmt.Errorf("http %q: %w", s.Name, err)
 		}
 		if err := c.normalizeFilters(s.Filters); err != nil {
@@ -792,8 +855,8 @@ func (c *Config) validateProfile(p *Profile) error {
 		if !ok {
 			return fmt.Errorf("ssh %q: unknown credential %q", s.Name, s.Credential)
 		}
-		if cr.Internal {
-			return fmt.Errorf("ssh %q: credential %q is internal and cannot be used for ssh", s.Name, s.Credential)
+		if !cr.Allows(AllowAgent) {
+			return fmt.Errorf("ssh %q: credential %q must allow agent, since the ssh proxy signs in with it directly", s.Name, s.Credential)
 		}
 		for _, k := range s.Allow {
 			switch k {
@@ -811,11 +874,177 @@ func (c *Config) validateProfile(p *Profile) error {
 		if err := normalizeRules(s.Rules); err != nil {
 			return fmt.Errorf("ssh %q: %w", s.Name, err)
 		}
+		for j := range s.Rules {
+			if s.Rules[j].Subrequest != nil {
+				return fmt.Errorf("ssh %q: rules[%d]: subrequest is only valid on http rules", s.Name, j)
+			}
+		}
 		if err := c.normalizeFilters(s.Filters); err != nil {
 			return fmt.Errorf("ssh %q: %w", s.Name, err)
 		}
 		if err := c.normalizeRuleFilters(s.Rules); err != nil {
 			return fmt.Errorf("ssh %q: %w", s.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateAllow checks a credential's allow list.
+func (c *Credential) validateAllow() error {
+	if c.RemovedInternal != nil {
+		return fmt.Errorf("credential %q: internal is removed; use allow: [internal]", c.Name)
+	}
+	if len(c.Allow) == 0 {
+		return fmt.Errorf("credential %q: allow is required (agent, subrequest, or internal)", c.Name)
+	}
+	for _, k := range c.Allow {
+		switch k {
+		case AllowAgent, AllowSubrequest:
+		case AllowInternal:
+			if len(c.Allow) > 1 {
+				return fmt.Errorf("credential %q: allow internal may not be combined with another kind", c.Name)
+			}
+		default:
+			return fmt.Errorf("credential %q: unknown allow kind %q", c.Name, k)
+		}
+	}
+	if len(c.ExportEnv) > 0 && !c.Allows(AllowAgent) {
+		return fmt.Errorf("credential %q: export_env requires allow agent", c.Name)
+	}
+	return nil
+}
+
+// validateServiceCredentials checks an http service's credentials, inject,
+// and lookup_credential.
+func (c *Config) validateServiceCredentials(s *Service) error {
+	if s.RemovedCredential != "" {
+		return fmt.Errorf("credential is removed; use credentials and inject.credential")
+	}
+	for _, name := range s.Credentials {
+		cr, ok := c.Credentials[name]
+		if !ok {
+			return fmt.Errorf("unknown credential %q", name)
+		}
+		if cr.Allows(AllowInternal) {
+			return fmt.Errorf("credential %q is internal and is never sent", name)
+		}
+	}
+	if s.Inject != nil {
+		if s.Inject.Credential == "" {
+			return fmt.Errorf("inject requires inject.credential")
+		}
+		if !slices.Contains(s.Credentials, s.Inject.Credential) {
+			return fmt.Errorf("inject.credential %q is not in credentials", s.Inject.Credential)
+		}
+		if c.Credentials[s.Inject.Credential].Elevated() {
+			return fmt.Errorf("inject.credential %q is elevated; attach it with a rule's subrequest.credentials", s.Inject.Credential)
+		}
+		if s.Inject.Git != nil {
+			if s.Inject.Git.Credential != "" {
+				return fmt.Errorf("inject.git may not set credential, it uses inject.credential")
+			}
+			if s.Inject.Git.Git != nil {
+				return fmt.Errorf("inject.git may not set git")
+			}
+		}
+	}
+	if s.LookupCredential != "" {
+		if !slices.Contains(s.Credentials, s.LookupCredential) {
+			return fmt.Errorf("lookup_credential %q is not in credentials", s.LookupCredential)
+		}
+		if !c.Credentials[s.LookupCredential].Allows(AllowAgent) {
+			return fmt.Errorf("lookup_credential %q must allow agent, since agent requests trigger lookups", s.LookupCredential)
+		}
+	}
+	return nil
+}
+
+// validateHTTPRules checks the parts of an http service's rules that
+// depend on the service: subrequest credentials and GitLab path lookups.
+func (c *Config) validateHTTPRules(s *Service) error {
+	for i := range s.Rules {
+		r := &s.Rules[i]
+		if p := r.GitLabProject; p != nil && p.Path != "" && p.ID == 0 && s.LookupCredential == "" {
+			return fmt.Errorf("rules[%d]: gitlab_project path lookups need lookup_credential", i)
+		}
+		sr := r.Subrequest
+		if sr == nil {
+			continue
+		}
+		for _, name := range sr.Credentials {
+			if !slices.Contains(s.Credentials, name) {
+				return fmt.Errorf("rules[%d]: subrequest.credentials %q is not in credentials", i, name)
+			}
+			if !c.Credentials[name].Elevated() {
+				return fmt.Errorf("rules[%d]: subrequest.credentials %q must be elevated (allow subrequest without agent)", i, name)
+			}
+		}
+	}
+	return nil
+}
+
+// validateFilterIDs checks that each filter id names one placement and
+// that every subrequest.filters entry names one. Profiles are read as
+// written, before extends copies a parent's placements into a child.
+func (c *Config) validateFilterIDs() error {
+	ids := map[string]string{}
+	var refs []string
+	add := func(where string, fs []FilterRef) error {
+		for i, f := range fs {
+			if f.ID == "" {
+				continue
+			}
+			at := fmt.Sprintf("%s filters[%d]", where, i)
+			if prev, ok := ids[f.ID]; ok {
+				return fmt.Errorf("%s: filter id %q is already used by %s", at, f.ID, prev)
+			}
+			ids[f.ID] = at
+		}
+		return nil
+	}
+	addRules := func(where string, rules []Rule) error {
+		for i := range rules {
+			err := add(fmt.Sprintf("%s rules[%d]", where, i), rules[i].Filters)
+			if err != nil {
+				return err
+			}
+			if sr := rules[i].Subrequest; sr != nil {
+				refs = append(refs, sr.Filters...)
+			}
+		}
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.Profiles)) {
+		p := c.Profiles[name]
+		where := fmt.Sprintf("profile %q", name)
+		err := add(where, p.Filters)
+		if err != nil {
+			return err
+		}
+		for _, s := range p.HTTP {
+			w := fmt.Sprintf("%s http %q", where, s.Name)
+			err = add(w, s.Filters)
+			if err == nil {
+				err = addRules(w, s.Rules)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		for _, s := range p.SSH {
+			w := fmt.Sprintf("%s ssh %q", where, s.Name)
+			err = add(w, s.Filters)
+			if err == nil {
+				err = addRules(w, s.Rules)
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range refs {
+		if _, ok := ids[id]; !ok {
+			return fmt.Errorf("subrequest.filters %q is not the id of any filter", id)
 		}
 	}
 	return nil
@@ -912,6 +1141,17 @@ func normalizeRules(rules []Rule) error {
 				default:
 					return fmt.Errorf("rules[%d]: graphql.operations must be query, mutation or subscription", i)
 				}
+			}
+		}
+		if sr := r.Subrequest; sr != nil {
+			if sr.Filters == nil && sr.Credentials == nil {
+				return fmt.Errorf("rules[%d]: subrequest needs filters or credentials", i)
+			}
+			if sr.Filters != nil && len(sr.Filters) == 0 {
+				return fmt.Errorf("rules[%d]: subrequest.filters is empty", i)
+			}
+			if sr.Credentials != nil && len(sr.Credentials) == 0 {
+				return fmt.Errorf("rules[%d]: subrequest.credentials is empty", i)
 			}
 		}
 		if r.SSH != nil && r.SSH.Command != "" {

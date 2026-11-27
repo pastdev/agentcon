@@ -57,6 +57,7 @@ func TestNew(t *testing.T) {
 default_profile: p
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: provided
 profiles:
@@ -72,6 +73,7 @@ profiles:
 default_profile: p
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: provided
 profiles:
@@ -101,6 +103,7 @@ bitwarden:
     password: {source: provided}
 credentials:
   bw:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work
@@ -207,6 +210,7 @@ func TestControl(t *testing.T) {
 default_profile: p
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: env
       env: SMOKE_TOKEN
@@ -218,7 +222,7 @@ profiles:
 		d, err := New(Options{ConfigPath: cfg, StateDir: state})
 		require.NoError(t, err)
 		t.Setenv("SMOKE_TOKEN", "from-os")
-		v, err := d.creds.Get(context.Background(), "tok")
+		v, err := d.creds.Get(context.Background(), "tok", config.AllowAgent)
 		require.NoError(t, err)
 		assert.Equal(t, "from-os", v.Token)
 		token, err := os.ReadFile(AdminTokenPath(state))
@@ -230,7 +234,7 @@ profiles:
 			body:       `{"SMOKE_TOKEN":"from-put"}`,
 			wantStatus: http.StatusNoContent,
 		})
-		v, err = d.creds.Get(context.Background(), "tok")
+		v, err = d.creds.Get(context.Background(), "tok", config.AllowAgent)
 		require.NoError(t, err)
 		assert.Equal(t, "from-put", v.Token)
 	})
@@ -244,10 +248,12 @@ profiles:
 default_profile: p
 credentials:
   tok:
+    allow: [agent, subrequest]
     token:
       source: file
       file: `+secret+`
   extra:
+    allow: [agent, subrequest]
     token:
       source: provided
 profiles:
@@ -257,7 +263,7 @@ profiles:
 		state := filepath.Join(dir, "state")
 		d, err := New(Options{ConfigPath: cfg, StateDir: state})
 		require.NoError(t, err)
-		v, err := d.creds.Get(context.Background(), "tok")
+		v, err := d.creds.Get(context.Background(), "tok", config.AllowAgent)
 		require.NoError(t, err)
 		assert.Equal(t, "from-file", v.Token)
 		token, err := os.ReadFile(AdminTokenPath(state))
@@ -269,10 +275,10 @@ profiles:
 			body:       `{"tok.token":"from-put","extra.token":"provided-put"}`,
 			wantStatus: http.StatusNoContent,
 		})
-		v, err = d.creds.Get(context.Background(), "tok")
+		v, err = d.creds.Get(context.Background(), "tok", config.AllowAgent)
 		require.NoError(t, err)
 		assert.Equal(t, "from-put", v.Token)
-		v, err = d.creds.Get(context.Background(), "extra")
+		v, err = d.creds.Get(context.Background(), "extra", config.AllowAgent)
 		require.NoError(t, err)
 		assert.Equal(t, "provided-put", v.Token)
 	})
@@ -376,6 +382,7 @@ func TestStartupStatus(t *testing.T) {
     server: ` + srv.URL + `
 credentials:
   bw:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work
@@ -515,6 +522,7 @@ bitwarden:
     password: `+source+`
 credentials:
   bw:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work
@@ -668,7 +676,7 @@ func TestCreateSessionSignerURL(t *testing.T) {
 prompts: {notify: false}
 credentials:
   sign:
-    internal: true
+    allow: [internal]
     private_key: {source: provided}
 profiles:
   plain: {}
@@ -732,6 +740,7 @@ func TestCredentialErrorsStayInTheLog(t *testing.T) {
 prompts: {notify: false}
 credentials:
   gl:
+    allow: [agent, subrequest]
     token:
       source: command
       command: [sh, -c, "echo s3cret-stderr >&2; exit 1"]
@@ -740,7 +749,8 @@ profiles:
     http:
       - name: gitlab
         hosts: [gitlab.example.com]
-        credential: gl
+        credentials: [gl]
+        lookup_credential: gl
 `), 0o600)
 		require.NoError(t, err)
 		logs := &lockedBuffer{}
@@ -751,63 +761,9 @@ profiles:
 
 	t.Run("gitlab project lookup", func(t *testing.T) {
 		d, logs := newDaemon(t)
-		_, err := d.resolveGitLabProject(t.Context(), "gitlab", "gitlab.example.com", "group/project")
+		svc := d.Config().Profiles["p"].HTTP[0]
+		_, err := d.env.Resolver(t.Context(), svc, "gitlab.example.com", "group/project")
 		tester(t, testCase{err: err, logs: logs})
-	})
-	t.Run("filter credential", func(t *testing.T) {
-		d, logs := newDaemon(t)
-		_, err := d.env.Credential(t.Context(), "gl")
-		tester(t, testCase{err: err, logs: logs})
-	})
-}
-
-func TestFilterCredentialRefusesInternal(t *testing.T) {
-	type testCase struct {
-		name    string
-		want    string
-		wantErr bool
-	}
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "config.yaml")
-	err := os.WriteFile(cfg, []byte(`default_profile: p
-prompts: {notify: false}
-credentials:
-  signing:
-    internal: true
-    private_key: {source: provided}
-  plain:
-    token: {source: provided}
-profiles:
-  p: {}
-`), 0o600)
-	require.NoError(t, err)
-	logs := &lockedBuffer{}
-	d, err := New(Options{
-		ConfigPath: cfg,
-		StateDir:   filepath.Join(dir, "state"),
-		Log:        zerolog.New(logs),
-		Provided:   map[string]string{"signing.private_key": "armored-key", "plain.token": "tok"},
-	})
-	require.NoError(t, err)
-	tester := func(t *testing.T, tc testCase) {
-		t.Helper()
-		got, err := d.env.Credential(t.Context(), tc.name)
-		if tc.wantErr {
-			require.Error(t, err)
-			assert.NotContains(t, err.Error(), "armored-key")
-			assert.Empty(t, got)
-			return
-		}
-		require.NoError(t, err)
-		assert.Equal(t, tc.want, got)
-	}
-
-	t.Run("internal credential is unavailable", func(t *testing.T) {
-		tester(t, testCase{name: "signing", wantErr: true})
-		assert.Contains(t, logs.String(), "filter asked for an internal credential")
-	})
-	t.Run("other credential is readable", func(t *testing.T) {
-		tester(t, testCase{name: "plain", want: "tok"})
 	})
 }
 
@@ -825,10 +781,12 @@ func TestClientClearsCredentials(t *testing.T) {
 prompts: {notify: false}
 credentials:
   from-env:
+    allow: [agent, subrequest]
     token:
       source: env
       env: AGENTCON_TEST_CLEAR_ENV
   from-provided:
+    allow: [agent, subrequest]
     token:
       source: provided
 profiles:
@@ -847,13 +805,13 @@ profiles:
 
 		err = tc.put(c, ctx, tc.set)
 		require.NoError(t, err)
-		sec, err := d.creds.Get(ctx, tc.cred)
+		sec, err := d.creds.Get(ctx, tc.cred, config.AllowAgent)
 		require.NoError(t, err)
 		assert.Equal(t, "s3cret", sec.Token)
 
 		err = tc.put(c, ctx, map[string]string{})
 		require.NoError(t, err)
-		_, err = d.creds.Get(ctx, tc.cred)
+		_, err = d.creds.Get(ctx, tc.cred, config.AllowAgent)
 		require.Error(t, err, "the cleared value must not still resolve")
 	}
 
@@ -876,7 +834,7 @@ func TestReloadEvictsSigningKeys(t *testing.T) {
 prompts: {notify: false}
 credentials:
   sign:
-    internal: true
+    allow: [internal]
     cache: 1h
     private_key: {source: provided}
 profiles:
@@ -901,9 +859,13 @@ func TestFilterPlaceholderAndLiveSession(t *testing.T) {
 prompts: {notify: false}
 credentials:
   signing:
-    internal: true
+    allow: [internal]
     private_key: {source: provided}
   plain:
+    allow: [agent, subrequest]
+    token: {source: provided}
+  agent-only:
+    allow: [agent]
     token: {source: provided}
 profiles:
   p: {}
@@ -913,34 +875,35 @@ profiles:
 		ConfigPath: cfg,
 		StateDir:   filepath.Join(dir, "state"),
 		Log:        zerolog.Nop(),
-		Provided:   map[string]string{"signing.private_key": "armored-key", "plain.token": "tok"},
+		Provided:   map[string]string{"signing.private_key": "armored-key", "plain.token": "tok", "agent-only.token": "a"},
 	})
 	require.NoError(t, err)
 
 	t.Run("placeholder", func(t *testing.T) {
 		type testCase struct {
 			name    string
-			want    string
 			wantErr string
 		}
 		tester := func(t *testing.T, tc testCase) {
 			t.Helper()
-			got, err := d.env.Placeholder(tc.name)
+			err := d.env.Placeholder(tc.name)
 			if tc.wantErr != "" {
 				require.ErrorContains(t, err, tc.wantErr)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, got)
 		}
-		t.Run("a configured credential", func(t *testing.T) {
-			tester(t, testCase{name: "plain", want: "bouncer-placeholder-plain"})
+		t.Run("a credential that allows subrequest", func(t *testing.T) {
+			tester(t, testCase{name: "plain"})
 		})
 		t.Run("an unknown credential", func(t *testing.T) {
 			tester(t, testCase{name: "nope", wantErr: `no credential named "nope"`})
 		})
 		t.Run("an internal credential", func(t *testing.T) {
-			tester(t, testCase{name: "signing", wantErr: "internal"})
+			tester(t, testCase{name: "signing", wantErr: `credential "signing" does not allow subrequest`})
+		})
+		t.Run("an agent-only credential", func(t *testing.T) {
+			tester(t, testCase{name: "agent-only", wantErr: `credential "agent-only" does not allow subrequest`})
 		})
 	})
 

@@ -1,12 +1,41 @@
 package jsfilter
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"maps"
 	"net/http"
 
 	"github.com/dop251/goja"
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
+	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
+
+// placeholder backs placeholder(name). It returns a new one-time string
+// for the credential, which Bouncer replaces only in this run's
+// subrequests, and only where the request may use the credential.
+func (i *instance) placeholder(call goja.FunctionCall) goja.Value {
+	vm := i.vm
+	name, ok := call.Argument(0).Export().(string)
+	if !ok || name == "" {
+		panic(vm.NewTypeError("placeholder(name) requires a credential name"))
+	}
+	if i.cur == nil || i.placeholders == nil {
+		panic(vm.NewTypeError("placeholder() can only be called while handling a request"))
+	}
+	if check := i.f.opts.Env.Placeholder; check != nil {
+		err := check(name)
+		if err != nil {
+			panic(vm.NewTypeError("placeholder: " + err.Error()))
+		}
+	}
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	v := config.Placeholder(name) + "-" + hex.EncodeToString(b[:])
+	i.placeholders[v] = name
+	return vm.ToValue(v)
+}
 
 // subrequest backs subrequest(init). It sends an HTTP request through
 // Bouncer's policy for the current request's session and resolves with the
@@ -23,7 +52,8 @@ func (i *instance) subrequest(call goja.FunctionCall) goja.Value {
 	}
 	spec := i.subrequestSpec(call.Argument(0))
 	return i.blocking(func() (goja.Value, error) {
-		resp, u, err := send(req, i.f.name, spec)
+		caller := chain.SubrequestCaller{Filter: i.f.name, ID: i.f.opts.ID, Placeholders: maps.Clone(i.placeholders)}
+		resp, u, err := send(req, caller, spec)
 		if err != nil {
 			return nil, err
 		}
