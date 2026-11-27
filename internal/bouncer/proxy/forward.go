@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -29,9 +30,13 @@ func (s *Server) forwarder(svc *policy.Service, origLength int64) chain.Handler 
 			return synthetic(http.StatusForbidden, "agent-bouncer: protocol upgrades on "+svc.Config.Name+" are not allowed (the upgraded stream can't be filtered); set allow_upgrade: true to permit"), nil
 		}
 		var querySecrets []string
+		// substituted is the outbound body when a secret was placed in it.
+		// It stays local to the upstream request, so filters reading req.body
+		// afterwards, such as in onResponse, still see the placeholder.
+		var substituted []byte
 		if credentialed {
 			var resp *chain.Response
-			querySecrets, resp = s.attach(svc, req, header, &u)
+			querySecrets, substituted, resp = s.attach(svc, req, header, &u)
 			if resp != nil {
 				return resp, nil
 			}
@@ -42,7 +47,13 @@ func (s *Server) forwarder(svc *policy.Service, origLength int64) chain.Handler 
 			length = origLength
 		}
 		var body io.ReadCloser = http.NoBody
-		if length != 0 {
+		switch {
+		case substituted != nil:
+			length = int64(len(substituted))
+			if length != 0 {
+				body = io.NopCloser(bytes.NewReader(substituted))
+			}
+		case length != 0:
 			body = req.Body.Reader()
 		}
 		out, err := http.NewRequestWithContext(req.Ctx, req.Method, u.String(), body)
@@ -109,28 +120,29 @@ func synthetic(status int, msg string) *chain.Response {
 }
 
 // attach replaces the placeholders req may use and applies inject, or
-// strips them when the request is forwarded without credentials. It
-// returns the secrets it put in the query, or a response that ends the
-// request instead.
-func (s *Server) attach(svc *policy.Service, req *chain.Request, header http.Header, u *url.URL) ([]string, *chain.Response) {
+// strips them when the request is forwarded without credentials. header
+// and u are the outbound copies. It returns the secrets it put in the
+// query, the outbound body when it placed a secret there (nil otherwise),
+// or a response that ends the request instead. It never changes req.
+func (s *Server) attach(svc *policy.Service, req *chain.Request, header http.Header, u *url.URL) ([]string, []byte, *chain.Response) {
 	var body []byte
 	if req.Subrequest != nil && len(req.Placeholders) > 0 && req.Body != nil {
 		b, err := req.Body.ReadAll()
 		if err != nil {
-			return nil, synthetic(http.StatusBadGateway, "agent-bouncer: read subrequest body: "+err.Error())
+			return nil, nil, synthetic(http.StatusBadGateway, "agent-bouncer: read subrequest body: "+err.Error())
 		}
 		body = b
 	}
 	plan := credinject.NewPlan(svc.Config, req, header, u, body, s.Creds.Credential)
 	if req.SkipCredential {
 		plan.Strip(header, u)
-		return nil, nil
+		return nil, nil, nil
 	}
 	if len(plan.Used) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if u.Scheme != "https" && !svc.Config.Insecure {
-		return nil, synthetic(http.StatusForbidden, "agent-bouncer: refusing to send credentials over plain HTTP; use https (or set insecure: true on the service for local development)")
+		return nil, nil, synthetic(http.StatusForbidden, "agent-bouncer: refusing to send credentials over plain HTTP; use https (or set insecure: true on the service for local development)")
 	}
 	kind := credinject.Kind(req)
 	secrets := map[string]creds.Secret{}
@@ -138,14 +150,17 @@ func (s *Server) attach(svc *policy.Service, req *chain.Request, header http.Hea
 		secret, err := s.Creds.Get(req.Ctx, name, kind)
 		if err != nil {
 			creds.LogError(s.Log.Warn(), err).Str("service", svc.Config.Name).Str("credential", name).Msg("credential unavailable")
-			return nil, synthetic(http.StatusBadGateway, "agent-bouncer: "+creds.Unavailable(svc.Config.Name).Error())
+			return nil, nil, synthetic(http.StatusBadGateway, "agent-bouncer: "+creds.Unavailable(svc.Config.Name).Error())
 		}
 		secrets[name] = secret
 	}
 	newBody, querySecrets := plan.Apply(header, u, body, secrets)
-	if plan.Body {
-		req.Body.Set(newBody)
-	}
 	req.Credentials = plan.Used
-	return querySecrets, nil
+	if !plan.Body {
+		return querySecrets, nil, nil
+	}
+	if newBody == nil {
+		newBody = []byte{}
+	}
+	return querySecrets, newBody, nil
 }

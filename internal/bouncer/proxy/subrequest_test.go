@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -205,9 +206,30 @@ type elevatedEnv struct {
 	base  string
 }
 
-func setupElevated(t *testing.T) *elevatedEnv {
+// echoBodiesFilter answers with the request body it sees after the
+// forwarder ran, then the upstream's answer.
+const echoBodiesFilter = `import { defineFilter, respond } from "bouncer";
+export default defineFilter({
+  async onResponse(res, req) {
+    return respond(200, "filter-saw=" + (await req.body.text()) + " upstream=" + (await res.body.text()));
+  },
+});`
+
+// setupElevated builds the service. filters, when set, is a service
+// filters: entry.
+func setupElevated(t *testing.T, filters ...string) *elevatedEnv {
 	t.Helper()
 	e := &elevatedEnv{audit: &auditSink{}}
+	dir := t.TempDir()
+	svcFilters := ""
+	for i, src := range filters {
+		p := filepath.Join(dir, fmt.Sprintf("f%d.ts", i))
+		require.NoError(t, os.WriteFile(p, []byte(src), 0o600))
+		svcFilters += "\n          - path: " + p
+	}
+	if svcFilters != "" {
+		svcFilters = "\n        filters:" + svcFilters
+	}
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/secrets/redirect" {
 			http.Redirect(w, r, "/other", http.StatusTemporaryRedirect)
@@ -234,14 +256,14 @@ profiles:
       - name: api
         hosts: ["localhost:`+port+`"]
         credentials: [tok, audit]
-        inject: {credential: tok, bearer: true}
+        inject: {credential: tok, bearer: true}`+svcFilters+`
         rules:
           - action: allow
             path: /secrets/**
             subrequest: {credentials: [audit]}
           - action: allow
             path: /**
-`), filepath.Join(t.TempDir(), "config.yaml"))
+`), filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
 	set, err := policy.Compile(cfg, &chain.Env{Log: zerolog.Nop()}, nil)
 	require.NoError(t, err)
@@ -258,6 +280,26 @@ profiles:
 		Dialer:    &net.Dialer{},
 	}
 	return e
+}
+
+func TestSubstitutedBodyStaysOutOfFilters(t *testing.T) {
+	const ph = "bouncer-placeholder-audit-0123456789abcdef"
+	e := setupElevated(t, echoBodiesFilter)
+	parent := &chain.Request{Ctx: context.Background(), Transport: chain.TransportHTTP, Session: &chain.Session{ID: "s1", Profile: "p"},
+		Method: http.MethodPost, URL: &url.URL{Scheme: "https", Host: "github.com", Path: "/o/r.git/git-receive-pack"}}
+	caller := chain.SubrequestCaller{Filter: "f", Placeholders: map[string]string{ph: "audit"}}
+	resp, _, err := e.srv.Subrequest(parent, caller, chain.SubrequestSpec{
+		Method: http.MethodPost, URL: e.base + "/secrets/create",
+		Header: http.Header{"Content-Type": {"application/json"}}, Body: []byte(`{"token":"` + ph + `"}`),
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	b, err := resp.Body.ReadAll()
+	require.NoError(t, err)
+	saw, upstream, ok := strings.Cut(string(b), " upstream=")
+	require.True(t, ok, string(b))
+	assert.Equal(t, `filter-saw={"token":"`+ph+`"}`, saw, "the filter sees the placeholder, never the secret")
+	assert.Contains(t, upstream, `body={"token":"audit\"&secret"}`, "the upstream got the secret")
 }
 
 func TestElevatedSubrequest(t *testing.T) {
