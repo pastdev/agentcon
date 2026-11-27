@@ -167,8 +167,15 @@ A rule's `Subrequest` check runs before its other matchers, so an agent request 
 ## GitLab project resolver
 
 The resolver moves from `internal/bouncer/daemon/daemon.go` (`resolveGitLabProject`) into a new package, `internal/bouncer/gitlab`.
-It takes a transport, a credential getter, and the service lookup, and keeps its per service, host, and project cache.
+It takes a transport and a credential getter.
 The daemon only wires it into `chain.Env.Resolver`.
+
+The resolver is scoped to the profile that matched the request.
+Today it gets only the service's name and host, searches every profile, and keeps the last match, so one profile's request can use another profile's credential.
+`chain.ProjectResolver` becomes `func(ctx context.Context, svc *config.Service, host, project string) (int64, error)`.
+`matchGitLabProject` passes the service that `chain.NewRules` already holds, and the search across profiles is removed.
+The cache key is `lookup_credential`, host, and project.
+Credential names are global, so profiles share a result only when they look up with the same token.
 
 The lookup sends `GET https://<host>/api/v4/projects/<path>` with `Authorization: Bearer <lookup_credential>`.
 GitLab accepts Bearer for personal, project, and group access tokens and for OAuth tokens, while `PRIVATE-TOKEN` does not take OAuth tokens.
@@ -209,6 +216,9 @@ It reads the secret with request kind `agent`, so the store refuses an elevated 
 - GitLab resolver: an agent request with a numeric project ID, on a service whose subrequest rule lists `gitlab-audit`, sends only the `lookup_credential` token.
   An agent request never calls the resolver for a subrequest-only rule.
   The existing `daemon_test.go` resolver test moves to the new package.
+- GitLab resolver isolation: two profiles each define service `gitlab` on the same host, with `lookup_credential` `gitlab-ro` and `gitlab-dev`.
+  A request in the first profile looks up with only `gitlab-ro`.
+  A request in the second profile for the same project then does its own lookup with `gitlab-dev` rather than reusing the first one's cache entry.
 - Elevated credentials: a placeholder is replaced on a rule listing the credential, and left as text on another allowed route of the same service and on a redirect hop to one.
 - Store: `Get` refuses by kind.
 - Test runner: `expect_credentials` in steps and fixtures.
