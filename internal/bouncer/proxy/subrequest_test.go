@@ -42,13 +42,13 @@ export default defineFilter({
 type subEnv struct {
 	srv    *Server
 	client *http.Client
-	audit  []audit.Entry
+	audit  *auditSink
 	port   string
 }
 
 func setupSubrequest(t *testing.T, rules string) *subEnv {
 	t.Helper()
-	e := &subEnv{}
+	e := &subEnv{audit: &auditSink{}}
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "auth="+r.Header.Get("Authorization")+" path="+r.URL.Path) //nolint:gosec // test upstream echoes the request on purpose
 	}))
@@ -88,7 +88,7 @@ profiles:
 		Backend:   &fakeBackend{set: set, sessions: map[string]*chain.Session{"tok123": {ID: "s1", Profile: "p"}}},
 		CA:        authority,
 		Creds:     creds.NewStore(cfg.Credentials),
-		Audit:     audit.New(zerolog.New(entryWriter{&e.audit})),
+		Audit:     audit.New(zerolog.New(e.audit)),
 		Transport: tr,
 		Dialer:    &net.Dialer{},
 	}
@@ -121,10 +121,12 @@ func TestSubrequestThroughProxy(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, strings.ReplaceAll(tc.want, "PORT", e.port), string(b))
 
+		// The subrequest's entry and the parent's.
+		entries := e.audit.wait(t, 2)
 		var sub *audit.Entry
-		for i := range e.audit {
-			if e.audit[i].Subrequest != nil {
-				sub = &e.audit[i]
+		for i := range entries {
+			if entries[i].Subrequest != nil {
+				sub = &entries[i]
 			}
 		}
 		require.NotNil(t, sub, "the subrequest is audited")
@@ -168,8 +170,9 @@ func TestSubrequestFromSSHParent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "auth=Bearer real-secret path=/rules/main", string(b))
 	assert.Equal(t, "https://localhost:"+e.port+"/rules/main", u.String())
-	require.Len(t, e.audit, 1)
-	assert.Equal(t, "ssh git@github.com git: git-receive-pack 'o/r.git'", e.audit[0].Subrequest.Parent)
+	entries := e.audit.wait(t, 1)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "ssh git@github.com git: git-receive-pack 'o/r.git'", entries[0].Subrequest.Parent)
 }
 
 func TestSubrequestUpstreamFailureRejects(t *testing.T) {
