@@ -69,6 +69,12 @@ cases:
         expect: deny
         expect_reason: "did not answer a count"
 
+  - name: the ref advertisement before a push looks nothing up
+    steps:
+      - request:
+          url: https://github.com/myorg/myrepo.git/info/refs?service=git-receive-pack
+        expect: allow
+
   - name: fetches never look anything up
     steps:
       - request:

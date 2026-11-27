@@ -39,6 +39,10 @@ interface Config {
 async function check(req: HttpRequest | SshRequest, git: Git | null, cfg: Config) {
   if (req.subrequest) return null;
   if (git?.service !== "receive-pack") return null;
+  // A push is a ref advertisement (GET info/refs) and then the pack (POST
+  // git-receive-pack). Only the POST carries ref updates, so look up once
+  // per push, there.
+  if ((await git.refUpdates()).length === 0) return null;
   const api = (cfg.api ?? "https://api.github.com").replace(/\/+$/, "");
   // git.repo is owner/repo, already matched by the rule this filter is on.
   const url = `${api}/repos/${git.repo}/actions/secrets?per_page=1`;
