@@ -108,7 +108,7 @@ cases:
     steps:
       - request: {method: POST, url: "https://github.com/myorg/myrepo.git/git-receive-pack", git_push: [{ref: refs/heads/feature}]}
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100
             body: '[]'
             expect_credential: true
         expect: allow
@@ -117,7 +117,7 @@ cases:
     steps:
       - request: {method: POST, url: "https://github.com/myorg/myrepo.git/git-receive-pack", git_push: [{ref: refs/heads/staging}]}
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/staging
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/staging?per_page=100
             body: '[{"type": "update"}]'
         expect: deny
         expect_reason: "GitHub rule 'update' protects branch 'staging'"
@@ -125,7 +125,7 @@ cases:
     steps:
       - ssh: {host: github.com, user: git, command: "git-receive-pack 'myorg/myrepo.git'", git_push: [{ref: refs/heads/staging}]}
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/staging
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/staging?per_page=100
             body: '[{"type": "update"}]'
             expect_credential: true
         expect: deny

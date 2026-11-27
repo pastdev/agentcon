@@ -5,6 +5,13 @@
 // rulesets, which need only read access. Classic branch protection is not
 // included.
 //
+// GitHub enforces rulesets on its own. This filter matters when the token's
+// owner can bypass them: GitHub's protections apply to the token's owner,
+// and it cannot tell the agent from that person. A repo admin on a bypass
+// list may push to a protected branch, and so would an agent using that
+// admin's token. This filter applies the rules to the agent regardless.
+// Without a bypass, it only refuses the push earlier with a clearer reason.
+//
 // The lookup is a subrequest. It goes through the policy of the service its
 // host matches, as this session, so that service must allow it and inject
 // its credential. A lookup that fails, is denied, or answers anything but
@@ -36,7 +43,7 @@ function branchPath(branch: string): string {
 }
 
 async function rulesFor(api: string, repo: string, branch: string): Promise<string[] | string> {
-  const url = `${api}/repos/${repo}/rules/branches/${branchPath(branch)}`;
+  const url = `${api}/repos/${repo}/rules/branches/${branchPath(branch)}?per_page=100`;
   let r;
   try {
     r = await subrequest({ url, headers: { Accept: "application/vnd.github+json" } });

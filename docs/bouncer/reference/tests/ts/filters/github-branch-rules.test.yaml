@@ -6,7 +6,7 @@ cases:
           url: https://github.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: refs/heads/main}]
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100
             body: '[{"type": "update"}, {"type": "deletion"}]'
             expect_header: {Accept: application/vnd.github+json}
         expect: deny
@@ -19,7 +19,7 @@ cases:
           url: https://github.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: refs/heads/main}]
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100
             body: '[{"type": "pull_request"}]'
         expect: deny
         expect_reason: "'pull_request'"
@@ -31,7 +31,7 @@ cases:
           url: https://github.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: refs/heads/feature}]
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100
             body: '[]'
         expect: allow
 
@@ -42,7 +42,7 @@ cases:
           url: https://github.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: refs/heads/feature}]
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100
             body: '[{"type": "deletion"}, {"type": "required_signatures"}]'
         expect: allow
 
@@ -53,7 +53,7 @@ cases:
           url: https://github.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: refs/heads/release, type: delete}]
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/release
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/release?per_page=100
             body: '[{"type": "deletion"}]'
         expect: deny
         expect_reason: "'deletion'"
@@ -65,7 +65,7 @@ cases:
           url: https://github.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: refs/heads/release/2.0, type: create}]
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/release/2.0
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/release/2.0?per_page=100
             body: '[{"type": "creation"}]'
         expect: deny
         expect_reason: "'creation'"
@@ -78,7 +78,7 @@ cases:
           url: https://github.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: refs/heads/main}]
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100
             body: '[{"type": "update"}, {"type": "non_fast_forward"}]'
         expect: deny
         expect_reason: "'non_fast_forward'"
@@ -90,7 +90,7 @@ cases:
           url: https://github.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: "refs/heads/fix/a#b"}]
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/fix/a%23b
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/fix/a%23b?per_page=100
             body: '[]'
         expect: allow
 
@@ -101,8 +101,8 @@ cases:
           url: https://github.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: refs/heads/a}, {ref: refs/heads/b}, {ref: refs/heads/a}]
         subrequests:
-          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/a", body: "[]"}
-          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/b", body: "[]"}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/a?per_page=100", body: "[]"}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/b?per_page=100", body: "[]"}
         expect: allow
 
   - name: tags are not looked up
@@ -120,7 +120,7 @@ cases:
           url: https://github.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: refs/heads/feature}]
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100
             error: connection refused
         expect: deny
         expect_reason: "branch rules lookup for 'feature' failed: subrequest: connection refused"
@@ -132,7 +132,7 @@ cases:
           url: https://github.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: refs/heads/feature}]
         subrequests:
-          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/feature", status: 404}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100", status: 404}
         expect: deny
         expect_reason: "answered 404"
 
@@ -144,7 +144,7 @@ cases:
           command: "git-receive-pack 'myorg/myrepo.git'"
           git_push: [{ref: refs/heads/main}]
         subrequests:
-          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100
             body: '[{"type": "update"}]'
         expect: deny
         expect_reason: "'update'"
@@ -157,7 +157,7 @@ cases:
           url: https://github.example.com/myorg/myrepo.git/git-receive-pack
           git_push: [{ref: refs/heads/main}]
         subrequests:
-          - {url: "https://github.example.com/api/v3/repos/myorg/myrepo/rules/branches/main", body: "[]"}
+          - {url: "https://github.example.com/api/v3/repos/myorg/myrepo/rules/branches/main?per_page=100", body: "[]"}
         expect: allow
 
   - name: fetches are not checked

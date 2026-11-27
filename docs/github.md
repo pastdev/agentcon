@@ -20,7 +20,7 @@ A token with Workflows can push a new workflow that reads every secret the repo 
 Do not grant Administration, Secrets, Variables, Environments, or Actions either.
 
 A fine-grained token acts as the user who owns it.
-Keep that user off the bypass list of every ruleset the agent must not get past.
+Keep that user off the bypass list of every ruleset the agent must not get past, or use the filter in [Branch rules](#branch-rules).
 
 ## Workflows
 
@@ -48,9 +48,14 @@ Any workflow in the repo can read them.
 
 ## Branch rules
 
-The `github-branch-rules.ts` filter in [the reference policy](bouncer/reference/bouncers.yaml) asks GitHub which rulesets apply to each pushed branch and denies the push before it leaves Bouncer.
+GitHub enforces rulesets and classic branch protection on its own, against the user who owns the token.
+It cannot tell the agent from that user.
+When the owner can bypass a ruleset, such as a repo admin on its bypass list, so can an agent using the owner's token.
+
+The `github-branch-rules.ts` filter in [the reference policy](bouncer/reference/bouncers.yaml) closes that gap for rulesets.
+It asks GitHub which rulesets apply to each pushed branch and denies the push before it leaves Bouncer, whoever owns the token.
 It sees rulesets only, not classic branch protection.
-GitHub still enforces both.
+When the owner cannot bypass anything, GitHub refuses the same pushes, and the filter only refuses them earlier with a clearer reason.
 
 ## Scenarios
 
