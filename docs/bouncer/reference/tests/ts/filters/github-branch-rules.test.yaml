@@ -1,0 +1,226 @@
+cases:
+  - name: a branch GitHub restricts is refused
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=1
+            body: '[{"type": "update"}, {"type": "deletion"}]'
+            expect_header: {Accept: application/vnd.github+json}
+        expect: deny
+        expect_reason: "GitHub rule 'update' protects branch 'main'"
+
+  - name: a branch that needs a pull request is refused
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=1
+            body: '[{"type": "pull_request"}]'
+        expect: deny
+        expect_reason: "'pull_request'"
+
+  - name: a branch with no rules is allowed
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/feature}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100&page=1
+            body: '[]'
+        expect: allow
+
+  - name: rules that do not block an update are ignored
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/feature}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100&page=1
+            body: '[{"type": "deletion"}, {"type": "required_signatures"}]'
+        expect: allow
+
+  - name: deleting a branch with a deletion rule is refused
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/release, type: delete}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/release?per_page=100&page=1
+            body: '[{"type": "deletion"}]'
+        expect: deny
+        expect_reason: "'deletion'"
+
+  - name: creating a branch with a creation rule is refused
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/release/2.0, type: create}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/release/2.0?per_page=100&page=1
+            body: '[{"type": "creation"}]'
+        expect: deny
+        expect_reason: "'creation'"
+
+  - name: block config replaces the rule types for an update kind
+    filter_config: {block: {update: [non_fast_forward]}}
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=1
+            body: '[{"type": "update"}, {"type": "non_fast_forward"}]'
+        expect: deny
+        expect_reason: "'non_fast_forward'"
+
+  - name: branch names are encoded per segment
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: "refs/heads/fix/a#b"}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/fix/a%23b?per_page=100&page=1
+            body: '[]'
+        expect: allow
+
+  - name: each branch is looked up once
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/a}, {ref: refs/heads/b}, {ref: refs/heads/a}]
+        subrequests:
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/a?per_page=100&page=1", body: "[]"}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/b?per_page=100&page=1", body: "[]"}
+        expect: allow
+
+  - name: tags are not looked up
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/tags/v1.0.0}]
+        expect: allow
+
+  - name: a failed lookup refuses the push
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/feature}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100&page=1
+            error: connection refused
+        expect: deny
+        expect_reason: "branch rules lookup for 'feature' failed: subrequest: connection refused"
+
+  - name: a lookup that is not 200 refuses the push
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/feature}]
+        subrequests:
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100&page=1", status: 404}
+        expect: deny
+        expect_reason: "answered 404"
+
+  - name: a blocking rule on a later page refuses the push
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          # A full page of 100 rules that do not block, so the filter reads on.
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=1
+            body: &full '[{"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}, {"type": "required_signatures"}]'
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=2
+            body: '[{"type": "update"}]'
+        expect: deny
+        expect_reason: "GitHub rule 'update' protects branch 'main'"
+
+  - name: a later page that fails refuses the push
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=1", body: *full}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=2", status: 502}
+        expect: deny
+        expect_reason: "branch rules lookup for 'main' page 2 answered 502"
+
+  - name: more than ten pages of rules refuses the push
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=1", body: *full}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=2", body: *full}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=3", body: *full}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=4", body: *full}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=5", body: *full}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=6", body: *full}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=7", body: *full}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=8", body: *full}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=9", body: *full}
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=10", body: *full}
+        expect: deny
+        expect_reason: "more than 1000 branch rules for 'main'; refusing to guess"
+
+  - name: an answer that is not a list refuses the push
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - {url: "https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=1", body: '{"message": "Not Found"}'}
+        expect: deny
+        expect_reason: "branch rules lookup for 'main' did not answer a list"
+
+  - name: ssh pushes are checked too
+    steps:
+      - ssh:
+          host: github.com
+          user: git
+          command: "git-receive-pack 'myorg/myrepo.git'"
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main?per_page=100&page=1
+            body: '[{"type": "update"}]'
+        expect: deny
+        expect_reason: "'update'"
+
+  - name: api config points at another host
+    filter_config: {api: "https://github.example.com/api/v3/"}
+    steps:
+      - request:
+          method: POST
+          url: https://github.example.com/myorg/myrepo.git/git-receive-pack
+          git_push: [{ref: refs/heads/main}]
+        subrequests:
+          - {url: "https://github.example.com/api/v3/repos/myorg/myrepo/rules/branches/main?per_page=100&page=1", body: "[]"}
+        expect: allow
+
+  - name: fetches are not checked
+    steps:
+      - request:
+          method: POST
+          url: https://github.com/myorg/myrepo.git/git-upload-pack
+        expect: allow

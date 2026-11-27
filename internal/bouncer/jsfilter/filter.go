@@ -176,6 +176,8 @@ type instance struct {
 	// it has moved on, so a filter can't stash next()/body and reuse them on
 	// a later (possibly different-session) request.
 	gen uint64
+	// subBodies are the bodies of this run's subrequest responses.
+	subBodies []*chain.Body
 }
 
 // live reports whether a closure created in generation gen may still act.
@@ -238,6 +240,7 @@ func (i *instance) run(req *chain.Request, next chain.Handler) (resp *chain.Resp
 	i.wd.start(i.f.opts.Timeout)
 	defer func() {
 		i.wd.stop()
+		i.closeSubBodies(resp)
 		i.cur = nil
 		var ie *goja.InterruptedError
 		if errors.As(err, &ie) {

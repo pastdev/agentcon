@@ -23,3 +23,20 @@ profiles:
         rules:
           - action: allow
             path: /in
+  lookup:
+    unmatched: tunnel
+    http:
+      - name: api
+        hosts: [api.example.com]
+        credential: tok
+        inject: {bearer: true}
+        filters:
+          - path: lookup.ts
+        rules:
+          - action: allow
+            path: /in
+          - action: allow
+            methods: [GET]
+            path: /rules/**
+          - action: deny
+            path: /secret/**

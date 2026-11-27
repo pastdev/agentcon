@@ -104,7 +104,7 @@ func (r *Rules) act(req *Request, next Handler, i int, action, by, reason, promp
 		if prompt == "" {
 			prompt = "Allow " + req.Describe() + "?"
 		}
-		ok, err := r.env.Approver.Ask(req.Ctx, AskRequest{Session: req.Session, Filter: r.name, Prompt: prompt, Request: req.Describe()})
+		ok, err := r.env.Approver.Ask(req.Ctx, AskRequest{Session: req.Session, Filter: r.name, Prompt: prompt, Request: req.Describe(), Origin: req.Subrequest.Origin()})
 		if err != nil {
 			return Deny(by, "approval failed: "+err.Error()), nil //nolint:nilerr // a failed approval is a deny, not an error
 		}

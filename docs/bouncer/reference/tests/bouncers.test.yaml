@@ -104,6 +104,36 @@ cases:
     steps:
       - ssh: {host: gitlab.com, user: git, command: "git-receive-pack 'mygroup/myproject.git'", git_push: [{ref: refs/heads/main}]}
         expect: deny
+  - name: github push to a branch without rules
+    steps:
+      - request: {method: POST, url: "https://github.com/myorg/myrepo.git/git-receive-pack", git_push: [{ref: refs/heads/feature}]}
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/feature?per_page=100&page=1
+            body: '[]'
+            expect_credential: true
+        expect: allow
+        expect_credential: true
+  - name: github push to a branch a ruleset restricts
+    steps:
+      - request: {method: POST, url: "https://github.com/myorg/myrepo.git/git-receive-pack", git_push: [{ref: refs/heads/staging}]}
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/staging?per_page=100&page=1
+            body: '[{"type": "update"}]'
+        expect: deny
+        expect_reason: "GitHub rule 'update' protects branch 'staging'"
+  - name: github ssh push to a branch a ruleset restricts
+    steps:
+      - ssh: {host: github.com, user: git, command: "git-receive-pack 'myorg/myrepo.git'", git_push: [{ref: refs/heads/staging}]}
+        subrequests:
+          - url: https://api.github.com/repos/myorg/myrepo/rules/branches/staging?per_page=100&page=1
+            body: '[{"type": "update"}]'
+            expect_credential: true
+        expect: deny
+        expect_reason: "'update'"
+  - name: github ssh push to another repo never looks anything up
+    steps:
+      - ssh: {host: github.com, user: git, command: "git-receive-pack 'myorg/other.git'", git_push: [{ref: refs/heads/feature}]}
+        expect: deny
   - name: ssh clone of the project
     steps:
       - ssh: {host: gitlab.com, user: git, command: "git-upload-pack 'mygroup/myproject.git'"}

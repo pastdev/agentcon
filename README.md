@@ -248,6 +248,7 @@ The agent reaches the network through that proxy.
 
 `default_profile` is required.
 [docs/bouncer/github](docs/bouncer/github) is a starting point for a GitHub allowlist, including filters.
+Read [docs/github.md](docs/github.md) before letting an agent push to GitHub.
 Copy it into `~/.config/agentcon.d`, then edit `bouncers.yaml` for your repo and Bitwarden items.
 Keep one `bouncers.yaml`.
 A leftover `bouncer.yaml` loses, because later files replace slices.

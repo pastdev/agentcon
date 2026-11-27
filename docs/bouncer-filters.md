@@ -198,6 +198,95 @@ An uncaught throw denies the request.
 [gitlab-issue-scope.ts](bouncer/reference/ts/filters/gitlab-issue-scope.ts) allows GitLab issue creation in the session's repositories and asks for any other.
 It denies GraphQL mutations not listed in its `allowMutations` config, since a mutation can create an issue in any project.
 
+### Subrequests
+
+`subrequest(init)` sends an HTTP request through Bouncer as the current session.
+A push filter can use it to check the provider's branch rules before the push goes upstream.
+
+```typescript
+import { defineFilter, deny, subrequest } from "bouncer";
+
+export default defineFilter({
+  async onRequest(req, next) {
+    if (req.git?.service !== "receive-pack") return next(req);
+    for (const u of await req.git.refUpdates()) {
+      const branch = u.ref.replace(/^refs\/heads\//, "");
+      const path = branch.split("/").map(encodeURIComponent).join("/");
+      const r = await subrequest({ url: `https://api.github.com/repos/${req.git.repo}/rules/branches/${path}` });
+      if (r.denied || r.status !== 200) return deny(`cannot check the rules for ${branch}`);
+      if ((await r.body.json()).length > 0) return deny(`${branch} has rules`);
+    }
+    return next(req);
+  },
+});
+```
+
+A subrequest is just another request from the session.
+It has exactly the session's authority, no more.
+
+- It runs the full chain of the HTTP service its host matches in the session's profile.
+  That is profile filters, service filters, rules, rule filters, and credential injection.
+  The service's rules must allow it, as they would an agent request.
+- A host with no `http` service follows the profile's `unmatched`, `tunnel`, and `allow_private` settings, with no credential.
+- `ask()` rules and filter prompts work as usual.
+  The prompt adds an `origin` line naming the filter and the request that caused the subrequest.
+- It works from `onRequest`, `onResponse`, and `onSSH`.
+  An SSH push filter reaches the provider's API through the profile's HTTP service for it.
+  At module top level it throws.
+- It sees the session's claims as they are now, including claims added earlier in the same request.
+
+`init` takes `url`, and optionally `method` (default `GET`), `headers`, `body`, `redirect`, and `timeout`.
+An object `body` is JSON-encoded, with `Content-Type: application/json` unless you set one.
+
+The result has the same shape as the response from `next()`, plus `url`, the final URL.
+It resolves for every response, including upstream errors and Bouncer denials.
+`denied` is `{by, reason}` when Bouncer's chain refused the subrequest, and `null` otherwise.
+It rejects only when there is no response at all.
+That covers an invalid URL or method, nesting too deep, too many redirects, a connection failure, a timeout, or a cancelled parent request.
+An uncaught rejection denies the request being filtered, so a failed lookup fails closed.
+
+Redirects are followed by default, up to 5.
+Each hop goes through the chain again, with the credential of the service it reaches.
+A hop to another host drops the `Authorization`, `Private-Token`, and `Cookie` headers the filter set.
+`redirect: "manual"` returns the 3xx instead.
+
+There is no default timeout.
+A subrequest ends with its parent request, for example when the agent's git client gives up.
+`timeout` (`"10s"` or seconds) bounds the whole subrequest, redirects and prompts included.
+Time spent waiting does not count toward the filter's CPU budget.
+
+Body reads keep the 16 MiB limit.
+Bouncer closes a body the filter did not read when the filter returns.
+
+A filter on the target service sees `req.subrequest`, a frozen `{filter, depth, parent}`.
+It is `null` for a request from the agent, and the agent cannot set it.
+Use it when a filter should treat a filter's own lookup differently.
+
+```typescript
+if (req.subrequest?.filter === "github-branch-rules") return next(req);
+```
+
+Subrequests nest at most 4 deep.
+A filter that runs on the service it calls, and calls it on every request, would otherwise loop.
+Past the limit, `subrequest()` rejects with `subrequest: depth 5 exceeds limit 4`.
+
+Values from the request are the agent's choice.
+Encode them before you put them in a URL.
+A branch name can contain `/`, `#`, or `%`.
+[github-branch-rules.ts](bouncer/reference/ts/filters/github-branch-rules.ts) encodes each path segment.
+
+A service without an `inject` spec only replaces its credential's placeholder, which the agent's environment carries.
+A filter sends the placeholder itself with `placeholder(name)`.
+
+```typescript
+await subrequest({
+  url: "https://gitlab.example.com/api/v4/projects/42/protected_branches",
+  headers: { "Private-Token": placeholder("gitlab") },
+});
+```
+
+`placeholder()` throws for an unknown credential or an `internal: true` one.
+
 ### Context and helpers
 
 `ctx.name` is the filter `name` field, or the file name.
@@ -362,6 +451,7 @@ A step sends one request.
 - `claim_answer`: the answer to every `requestClaim()` in the step that the session does not already satisfy.
   It is `session`, `once`, `deny`, or `timeout`.
   Unset means deny.
+- `subrequests`: fixtures that answer the step's `subrequest()` calls.
 
 A step checks any of these.
 
@@ -376,6 +466,41 @@ A step checks any of these.
 - `expect_upstream_header`: headers the upstream received.
 - `expect_credential`: whether the request reached the upstream with its service's credential.
   Leftover paths under `unmatched: tunnel` do not carry it.
+
+### Subrequest fixtures
+
+A step's `subrequests` answer every `subrequest()` its filters make.
+Nothing reaches the network.
+
+```yaml
+steps:
+  - request:
+      method: POST
+      url: https://github.com/myorg/myrepo.git/git-receive-pack
+      git_push: [{ref: refs/heads/main}]
+    subrequests:
+      - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main
+        body: '[{"type": "update"}]'
+        expect_header: {Accept: application/vnd.github+json}
+        expect_credential: true
+      - url: https://api.github.com/repos/myorg/myrepo/rules/branches/other
+        error: connection refused
+    expect: deny
+```
+
+- A fixture matches by `method` (default `GET`) and the exact `url`, query included.
+  A default port and a fragment are ignored.
+  It answers every call that matches.
+- It answers with `status` (default 200), `headers`, and `body`.
+  `error` makes the subrequest reject with that message instead.
+- `expect_header` checks headers the fixture received, after the chain ran.
+- `expect_credential` checks whether the subrequest arrived with its service's credential.
+  It needs a bouncer spec.
+- A subrequest without a fixture fails the step, and so does a fixture nothing called.
+- In a bouncer spec, a subrequest runs through the profile's real chain before it reaches its fixture.
+  A tunneled host is answered by a fixture too.
+  In a filter spec there is no chain, so a subrequest goes straight to its fixture.
+- A redirect is a fixture whose `Location` another fixture matches.
 
 ## Starting point
 

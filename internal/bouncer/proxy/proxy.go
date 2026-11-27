@@ -27,6 +27,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/gitproto"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
 	"github.com/pastdev/agentcon/internal/bouncer/signer"
+	"github.com/pastdev/agentcon/internal/bouncer/subreq"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
@@ -36,6 +37,9 @@ type Backend interface {
 	// anonymous session, if one is configured.
 	Session(token string) (*chain.Session, bool)
 	Profile(name string) (*policy.Profile, bool)
+	// LiveSession returns sess as it is now, with its current claims, or
+	// false once it has ended.
+	LiveSession(sess *chain.Session) (*chain.Session, bool)
 	// Control serves the /_bouncer/ API.
 	Control() http.Handler
 }
@@ -364,14 +368,8 @@ func (s *Server) intercept(w http.ResponseWriter, r *http.Request, sess *chain.S
 	if err == nil && (r.Method == http.MethodConnect || r.Method == http.MethodTrace) {
 		err = fmt.Errorf("method %s is not allowed to an intercepted service", r.Method)
 	}
-	if err == nil && !strings.HasPrefix(u.Path, "/") {
-		err = fmt.Errorf("request target %q is not an origin-form path", u.Path)
-	}
 	if err == nil {
-		err = chain.CheckPath(u.Path)
-	}
-	if err == nil {
-		err = chain.CheckMethodOverride(req)
+		err = subreq.Check(req)
 	}
 	if err != nil {
 		e.Decision, e.By, e.Reason, e.Status = audit.DecisionDeny, "bouncer", err.Error(), 400
@@ -611,4 +609,40 @@ type noSigner struct{}
 
 func (noSigner) Sign(context.Context, config.OpenPGPKey, []byte) (*signer.Signature, error) {
 	return nil, errors.New("no signer is configured")
+}
+
+// Subrequest implements chain.SubrequestFunc. A filter's subrequest goes
+// through the chain of the service its host matches, or the profile's
+// tunnel rules, exactly as an agent request to the same URL would.
+func (s *Server) Subrequest(parent *chain.Request, filter string, spec chain.SubrequestSpec) (*chain.Response, *url.URL, error) {
+	r := &subreq.Router{
+		Session:  s.Backend.LiveSession,
+		Profile:  s.Backend.Profile,
+		Terminal: s.terminal,
+		Tunnel:   s.tunnelSubrequest,
+		Audit:    s.Audit.Write,
+	}
+	return r.Do(parent, filter, spec) //nolint:wrapcheck // the router's errors are the messages filters see
+}
+
+// tunnelSubrequest sends a subrequest to a host the profile has no service
+// for. Like a tunneled agent request, it carries no credential.
+func (s *Server) tunnelSubrequest(prof *policy.Profile, req *chain.Request) (*chain.Response, error) {
+	length := req.Body.Len()
+	var body io.ReadCloser = http.NoBody
+	if length != 0 {
+		body = req.Body.Reader()
+	}
+	out, err := http.NewRequestWithContext(req.Ctx, req.Method, req.URL.String(), body)
+	if err != nil {
+		return nil, fmt.Errorf("subrequest: %w", err)
+	}
+	out.Header = req.Header.Clone()
+	out.ContentLength = length
+	resp, err := s.tunnelTransport(prof.AllowPrivate).RoundTrip(out)
+	if err != nil {
+		return nil, fmt.Errorf("subrequest: tunnel: %w", err)
+	}
+	removeHopHeaders(resp.Header)
+	return &chain.Response{Status: resp.StatusCode, Header: resp.Header, Body: chain.NewBody(resp.Body)}, nil
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/pastdev/agentcon/pkg/bouncer/claims"
 	"github.com/pastdev/agentcon/pkg/bouncer/config"
 	"github.com/pastdev/agentcon/pkg/bouncer/mgmt"
 	"github.com/pastdev/agentcon/pkg/bouncer/prompt"
@@ -891,4 +892,71 @@ profiles:
 	err = d.Reload()
 	require.NoError(t, err)
 	assert.Equal(t, 0, d.signer.Cached())
+}
+
+func TestFilterPlaceholderAndLiveSession(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(cfg, []byte(`default_profile: p
+prompts: {notify: false}
+credentials:
+  signing:
+    internal: true
+    private_key: {source: provided}
+  plain:
+    token: {source: provided}
+profiles:
+  p: {}
+`), 0o600)
+	require.NoError(t, err)
+	d, err := New(Options{
+		ConfigPath: cfg,
+		StateDir:   filepath.Join(dir, "state"),
+		Log:        zerolog.Nop(),
+		Provided:   map[string]string{"signing.private_key": "armored-key", "plain.token": "tok"},
+	})
+	require.NoError(t, err)
+
+	t.Run("placeholder", func(t *testing.T) {
+		type testCase struct {
+			name    string
+			want    string
+			wantErr string
+		}
+		tester := func(t *testing.T, tc testCase) {
+			t.Helper()
+			got, err := d.env.Placeholder(tc.name)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		}
+		t.Run("a configured credential", func(t *testing.T) {
+			tester(t, testCase{name: "plain", want: "bouncer-placeholder-plain"})
+		})
+		t.Run("an unknown credential", func(t *testing.T) {
+			tester(t, testCase{name: "nope", wantErr: `no credential named "nope"`})
+		})
+		t.Run("an internal credential", func(t *testing.T) {
+			tester(t, testCase{name: "signing", wantErr: "internal"})
+		})
+	})
+
+	t.Run("live session sees claims added after the request arrived", func(t *testing.T) {
+		rec, err := d.CreateSession("", "p", "agent", 0, nil)
+		require.NoError(t, err)
+		sess, ok := d.Session(rec.Token)
+		require.True(t, ok)
+		err = d.AddClaim(sess, claims.Claim{Type: "repository", Value: "github.com/o/r"}, "f", "")
+		require.NoError(t, err)
+		assert.Empty(t, sess.Claims, "the request's copy does not change")
+		live, ok := d.LiveSession(sess)
+		require.True(t, ok)
+		assert.Equal(t, claims.Set{"repository": {"github.com/o/r"}}, live.Claims)
+		require.True(t, d.EndSession(rec.ID))
+		_, ok = d.LiveSession(sess)
+		assert.False(t, ok, "an ended session is not live")
+	})
 }

@@ -36,6 +36,9 @@ type AskRequest struct {
 	// identical requests; filters pass a key to group requests on purpose.
 	Key     string
 	Request string
+	// Origin says where a subrequest came from. It is empty for an agent
+	// request.
+	Origin string
 }
 
 // ErrClaimRejected marks a claim request that is invalid or would exceed a
@@ -50,6 +53,9 @@ type ClaimRequest struct {
 	Prompt  string
 	Claim   claims.Claim
 	Request string
+	// Origin says where a subrequest came from. It is empty for an agent
+	// request.
+	Origin string
 }
 
 // ClaimRequester adds claims to sessions with a human's approval.
@@ -76,6 +82,11 @@ type Env struct {
 	// object still does not carry secrets unless a filter puts one in a
 	// respond() body.
 	Credential func(ctx context.Context, name string) (string, error)
+	// Placeholder returns a credential's placeholder. Nil returns it
+	// without checking that the credential exists.
+	Placeholder func(name string) (string, error)
+	// Subrequest sends a filter's subrequest. Nil makes subrequest() throw.
+	Subrequest SubrequestFunc
 }
 
 // Build composes filters around terminal. A filter error or panic fails

@@ -35,6 +35,9 @@ func promptsCmd() *cobra.Command {
 			_, _ = fmt.Fprintln(w, "ID\tKIND\tSOURCE\tSESSION\tMESSAGE\tDETAIL\tEXPIRES")
 			for _, p := range list {
 				detail := d(p.Detail, 80)
+				if p.Origin != "" {
+					detail += " (" + d(p.Origin, 80) + ")"
+				}
 				if p.Claim != nil {
 					claim, cut := approval.ClaimSummary(*p.Claim, 80)
 					if cut {

@@ -123,3 +123,13 @@ func ClaimLines(p prompt.Pending, indent string) string {
 	}
 	return b.String()
 }
+
+// OriginLine describes where a subrequest came from, for a terminal. It is
+// empty for a prompt about an agent request. Otherwise it starts with
+// indent and ends with a newline.
+func OriginLine(p prompt.Pending, indent string) string {
+	if p.Origin == "" {
+		return ""
+	}
+	return indent + "origin: " + Display(p.Origin, 300) + "\n"
+}

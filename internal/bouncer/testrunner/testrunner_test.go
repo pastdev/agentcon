@@ -16,7 +16,7 @@ import (
 func writeSpec(t *testing.T, spec string) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, name := range []string{"counter.ts", "claims.ts", "policy.yaml"} {
+	for _, name := range []string{"counter.ts", "claims.ts", "lookup.ts", "policy.yaml"} {
 		data, err := os.ReadFile(filepath.Join("testdata", name)) //nolint:gosec // fixed testdata name
 		require.NoError(t, err)
 		err = os.WriteFile(filepath.Join(dir, name), data, 0o600) //nolint:gosec // test fixture under TempDir
@@ -573,5 +573,153 @@ profiles:
 	})
 	t.Run("expect_credential on a signer step is an error", func(t *testing.T) {
 		tester(t, testCase{steps: step(signURL, commit, "allow", "expect_credential: true"), wantMsg: "expect_credential is not allowed"})
+	})
+}
+
+func TestRunFileSubrequests(t *testing.T) {
+	type testCase struct {
+		spec    string
+		want    []Result
+		wantErr string
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		path := writeSpec(t, tc.spec)
+		results, err := RunFile(path, Options{Policy: filepath.Join(filepath.Dir(path), "policy.yaml")})
+		if tc.wantErr != "" {
+			require.ErrorContains(t, err, tc.wantErr)
+			return
+		}
+		require.NoError(t, err)
+		require.Len(t, results, len(tc.want))
+		for i, want := range tc.want {
+			got := results[i]
+			assert.Equal(t, want.Passed, got.Passed, got.Message)
+			assert.Equal(t, want.Step, got.Step)
+			assert.Contains(t, got.Message, want.Message)
+		}
+	}
+
+	t.Run("a filter spec answers from fixtures", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+filter: lookup.ts
+cases:
+  - name: allowed by the lookup
+    steps:
+      - request: {url: "https://example.com/?lookup=https://api.example.com/rules/main"}
+        subrequests:
+          - url: https://api.example.com:443/rules/main
+            expect_header: {Accept: application/json}
+        expect: allow
+  - name: denied by the lookup status
+    steps:
+      - request: {url: "https://example.com/?lookup=https://api.example.com/rules/main"}
+        subrequests:
+          - {url: "https://api.example.com/rules/main", status: 404}
+        expect: deny
+        expect_reason: lookup answered 404
+  - name: a fixture error rejects
+    steps:
+      - request: {url: "https://example.com/?lookup=https://api.example.com/rules/main"}
+        subrequests:
+          - {url: "https://api.example.com/rules/main", error: connection refused}
+        expect: deny
+        expect_reason: "lookup failed: subrequest: connection refused"
+  - name: redirects chain through fixtures
+    steps:
+      - request: {url: "https://example.com/?lookup=https://api.example.com/old"}
+        subrequests:
+          - {url: "https://api.example.com/old", status: 301, headers: {Location: /new}}
+          - {url: "https://api.example.com/new"}
+        expect: allow
+`,
+			want: []Result{{Passed: true}, {Passed: true}, {Passed: true}, {Passed: true}},
+		})
+	})
+	t.Run("fixtures are strict", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+filter: lookup.ts
+cases:
+  - name: unexpected
+    steps:
+      - request: {url: "https://example.com/?lookup=https://api.example.com/rules/main"}
+        expect: deny
+  - name: unused
+    steps:
+      - request: {url: "https://example.com/"}
+        subrequests:
+          - url: https://api.example.com/rules/main
+        expect: allow
+  - name: header mismatch
+    steps:
+      - request: {url: "https://example.com/?lookup=https://api.example.com/rules/main"}
+        subrequests:
+          - url: https://api.example.com/rules/main
+            expect_header: {Accept: text/plain}
+`,
+			want: []Result{
+				{Step: 1, Message: "unexpected subrequest GET https://api.example.com/rules/main"},
+				{Step: 1, Message: "subrequest fixture GET https://api.example.com/rules/main was not used"},
+				{Step: 1, Message: `expected header Accept="text/plain", got "application/json"`},
+			},
+		})
+	})
+	t.Run("a bouncer spec runs subrequests through the profile", func(t *testing.T) {
+		tester(t, testCase{
+			spec: `
+profile: lookup
+cases:
+  - name: the lookup carries the credential
+    steps:
+      - request: {url: "https://api.example.com/in?lookup=https://api.example.com/rules/main"}
+        subrequests:
+          - url: https://api.example.com/rules/main
+            expect_credential: true
+        expect: allow
+        expect_credential: true
+  - name: the rules deny a lookup
+    steps:
+      - request: {url: "https://api.example.com/in?lookup=https://api.example.com/secret/x"}
+        expect: deny
+        expect_reason: "lookup denied: denied by rules:api rules[2]"
+  - name: a path no rule matches goes through without the credential
+    steps:
+      - request: {url: "https://api.example.com/in?lookup=https://api.example.com/other"}
+        subrequests:
+          - url: https://api.example.com/other
+            expect_credential: false
+        expect: allow
+  - name: a tunneled lookup carries no credential
+    steps:
+      - request: {url: "https://api.example.com/in?lookup=https://elsewhere.example.com/x"}
+        subrequests:
+          - url: https://elsewhere.example.com/x
+            expect_credential: false
+        expect: allow
+  - name: credential mismatch fails
+    steps:
+      - request: {url: "https://api.example.com/in?lookup=https://elsewhere.example.com/x"}
+        subrequests:
+          - url: https://elsewhere.example.com/x
+            expect_credential: true
+`,
+			want: []Result{{Passed: true}, {Passed: true}, {Passed: true}, {Passed: true},
+				{Step: 1, Message: "expected credential=true, got false"}},
+		})
+	})
+	t.Run("bad fixtures fail the spec", func(t *testing.T) {
+		for spec, want := range map[string]string{
+			`[{url: "/relative"}]`:                             "must be an absolute http or https url",
+			`[{url: "https://a/x"}, {url: "https://a:443/x"}]`: "duplicate fixture GET https://a/x",
+			`[{url: "https://a/x", error: boom, status: 500}]`: "error excludes status, headers, and body",
+			`[{url: "https://a/x", expect_credential: true}]`:  "expect_credential needs a bouncer spec",
+		} {
+			tester(t, testCase{
+				spec:    "filter: lookup.ts\ncases:\n  - steps:\n      - request: {url: \"https://example.com/\"}\n        subrequests: " + spec + "\n",
+				wantErr: want,
+			})
+		}
 	})
 }

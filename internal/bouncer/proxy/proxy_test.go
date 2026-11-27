@@ -44,28 +44,54 @@ func (b *fakeBackend) Profile(name string) (*policy.Profile, bool) {
 	p, ok := b.set.Profiles[name]
 	return p, ok
 }
+func (b *fakeBackend) LiveSession(sess *chain.Session) (*chain.Session, bool) {
+	for _, s := range b.sessions {
+		if s.ID == sess.ID {
+			return s.Clone(), true
+		}
+	}
+	return nil, false
+}
 func (b *fakeBackend) Control() http.Handler { return http.NotFoundHandler() }
 
-// entryWriter decodes each logged audit event back into an Entry.
-type entryWriter struct {
-	entries *[]audit.Entry
+// auditSink decodes each logged audit event back into an Entry. The proxy
+// writes an entry after it sends the response, so tests read entries with
+// wait instead of right after the response arrives.
+type auditSink struct {
+	mu      sync.Mutex
+	entries []audit.Entry
 }
 
-func (w entryWriter) Write(p []byte) (int, error) {
+func (s *auditSink) Write(p []byte) (int, error) {
 	var en audit.Entry
 	err := json.Unmarshal(p, &en)
 	if err != nil {
 		return 0, err //nolint:wrapcheck // test helper
 	}
-	*w.entries = append(*w.entries, en)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries = append(s.entries, en)
 	return len(p), nil
+}
+
+// wait returns the entries once there are at least n of them.
+func (s *auditSink) wait(t *testing.T, n int) []audit.Entry {
+	t.Helper()
+	var out []audit.Entry
+	require.Eventually(t, func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		out = append([]audit.Entry(nil), s.entries...)
+		return len(out) >= n
+	}, 5*time.Second, 5*time.Millisecond, "waiting for %d audit entries", n)
+	return out
 }
 
 type env struct {
 	upstream *httptest.Server
 	proxy    *httptest.Server
 	client   *http.Client
-	audit    []audit.Entry
+	audit    *auditSink
 	port     string
 	backend  *fakeBackend
 }
@@ -108,7 +134,8 @@ profiles:
 	require.NoError(t, err)
 	tr := NewTransport()
 	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test upstream uses a self-signed certificate
-	log := audit.New(zerolog.New(entryWriter{&e.audit}))
+	e.audit = &auditSink{}
+	log := audit.New(zerolog.New(e.audit))
 	e.backend = &fakeBackend{set: set, sessions: map[string]*chain.Session{"tok123": {ID: "s1", Profile: "p"}}}
 	srv := &Server{
 		Backend:   e.backend,
@@ -208,7 +235,7 @@ func TestIntercept(t *testing.T) {
 		status, _ = e.get(t, "GET", base+"/api/v4/projects/group%2Fproj/../../other", nil)
 		assert.Equal(t, 400, status, "dot-segment path")
 		var decisions []string
-		for _, a := range e.audit {
+		for _, a := range e.audit.wait(t, 3) {
 			decisions = append(decisions, a.Decision)
 		}
 		assert.Equal(t, []string{"allow", "allow", "deny"}, decisions)

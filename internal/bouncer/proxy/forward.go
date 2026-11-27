@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -57,7 +58,9 @@ func (s *Server) forwarder(svc *policy.Service, origLength int64) chain.Handler 
 		}
 		out, err := http.NewRequestWithContext(req.Ctx, req.Method, u.String(), body)
 		if err != nil {
-			return synthetic(http.StatusBadGateway, "agent-bouncer: "+err.Error()), nil //nolint:nilerr // upstream problems become a synthetic 502 for the agent
+			r := synthetic(http.StatusBadGateway, "agent-bouncer: "+err.Error())
+			r.UpstreamErr = err
+			return r, nil //nolint:nilerr // upstream problems become a synthetic 502 for the agent
 		}
 		out.Header = header
 		out.ContentLength = length
@@ -65,7 +68,9 @@ func (s *Server) forwarder(svc *policy.Service, origLength int64) chain.Handler 
 
 		resp, err := s.Transport.RoundTrip(out)
 		if err != nil {
-			return synthetic(http.StatusBadGateway, "agent-bouncer: upstream error: "+err.Error()), nil //nolint:nilerr // upstream problems become a synthetic 502 for the agent
+			r := synthetic(http.StatusBadGateway, "agent-bouncer: upstream error: "+err.Error())
+			r.UpstreamErr = fmt.Errorf("upstream: %w", err)
+			return r, nil
 		}
 		// A query-injected secret can come back in a URL the upstream echoes
 		// (a redirect Location, say), which the agent would then read. Scrub it.

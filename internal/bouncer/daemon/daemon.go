@@ -198,6 +198,7 @@ func New(opts Options) (*Daemon, error) {
 		Resolver: d.resolveGitLabProject,
 		Log:      component(opts.Log, "filter"),
 	}
+	d.env.Placeholder = d.placeholder
 	creds.ConfigureBitwarden(opts.StateDir, component(opts.Log, "bitwarden"), d.Prompts)
 	d.creds = creds.NewStore(cfg.Credentials)
 	d.creds.SetProvided(opts.Provided)
@@ -364,7 +365,11 @@ func (d *Daemon) apply(cfg *config.Config) error {
 				title = "agent-bouncer: claim requested"
 			case prompt.KindText, prompt.KindSecret:
 			}
-			notify.Send(title, approval.Display(p.Message, 150)+"\n"+approval.Display(p.Detail, 150))
+			body := approval.Display(p.Message, 150) + "\n" + approval.Display(p.Detail, 150)
+			if p.Origin != "" {
+				body += "\n" + approval.Display(p.Origin, 150)
+			}
+			notify.Send(title, body)
 		})
 	} else {
 		d.Prompts.SetNotify(nil)
@@ -422,6 +427,40 @@ func (d *Daemon) liveSession(sess *chain.Session) *SessionRecord {
 		}
 	}
 	return nil
+}
+
+// LiveSession implements proxy.Backend. It returns sess as it is now, so a
+// subrequest sees claims added since its parent request arrived. The shared
+// anonymous session never changes, so it is returned as is while the
+// anonymous profile is still configured.
+func (d *Daemon) LiveSession(sess *chain.Session) (*chain.Session, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if sess.Shared {
+		if d.cfg.AnonymousProfile == "" {
+			return nil, false
+		}
+		return sess.Clone(), true
+	}
+	s := d.liveSession(sess)
+	if s == nil {
+		return nil, false
+	}
+	return s.Clone(), true
+}
+
+// placeholder implements chain.Env.Placeholder for filters.
+func (d *Daemon) placeholder(name string) (string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	c, ok := d.cfg.Credentials[name]
+	if !ok {
+		return "", fmt.Errorf("no credential named %q", name)
+	}
+	if c.Internal {
+		return "", fmt.Errorf("credential %q is internal and is never injected", name)
+	}
+	return config.Placeholder(name), nil
 }
 
 // SessionClaims implements approval.ClaimStore.
@@ -801,6 +840,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	px := &proxy.Server{Backend: d, CA: d.CA, Creds: d.creds, Audit: d.audit, Transport: d.transport,
 		Signer: d.signer,
 		Dialer: &net.Dialer{Timeout: 30 * time.Second}, Log: component(d.opts.Log, "proxy"), DisableControl: plan.split}
+	// Set before anything serves, so no filter reads it while it changes.
+	d.env.Subrequest = px.Subrequest
 	httpSrv := &http.Server{Handler: px, ReadHeaderTimeout: 30 * time.Second}
 	sshSrv := &sshproxy.Server{Backend: d, CA: d.CA, Creds: d.creds, Audit: d.audit, Log: component(d.opts.Log, "ssh")}
 	mgmtSrv := &http.Server{Handler: d.Control(), ReadHeaderTimeout: 30 * time.Second}

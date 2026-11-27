@@ -73,6 +73,8 @@ Choose `deny` when:
 
 `deny` limits destinations, not content.
 An agent allowed to push to a GitHub repo can still put data in that repo.
+It can also run code in that repo's CI.
+See [GitHub](github.md) for the settings that keep CI from exposing secrets.
 Use `rules` and filters on intercepted services to control what reaches them.
 
 To move from `tunnel` to `deny`, run with `tunnel` and `--log audit=debug`, and collect the tunneled hosts from the sidecar log.
@@ -489,9 +491,12 @@ Hosts can send these lines to log ingestion, so their field names are stable.
 
 | Event | Fields |
 | --- | --- |
-| `decision` | `session`, `label`, `profile`, `transport`, `service`, `request`, `decision`, `by`, `reason`, `status`, `duration_ms` |
+| `decision` | `session`, `label`, `profile`, `transport`, `service`, `request`, `decision`, `by`, `reason`, `status`, `duration_ms`, and for a filter's subrequest `subrequest` (`filter`, `depth`, `parent`) |
 | `session_created` | `session`, `label`, `profile`, `claims` (`{}` when none) |
 | `claim_added` | `session`, `label`, `claim_type`, `claim_value`, `added_by`, and for an operator addition `filter` and `prompt` |
+
+A [subrequest](bouncer-filters.md#subrequests) logs one `decision` per hop, including each redirect it follows.
+Its `parent` is the description of the request that caused it.
 
 `added_by` is `seeded` for a claim the session was created with, and `operator` for one added through a `requestClaim()` prompt.
 A session created with claims logs `session_created` and then one `claim_added` per claim.

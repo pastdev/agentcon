@@ -58,7 +58,10 @@ type Question struct {
 	Source  string
 	Message string
 	// Detail is context for the human, such as the request being approved.
-	Detail       string
+	Detail string
+	// Origin says where a subrequest came from. It is empty for an agent
+	// request.
+	Origin       string
 	SessionID    string
 	SessionLabel string
 	Profile      string
@@ -134,6 +137,7 @@ type Pending struct {
 	Source       string `json:"source"`
 	Message      string `json:"message"`
 	Detail       string `json:"detail,omitempty"`
+	Origin       string `json:"origin,omitempty"`
 	SessionID    string `json:"session_id,omitempty"`
 	SessionLabel string `json:"session_label,omitempty"`
 	Profile      string `json:"profile,omitempty"`
@@ -212,7 +216,7 @@ func (b *Broker) Raise(q Question) *Ticket {
 	now := time.Now()
 	e := &entry{
 		Pending: Pending{
-			ID: b.newID(), Kind: q.Kind, Source: q.Source, Message: q.Message, Detail: q.Detail,
+			ID: b.newID(), Kind: q.Kind, Source: q.Source, Message: q.Message, Detail: q.Detail, Origin: q.Origin,
 			SessionID: q.SessionID, SessionLabel: q.SessionLabel, Profile: q.Profile,
 			Created: now, Expires: now.Add(b.timeout),
 		},
