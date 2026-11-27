@@ -306,7 +306,6 @@ So a subrequest that sends `Authorization: Bearer ${placeholder("github-audit")}
 `placeholder()` throws for an unknown credential, for one whose `allow` lacks `subrequest`, and at module top level.
 
 There is no way for filter code to read a secret.
-`credential(name)`, which returned one, is removed.
 
 #### Elevated lookups
 
@@ -497,7 +496,6 @@ A step checks any of these.
 - `expect_upstream_header`: headers the upstream received.
 - `expect_credentials`: the credentials the request reached the upstream with, compared as a set.
   `[]` means it carried none, such as a leftover path under `unmatched: tunnel`.
-  The removed `expect_credential: true` becomes the service's credential names, and `false` becomes `[]`.
 
 ### Subrequest fixtures
 

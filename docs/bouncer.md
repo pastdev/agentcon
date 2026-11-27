@@ -336,10 +336,6 @@ profiles:
 
 A full GitHub overlay is the [GitHub starting point](#github-starting-point).
 
-Through v0.6.0, a service named one credential with `credential:`, and `internal: true` marked a signing key.
-Both are now rejected.
-Replace `credential: X` with `credentials: [X]` and `inject: {credential: X, ...}`, and `internal: true` with `allow: [internal]`.
-
 ### lookup_credential
 
 A rule can name a GitLab project by path while the request URL uses its numeric ID, such as `/api/v4/projects/42/issues`.
