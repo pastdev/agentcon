@@ -225,8 +225,37 @@ It reads the secret with request kind `agent`, so the store refuses an elevated 
 
 ## Smoke
 
-A handoff that runs the bouncer against real GitHub with a fine-grained `github` token and a separate `github-audit` token.
+`ad_hoc/issue-44/smoke` runs a real `agentcon bouncer serve` on loopback against `pastdev/agentcon`.
+It reads two tokens from Bitwarden.
+`github` is the agent's PAT, which has no Secrets permission.
+`github-audit` is a fine-grained PAT with only Secrets: Read-only on `pastdev/agentcon`, and `allow: [subrequest]`.
+A `.agentcon/` handoff builds `agentcon` and runs it on the host.
 
-1. An agent `GET .../actions/secrets` with `github-audit`'s static placeholder is denied by rules or sent unauthenticated (expect 401/404).
-2. A push to a repo with no Actions secrets passes the `github-ci-safety` filter.
-3. The audit log shows `as github-audit` on the subrequest and never on an agent request.
+1. The agent asks for the Actions secrets list, naming `github-audit`'s static placeholder.
+   Bouncer sends the agent's own token, and GitHub answers 403.
+2. A throwaway branch `smoke/elevated-<random>` is pushed.
+   `github-ci-safety` looks up the secrets list with `github-audit`.
+   The push is allowed when the repo has no Actions secrets, and the branch is then deleted.
+   It is denied with the filter's reason when the repo has some.
+3. The audit log shows `github-audit` on each filter lookup, answered 200, and on no agent request.
+   The agent's secrets request carried only `github`.
+
+### Result
+
+The first run failed with 4 filter lookups where 2 were expected.
+A push is a ref advertisement (`GET info/refs?service=git-receive-pack`) and then the pack (`POST git-receive-pack`), and both report `receive-pack`.
+`github-ci-safety` looked up on both.
+It now looks up only when the request carries ref updates, as `github-branch-rules` does, and a filter test covers the advertisement.
+
+The second run passed.
+`pastdev/agentcon` has no Actions secrets, so the push was allowed and the branch deleted.
+
+```
+allow GET api.github.com/repos/pastdev/agentcon/actions/secrets?per_page=1 -> 403 [as github]
+allow GET github.com/pastdev/agentcon.git/info/refs?service=git-receive-pack -> 200 [as github]
+allow GET api.github.com/repos/pastdev/agentcon/actions/secrets?per_page=1 -> 200 [subrequest from github-ci-safety as github-audit]
+allow POST github.com/pastdev/agentcon.git/git-receive-pack create refs/heads/smoke/elevated-031b1bf7 -> 200 [as github]
+allow GET github.com/pastdev/agentcon.git/info/refs?service=git-receive-pack -> 200 [as github]
+allow GET api.github.com/repos/pastdev/agentcon/actions/secrets?per_page=1 -> 200 [subrequest from github-ci-safety as github-audit]
+allow POST github.com/pastdev/agentcon.git/git-receive-pack delete refs/heads/smoke/elevated-031b1bf7 -> 200 [as github]
+```
