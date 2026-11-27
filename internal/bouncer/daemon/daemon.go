@@ -9,10 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,6 +25,7 @@ import (
 	"github.com/pastdev/agentcon/internal/bouncer/ca"
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
 	"github.com/pastdev/agentcon/internal/bouncer/creds"
+	"github.com/pastdev/agentcon/internal/bouncer/gitlab"
 	"github.com/pastdev/agentcon/internal/bouncer/kv"
 	"github.com/pastdev/agentcon/internal/bouncer/notify"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
@@ -92,7 +91,7 @@ type Daemon struct {
 	// saveMu serializes writes of the sessions file.
 	saveMu sync.Mutex
 
-	resolved sync.Map // resolver cache key -> resolvedID
+	resolver *gitlab.Resolver
 
 	proxyAddr, sshAddr, mgmtAddr string
 
@@ -155,11 +154,6 @@ type Runtime struct {
 // RuntimePath is the runtime file in a state dir.
 func RuntimePath(stateDir string) string { return filepath.Join(stateDir, "daemon.json") }
 
-type resolvedID struct {
-	id      int64
-	expires time.Time
-}
-
 // New loads config and state. It does not start listening.
 func New(opts Options) (*Daemon, error) {
 	if err := os.MkdirAll(opts.StateDir, 0o700); err != nil {
@@ -192,29 +186,18 @@ func New(opts Options) (*Daemon, error) {
 	d.Prompts = prompt.NewBroker(cfg.Prompts.TimeoutOrDefault())
 	d.Approvals = approval.NewManager(d.Prompts)
 	d.claims = approval.NewClaims(d.Prompts, d)
-	d.env = &chain.Env{
-		Approver: d.Approvals,
-		Claims:   d.claims,
-		Resolver: d.resolveGitLabProject,
-		Log:      component(opts.Log, "filter"),
-	}
-	d.env.Placeholder = d.placeholder
 	creds.ConfigureBitwarden(opts.StateDir, component(opts.Log, "bitwarden"), d.Prompts)
 	d.creds = creds.NewStore(cfg.Credentials)
 	d.creds.SetProvided(opts.Provided)
 	d.signer = &signer.OpenPGP{Creds: d.creds}
-	d.env.Credential = func(ctx context.Context, name string) (string, error) {
-		sec, err := d.creds.Get(ctx, name)
-		if errors.Is(err, creds.ErrInternal) {
-			d.log.Warn().Str("credential", name).Msg("filter asked for an internal credential")
-			return "", creds.Unavailable(name)
-		}
-		if err != nil {
-			creds.LogError(d.log.Warn(), err).Str("credential", name).Msg("credential unavailable to a filter")
-			return "", creds.Unavailable(name)
-		}
-		return sec.HTTP(), nil
+	d.resolver = &gitlab.Resolver{Transport: d.transport, Creds: d.creds.Get, Log: d.log}
+	d.env = &chain.Env{
+		Approver: d.Approvals,
+		Claims:   d.claims,
+		Resolver: d.resolver.Resolve,
+		Log:      component(opts.Log, "filter"),
 	}
+	d.env.Placeholder = d.placeholder
 	if err := d.apply(cfg); err != nil {
 		return nil, err
 	}
@@ -450,17 +433,10 @@ func (d *Daemon) LiveSession(sess *chain.Session) (*chain.Session, bool) {
 }
 
 // placeholder implements chain.Env.Placeholder for filters.
-func (d *Daemon) placeholder(name string) (string, error) {
+func (d *Daemon) placeholder(name string) error {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	c, ok := d.cfg.Credentials[name]
-	if !ok {
-		return "", fmt.Errorf("no credential named %q", name)
-	}
-	if c.Internal {
-		return "", fmt.Errorf("credential %q is internal and is never injected", name)
-	}
-	return config.Placeholder(name), nil
+	return d.cfg.CheckSubrequestCredential(name) //nolint:wrapcheck // the message is what the filter sees
 }
 
 // SessionClaims implements approval.ClaimStore.
@@ -752,62 +728,6 @@ func (d *Daemon) writeSessions(recs []*SessionRecord) error {
 		return fmt.Errorf("replace sessions: %w", err)
 	}
 	return nil
-}
-
-// resolveGitLabProject looks up a project's numeric ID using the service's credential.
-func (d *Daemon) resolveGitLabProject(ctx context.Context, service, host, project string) (int64, error) {
-	key := service + "\x00" + host + "\x00" + project
-	if v, ok := d.resolved.Load(key); ok {
-		if r := v.(resolvedID); time.Now().Before(r.expires) {
-			return r.id, nil
-		}
-	}
-	var svc *config.Service
-	d.mu.RLock()
-	for _, p := range d.set.Profiles {
-		for _, s := range p.HTTP {
-			if s.Config.Name == service && config.HostMatches(s.Config.Hosts, host) {
-				svc = s.Config
-			}
-		}
-	}
-	d.mu.RUnlock()
-	if svc == nil {
-		return 0, fmt.Errorf("unknown service %q", service)
-	}
-	u, _ := url.Parse("https://" + host + "/api/v4/projects/" + url.PathEscape(project))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return 0, fmt.Errorf("gitlab request: %w", err)
-	}
-	if svc.Credential != "" {
-		secret, err := d.creds.Get(ctx, svc.Credential)
-		if err != nil {
-			creds.LogError(d.log.Warn(), err).Str("service", service).Msg("credential unavailable for gitlab project lookup")
-			return 0, fmt.Errorf("gitlab api: %w", creds.Unavailable(service))
-		}
-		spec := svc.Inject
-		if spec == nil {
-			spec = &config.Inject{Bearer: true}
-		}
-		proxy.Inject(req.Header, req.URL, svc.Credential, spec, secret)
-	}
-	resp, err := d.transport.RoundTrip(req)
-	if err != nil {
-		return 0, fmt.Errorf("gitlab project %s: %w", project, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("GET %s: %s", u, resp.Status)
-	}
-	var body struct {
-		ID int64 `json:"id"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		return 0, fmt.Errorf("decode gitlab project %s: %w", project, err)
-	}
-	d.resolved.Store(key, resolvedID{id: body.ID, expires: time.Now().Add(time.Hour)})
-	return body.ID, nil
 }
 
 // Run serves until ctx is cancelled.

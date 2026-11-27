@@ -188,10 +188,10 @@ cases:
     steps:
       - request: {url: "https://api.example.com/in"}
         expect: allow
-        expect_credential: true
+        expect_credentials: [tok]
       - request: {url: "https://api.example.com/other"}
         expect: allow
-        expect_credential: false
+        expect_credentials: []
 `,
 			want: []Result{{Name: "rule path carries it, leftover does not", Passed: true}},
 		})
@@ -204,9 +204,9 @@ cases:
   - name: leftover
     steps:
       - request: {url: "https://api.example.com/other"}
-        expect_credential: true
+        expect_credentials: [tok]
 `,
-			want: []Result{{Name: "leftover", Step: 1, StepName: "1", Message: "expected credential=true, got false"}},
+			want: []Result{{Name: "leftover", Step: 1, StepName: "1", Message: "expected credentials=[tok], got []"}},
 		})
 	})
 	t.Run("policy spec without a profile is an error", func(t *testing.T) {
@@ -513,7 +513,7 @@ func TestRunFileSigner(t *testing.T) {
 default_profile: p
 credentials:
   sign:
-    internal: true
+    allow: [internal]
     private_key: {source: provided}
 profiles:
   p:
@@ -572,7 +572,7 @@ profiles:
 		tester(t, testCase{steps: step(signURL, commit, "allow", "upstream: {status: 200}"), wantMsg: "upstream is not allowed on signer service signing"})
 	})
 	t.Run("expect_credential on a signer step is an error", func(t *testing.T) {
-		tester(t, testCase{steps: step(signURL, commit, "allow", "expect_credential: true"), wantMsg: "expect_credential is not allowed"})
+		tester(t, testCase{steps: step(signURL, commit, "allow", "expect_credentials: [tok]"), wantMsg: "expect_credentials is not allowed"})
 	})
 }
 
@@ -676,9 +676,9 @@ cases:
       - request: {url: "https://api.example.com/in?lookup=https://api.example.com/rules/main"}
         subrequests:
           - url: https://api.example.com/rules/main
-            expect_credential: true
+            expect_credentials: [tok]
         expect: allow
-        expect_credential: true
+        expect_credentials: [tok]
   - name: the rules deny a lookup
     steps:
       - request: {url: "https://api.example.com/in?lookup=https://api.example.com/secret/x"}
@@ -689,32 +689,33 @@ cases:
       - request: {url: "https://api.example.com/in?lookup=https://api.example.com/other"}
         subrequests:
           - url: https://api.example.com/other
-            expect_credential: false
+            expect_credentials: []
         expect: allow
   - name: a tunneled lookup carries no credential
     steps:
       - request: {url: "https://api.example.com/in?lookup=https://elsewhere.example.com/x"}
         subrequests:
           - url: https://elsewhere.example.com/x
-            expect_credential: false
+            expect_credentials: []
         expect: allow
   - name: credential mismatch fails
     steps:
       - request: {url: "https://api.example.com/in?lookup=https://elsewhere.example.com/x"}
         subrequests:
           - url: https://elsewhere.example.com/x
-            expect_credential: true
+            expect_credentials: [tok]
 `,
 			want: []Result{{Passed: true}, {Passed: true}, {Passed: true}, {Passed: true},
-				{Step: 1, Message: "expected credential=true, got false"}},
+				{Step: 1, Message: "expected credentials=[tok], got []"}},
 		})
 	})
 	t.Run("bad fixtures fail the spec", func(t *testing.T) {
 		for spec, want := range map[string]string{
-			`[{url: "/relative"}]`:                             "must be an absolute http or https url",
-			`[{url: "https://a/x"}, {url: "https://a:443/x"}]`: "duplicate fixture GET https://a/x",
-			`[{url: "https://a/x", error: boom, status: 500}]`: "error excludes status, headers, and body",
-			`[{url: "https://a/x", expect_credential: true}]`:  "expect_credential needs a bouncer spec",
+			`[{url: "/relative"}]`:                              "must be an absolute http or https url",
+			`[{url: "https://a/x"}, {url: "https://a:443/x"}]`:  "duplicate fixture GET https://a/x",
+			`[{url: "https://a/x", error: boom, status: 500}]`:  "error excludes status, headers, and body",
+			`[{url: "https://a/x", expect_credentials: [tok]}]`: "expect_credentials needs a bouncer spec",
+			`[{url: "https://a/x", expect_credential: true}]`:   "expect_credential is removed; use expect_credentials",
 		} {
 			tester(t, testCase{
 				spec:    "filter: lookup.ts\ncases:\n  - steps:\n      - request: {url: \"https://example.com/\"}\n        subrequests: " + spec + "\n",

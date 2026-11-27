@@ -29,13 +29,16 @@ func upstreamOK(*Request) (*Response, error) { return &Response{Status: 200}, ni
 func loadRules(t *testing.T, yml string) *config.Service {
 	t.Helper()
 	cfg, err := config.Parse([]byte(`
-credentials: {gl: {token: {source: keyring}}}
+credentials:
+  gl: {allow: [agent, subrequest], token: {source: keyring}}
+  gl-audit: {allow: [subrequest], token: {source: keyring}}
 profiles:
   p:
     http:
       - name: gitlab
         hosts: [gitlab.com]
-        credential: gl
+        credentials: [gl, gl-audit]
+        lookup_credential: gl
 `+yml), "/tmp/c.yaml")
 	require.NoError(t, err)
 	return cfg.Profiles["p"].HTTP[0]
@@ -127,7 +130,7 @@ func TestBuild(t *testing.T) {
             methods: [GET]
             path: /api/v4/user
 `)
-		env := &Env{Resolver: func(_ context.Context, _, _, p string) (int64, error) {
+		env := &Env{Resolver: func(_ context.Context, _ *config.Service, _, p string) (int64, error) {
 			if p == "mygroup/myproj" {
 				return 4242, nil
 			}
@@ -188,7 +191,7 @@ func TestBuild(t *testing.T) {
           - action: allow
             gitlab_project: mygroup/myproj
 `)
-		return Build([]Filter{NewRules(svc, &Env{Resolver: func(context.Context, string, string, string) (int64, error) { return 7, nil }})}, upstreamOK)
+		return Build([]Filter{NewRules(svc, &Env{Resolver: func(context.Context, *config.Service, string, string) (int64, error) { return 7, nil }})}, upstreamOK)
 	}
 	t.Run("allows GET of the gitlab project root", func(t *testing.T) {
 		tester(t, testCase{h: gitlabSub(t), req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/mygroup%2Fmyproj", nil), allow: true})
@@ -702,5 +705,133 @@ func TestGlob(t *testing.T) {
 	})
 	t.Run("does not match a different ref prefix", func(t *testing.T) {
 		tester(t, testCase{pat: "refs/heads/*", name: "refs/tags/v1", want: false})
+	})
+}
+
+func TestSubrequestRules(t *testing.T) {
+	type testCase struct {
+		sub *SubrequestInfo
+		url string
+		// allow is whether the rules let the request through.
+		allow bool
+		by    string
+		creds []string
+		// resolved is whether the GitLab resolver was called.
+		resolved bool
+	}
+	svc := loadRules(t, `
+        rules:
+          - action: allow
+            methods: [GET]
+            gitlab_project: {path: mygroup/myproj, subpaths: [protected_branches]}
+            subrequest:
+              filters: [ci-safety]
+              credentials: [gl-audit]
+          - action: allow
+            methods: [GET]
+            path: /api/v4/audit
+            subrequest: {credentials: [gl-audit]}
+          - action: allow
+            methods: [GET]
+            path: /api/v4/**
+            filters: [{path: ci-safety.ts, id: ci-safety}]
+`)
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		resolved := false
+		env := &Env{Resolver: func(_ context.Context, got *config.Service, _, _ string) (int64, error) {
+			resolved = true
+			assert.Same(t, svc, got)
+			return 42, nil
+		}}
+		var seen *Request
+		terminal := func(r *Request) (*Response, error) {
+			seen = r
+			return &Response{Status: 200}, nil
+		}
+		req := httpReq(t, "GET", tc.url, nil)
+		req.Subrequest = tc.sub
+		resp, err := Build([]Filter{NewRules(svc, env)}, terminal)(req)
+		require.NoError(t, err)
+		assert.Equal(t, tc.allow, resp.Denial == nil)
+		assert.Equal(t, tc.resolved, resolved)
+		if !tc.allow {
+			return
+		}
+		require.NotNil(t, seen)
+		assert.Equal(t, tc.by, seen.AllowedBy)
+		assert.Equal(t, tc.creds, seen.RuleCredentials)
+	}
+
+	t.Run("an agent request skips a subrequest rule and starts no lookup", func(t *testing.T) {
+		tester(t, testCase{url: "https://gitlab.com/api/v4/projects/42/protected_branches", allow: true, by: "rules:gitlab rules[2]"})
+	})
+	t.Run("the listed placement id matches and gets the rule's credentials", func(t *testing.T) {
+		tester(t, testCase{
+			sub: &SubrequestInfo{Filter: "anything", ID: "ci-safety", Depth: 1},
+			url: "https://gitlab.com/api/v4/projects/42/protected_branches", allow: true, resolved: true,
+			by: "rules:gitlab rules[0]", creds: []string{"gl-audit"},
+		})
+	})
+	t.Run("a filter whose name equals the id but whose placement has none does not match", func(t *testing.T) {
+		tester(t, testCase{
+			sub: &SubrequestInfo{Filter: "ci-safety", Depth: 1},
+			url: "https://gitlab.com/api/v4/projects/42/protected_branches", allow: true, by: "rules:gitlab rules[2]",
+		})
+	})
+	t.Run("another placement id does not match", func(t *testing.T) {
+		tester(t, testCase{
+			sub: &SubrequestInfo{Filter: "ci-safety", ID: "other", Depth: 1},
+			url: "https://gitlab.com/api/v4/projects/42/protected_branches", allow: true, by: "rules:gitlab rules[2]",
+		})
+	})
+	t.Run("a rule without filters matches any subrequest", func(t *testing.T) {
+		tester(t, testCase{
+			sub: &SubrequestInfo{Filter: "x", Depth: 1},
+			url: "https://gitlab.com/api/v4/audit", allow: true, by: "rules:gitlab rules[1]", creds: []string{"gl-audit"},
+		})
+	})
+	t.Run("an agent request falls through a rule without filters", func(t *testing.T) {
+		tester(t, testCase{url: "https://gitlab.com/api/v4/audit", allow: true, by: "rules:gitlab rules[2]"})
+	})
+}
+
+func TestGitOnlyProjectRule(t *testing.T) {
+	type testCase struct {
+		req      *Request
+		allow    bool
+		resolved bool
+	}
+	cfg, err := config.Parse([]byte(`
+profiles:
+  p:
+    http:
+      - name: gitlab
+        hosts: [gitlab.com]
+        rules:
+          - action: allow
+            git: {service: upload-pack}
+            gitlab_project: mygroup/myproj
+`), "/tmp/c.yaml")
+	require.NoError(t, err)
+	svc := cfg.Profiles["p"].HTTP[0]
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		resolved := false
+		env := &Env{Resolver: func(context.Context, *config.Service, string, string) (int64, error) {
+			resolved = true
+			return 42, nil
+		}}
+		resp, err := Build([]Filter{NewRules(svc, env)}, upstreamOK)(tc.req)
+		require.NoError(t, err)
+		assert.Equal(t, tc.allow, resp.Denial == nil)
+		assert.Equal(t, tc.resolved, resolved)
+	}
+
+	t.Run("a REST request by numeric id skips the rule without a lookup", func(t *testing.T) {
+		tester(t, testCase{req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/42/repository/tree", nil)})
+	})
+	t.Run("a git request matches the rule by path", func(t *testing.T) {
+		tester(t, testCase{req: httpReq(t, "POST", "https://gitlab.com/mygroup/myproj.git/git-upload-pack", nil), allow: true})
 	})
 }

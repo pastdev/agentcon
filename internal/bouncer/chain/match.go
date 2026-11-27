@@ -110,7 +110,7 @@ func apiProject(raw string) (id, subpath string, ok bool, err error) {
 // REST API or git (HTTP or SSH). Numeric project IDs are resolved through the
 // Env resolver when the rule doesn't pin an ID. With subpaths, only REST
 // endpoints under the project whose subpath matches a glob qualify.
-func matchGitLabProject(req *Request, env *Env, p *config.ProjectRef) (bool, error) {
+func matchGitLabProject(req *Request, svc *config.Service, env *Env, p *config.ProjectRef) (bool, error) {
 	if g := req.Git(); g != nil {
 		return len(p.Subpaths) == 0 && p.Path != "" && strings.EqualFold(g.Repo, p.Path), nil
 	}
@@ -128,10 +128,10 @@ func matchGitLabProject(req *Request, env *Env, p *config.ProjectRef) (bool, err
 		if p.ID != 0 {
 			return n == p.ID, nil
 		}
-		if p.Path == "" || env == nil || env.Resolver == nil {
+		if p.Path == "" || svc == nil || env == nil || env.Resolver == nil {
 			return false, nil
 		}
-		id, err := env.Resolver(req.Ctx, req.Service, req.URL.Host, p.Path)
+		id, err := env.Resolver(req.Ctx, svc, req.URL.Host, p.Path)
 		if err != nil {
 			return false, fmt.Errorf("resolving GitLab project %q: %w", p.Path, err)
 		}

@@ -246,7 +246,7 @@ That covers an invalid URL or method, nesting too deep, too many redirects, a co
 An uncaught rejection denies the request being filtered, so a failed lookup fails closed.
 
 Redirects are followed by default, up to 5.
-Each hop goes through the chain again, with the credential of the service it reaches.
+Each hop goes through the chain again, with the credentials the service and rule it reaches allow.
 A hop to another host drops the `Authorization`, `Private-Token`, and `Cookie` headers the filter set.
 `redirect: "manual"` returns the 3xx instead.
 
@@ -258,8 +258,9 @@ Time spent waiting does not count toward the filter's CPU budget.
 Body reads keep the 16 MiB limit.
 Bouncer closes a body the filter did not read when the filter returns.
 
-A filter on the target service sees `req.subrequest`, a frozen `{filter, depth, parent}`.
-It is `null` for a request from the agent, and the agent cannot set it.
+A filter on the target service sees `req.subrequest`, a frozen `{filter, id, depth, parent}`.
+`id` is the policy-assigned id of the filter placement that made it, or `null`.
+`req.subrequest` is `null` for a request from the agent, and the agent cannot set it.
 Use it when a filter should treat a filter's own lookup differently.
 
 ```typescript
@@ -275,8 +276,17 @@ Encode them before you put them in a URL.
 A branch name can contain `/`, `#`, or `%`.
 [github-branch-rules.ts](bouncer/reference/ts/filters/github-branch-rules.ts) encodes each path segment.
 
-A service without an `inject` spec only replaces its credential's placeholder, which the agent's environment carries.
-A filter sends the placeholder itself with `placeholder(name)`.
+#### Credentials in a subrequest
+
+A subrequest gets the service's `inject` credential when that credential allows `subrequest`.
+For anything else, a filter names a credential with `placeholder(name)`.
+Each call returns a new one-time string, such as `bouncer-placeholder-gitlab-7f3a9c2e41d8b605`.
+Bouncer replaces only the strings that filter run issued, anywhere in that run's subrequests: headers, query, and body.
+The secret is escaped for `application/json` and `application/x-www-form-urlencoded` bodies, and placed as is in any other body.
+A string is replaced only when the request reaches a service that lists the credential and the credential allows `subrequest`.
+An [elevated credential](bouncer.md#elevated-credentials) also needs the matched rule to list it in `subrequest.credentials`.
+Elsewhere the string goes upstream as useless text.
+The strings expire when the filter run ends, so one kept in a module variable or `kv` matches nothing later.
 
 ```typescript
 await subrequest({
@@ -285,7 +295,33 @@ await subrequest({
 });
 ```
 
-`placeholder()` throws for an unknown credential or an `internal: true` one.
+The agent never sees the random part, so text the agent wrote cannot match, by accident or on purpose.
+For the same reason, the static `bouncer-placeholder-<name>` the agent's environment carries is never replaced in a subrequest.
+A filter that copies the agent's `Authorization` into a subrequest gets the service's `inject`, or no credential on a service without `inject`.
+Call `placeholder()` instead.
+
+A placeholder the request may use takes precedence over `inject` in the header `inject` would write.
+So a subrequest that sends `Authorization: Bearer ${placeholder("github-audit")}` keeps that credential.
+
+`placeholder()` throws for an unknown credential, for one whose `allow` lacks `subrequest`, and at module top level.
+
+There is no way for filter code to read a secret.
+
+#### Elevated lookups
+
+A filter that names an elevated credential acts with that credential's authority.
+The filter author is responsible for how it is used, the same as for any other filter code.
+Bouncer does not enforce the following.
+
+- Agent-controlled data, such as a branch name or a query parameter, must not decide which URL a privileged subrequest goes to, beyond what the filter has validated or encoded.
+- A filter must not return a privileged response's body or headers to the agent, for example with `respond()` or by returning the subrequest's response.
+
+Each subrequest is a real request to the provider, made while the agent's request waits.
+A filter that looks something up for every push adds that lookup's latency to every push, and counts against the token's rate limit.
+
+[github-ci-safety.ts](bouncer/reference/ts/filters/github-ci-safety.ts) refuses a push to a repo with repository Actions secrets.
+It does not check organization secrets shared with the repo or environment secrets, so it is an example of the pattern, not a complete secrets guard.
+It lists them with an elevated `github-audit` credential, which the [reference policy](bouncer/reference/bouncers.yaml) binds to that one route.
 
 ### Context and helpers
 
@@ -296,11 +332,6 @@ await subrequest({
 `console.debug`, `console.log`, `console.info`, `console.warn`, and `console.error` log their arguments at `debug`, `info`, `info`, `warn`, and `error`.
 Every line names the filter.
 [Logging](../README.md#logging) covers the levels.
-
-`credential(name)` returns that credential's secret.
-Filters are trusted.
-The request object does not include secrets unless a filter puts one in a `respond()` body.
-A credential with [`internal: true`](bouncer.md#internal) is never readable this way.
 
 `kv` is persistent storage, namespaced per filter.
 Module-level variables are per VM, not shared across requests.
@@ -424,7 +455,7 @@ cases:
     steps:
       - request: {url: "https://api.github.com/repos/other-org/other-repo/pulls"}
         expect: allow
-        expect_credential: false
+        expect_credentials: []
 ```
 
 Each case is isolated, with fresh `kv` state and a freshly loaded filter or policy.
@@ -464,8 +495,8 @@ A step checks any of these.
 - `expect_claims`: the session's full claim set after the step.
   `{}` asserts no claims.
 - `expect_upstream_header`: headers the upstream received.
-- `expect_credential`: whether the request reached the upstream with its service's credential.
-  Leftover paths under `unmatched: tunnel` do not carry it.
+- `expect_credentials`: the credentials the request reached the upstream with, compared as a set.
+  `[]` means it carried none, such as a leftover path under `unmatched: tunnel`.
 
 ### Subrequest fixtures
 
@@ -482,7 +513,7 @@ steps:
       - url: https://api.github.com/repos/myorg/myrepo/rules/branches/main
         body: '[{"type": "update"}]'
         expect_header: {Accept: application/vnd.github+json}
-        expect_credential: true
+        expect_credentials: [github]
       - url: https://api.github.com/repos/myorg/myrepo/rules/branches/other
         error: connection refused
     expect: deny
@@ -494,7 +525,8 @@ steps:
 - It answers with `status` (default 200), `headers`, and `body`.
   `error` makes the subrequest reject with that message instead.
 - `expect_header` checks headers the fixture received, after the chain ran.
-- `expect_credential` checks whether the subrequest arrived with its service's credential.
+- `expect_credentials` lists the credentials the subrequest arrived with, compared as a set.
+  `[]` means it carried none.
   It needs a bouncer spec.
 - A subrequest without a fixture fails the step, and so does a fixture nothing called.
 - In a bouncer spec, a subrequest runs through the profile's real chain before it reaches its fixture.

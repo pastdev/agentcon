@@ -18,6 +18,9 @@ const MaxSubrequestRedirects = 5
 type SubrequestInfo struct {
 	// Filter names the filter that made the subrequest.
 	Filter string `json:"filter"`
+	// ID is the policy-assigned id of the filter placement that made the
+	// subrequest. Empty when the placement has none.
+	ID string `json:"id"`
 	// Depth is 1 for a subrequest made while handling an agent request.
 	Depth int `json:"depth"`
 	// Parent describes the request that caused the subrequest.
@@ -30,7 +33,27 @@ func (s *SubrequestInfo) Origin() string {
 	if s == nil {
 		return ""
 	}
-	return "subrequest from " + s.Filter + " for " + s.Parent
+	return "subrequest from " + s.Who() + " for " + s.Parent
+}
+
+// Who names the subrequest's maker: its placement id when it has one, else
+// its filter name.
+func (s *SubrequestInfo) Who() string {
+	if s.ID != "" {
+		return s.ID
+	}
+	return s.Filter
+}
+
+// SubrequestCaller is the filter run that makes a subrequest.
+type SubrequestCaller struct {
+	// Filter is the filter's display name.
+	Filter string
+	// ID is the filter placement's policy-assigned id, or empty.
+	ID string
+	// Placeholders maps each one-time placeholder the run issued to its
+	// credential name.
+	Placeholders map[string]string
 }
 
 // SubrequestSpec is what a filter asks subrequest() to send.
@@ -46,7 +69,7 @@ type SubrequestSpec struct {
 	Timeout time.Duration
 }
 
-// SubrequestFunc sends a subrequest on behalf of the filter named filter,
-// which is handling parent. It returns the final response and its URL. An
-// error means there is no response.
-type SubrequestFunc func(parent *Request, filter string, spec SubrequestSpec) (*Response, *url.URL, error)
+// SubrequestFunc sends a subrequest on behalf of caller, which is handling
+// parent. It returns the final response and its URL. An error means there
+// is no response.
+type SubrequestFunc func(parent *Request, caller SubrequestCaller, spec SubrequestSpec) (*Response, *url.URL, error)

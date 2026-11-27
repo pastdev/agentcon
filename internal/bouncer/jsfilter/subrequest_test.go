@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -33,14 +34,15 @@ func (b *trackedBody) Close() error {
 type fakeSub struct {
 	parent *chain.Request
 	filter string
+	caller chain.SubrequestCaller
 	spec   chain.SubrequestSpec
 	resp   func() *chain.Response
 	err    error
 	delay  time.Duration
 }
 
-func (f *fakeSub) do(parent *chain.Request, filter string, spec chain.SubrequestSpec) (*chain.Response, *url.URL, error) {
-	f.parent, f.filter, f.spec = parent, filter, spec
+func (f *fakeSub) do(parent *chain.Request, caller chain.SubrequestCaller, spec chain.SubrequestSpec) (*chain.Response, *url.URL, error) {
+	f.parent, f.filter, f.caller, f.spec = parent, caller.Filter, caller, spec
 	time.Sleep(f.delay)
 	if f.err != nil {
 		return nil, nil, f.err
@@ -316,7 +318,7 @@ export default defineFilter({
     const s = req.subrequest;
     if (s === null) return deny("agent");
     try { s.filter = "forged"; } catch (e) {}
-    return deny(s.filter + " " + s.depth + " " + s.parent + " " + Object.isFrozen(s));
+    return deny(s.filter + " " + s.id + " " + s.depth + " " + s.parent + " " + Object.isFrozen(s));
   },
 });`
 	type testCase struct {
@@ -340,26 +342,31 @@ export default defineFilter({
 	t.Run("frozen info for a subrequest", func(t *testing.T) {
 		tester(t, testCase{
 			info: &chain.SubrequestInfo{Filter: "git-protect", Depth: 2, Parent: "POST github.com/o/r.git/git-receive-pack"},
-			want: "git-protect 2 POST github.com/o/r.git/git-receive-pack true",
+			want: "git-protect null 2 POST github.com/o/r.git/git-receive-pack true",
+		})
+	})
+	t.Run("the placement id when it has one", func(t *testing.T) {
+		tester(t, testCase{
+			info: &chain.SubrequestInfo{Filter: "git-protect", ID: "protect-main", Depth: 1, Parent: "POST x"},
+			want: "git-protect protect-main 1 POST x true",
 		})
 	})
 }
 
 func TestPlaceholder(t *testing.T) {
-	src := `import { defineFilter, deny, placeholder } from "bouncer";
-export default defineFilter({
-  onRequest(req, next) {
-    return deny(placeholder("gitlab-pat"));
-  },
-});`
 	type testCase struct {
-		env     *chain.Env
-		want    string
+		src   string
+		check func(string) error
+		// deny is the expected denial reason, "" to skip.
+		deny    string
 		wantErr string
+		verify  func(t *testing.T, sub *fakeSub, reason string)
 	}
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
-		f := load(t, src, Options{Env: tc.env})
+		sub := &fakeSub{}
+		env := &chain.Env{Placeholder: tc.check, Subrequest: sub.do}
+		f := load(t, tc.src, Options{Env: env, ID: "probe-id"})
 		resp, err := f.Handle(req(t, "GET", "https://x/", nil), upstream("x"))
 		if tc.wantErr != "" {
 			require.ErrorContains(t, err, tc.wantErr)
@@ -367,24 +374,89 @@ export default defineFilter({
 		}
 		require.NoError(t, err)
 		require.NotNil(t, resp.Denial)
-		assert.Equal(t, tc.want, resp.Denial.Reason)
+		if tc.deny != "" {
+			assert.Equal(t, tc.deny, resp.Denial.Reason)
+		}
+		if tc.verify != nil {
+			tc.verify(t, sub, resp.Denial.Reason)
+		}
 	}
+	oneTime := regexp.MustCompile(`^bouncer-placeholder-gitlab-pat-[0-9a-f]{16}$`)
 
-	t.Run("unchecked without a lookup", func(t *testing.T) {
-		tester(t, testCase{env: &chain.Env{}, want: "bouncer-placeholder-gitlab-pat"})
-	})
-	t.Run("from the lookup", func(t *testing.T) {
+	t.Run("each call returns a new one-time string for the credential", func(t *testing.T) {
 		tester(t, testCase{
-			env:  &chain.Env{Placeholder: func(name string) (string, error) { return "ph-" + name, nil }},
-			want: "ph-gitlab-pat",
+			src: `import { defineFilter, deny, placeholder } from "bouncer";
+export default defineFilter({
+  onRequest() {
+    return deny(placeholder("gitlab-pat") + " " + placeholder("gitlab-pat"));
+  },
+});`,
+			verify: func(t *testing.T, _ *fakeSub, reason string) {
+				t.Helper()
+				parts := strings.Split(reason, " ")
+				require.Len(t, parts, 2)
+				assert.Regexp(t, oneTime, parts[0])
+				assert.Regexp(t, oneTime, parts[1])
+				assert.NotEqual(t, parts[0], parts[1])
+			},
 		})
 	})
-	t.Run("throws for an unknown credential", func(t *testing.T) {
+	t.Run("the run's placeholders and the placement id go with its subrequests", func(t *testing.T) {
 		tester(t, testCase{
-			env:     &chain.Env{Placeholder: func(name string) (string, error) { return "", errors.New(`no credential named "` + name + `"`) }},
-			wantErr: `placeholder: no credential named "gitlab-pat"`,
+			src: `import { defineFilter, deny, placeholder, subrequest } from "bouncer";
+export default defineFilter({
+  async onRequest() {
+    const p = placeholder("gitlab-pat");
+    await subrequest({ url: "https://gitlab.example.com/api", headers: { "Private-Token": p } });
+    return deny(p);
+  },
+});`,
+			verify: func(t *testing.T, sub *fakeSub, reason string) {
+				t.Helper()
+				assert.Equal(t, map[string]string{reason: "gitlab-pat"}, sub.caller.Placeholders)
+				assert.Equal(t, "probe-id", sub.caller.ID)
+				assert.Equal(t, reason, sub.spec.Header.Get("Private-Token"))
+			},
 		})
 	})
+	t.Run("throws when the check refuses the credential", func(t *testing.T) {
+		tester(t, testCase{
+			src: `import { defineFilter, deny, placeholder } from "bouncer";
+export default defineFilter({ onRequest() { return deny(placeholder("gitlab-pat")); } });`,
+			check: func(name string) error {
+				return errors.New(`credential "` + name + `" does not allow subrequest`)
+			},
+			wantErr: `placeholder: credential "gitlab-pat" does not allow subrequest`,
+		})
+	})
+	t.Run("throws at module top level", func(t *testing.T) {
+		_, err := Load(Options{Path: writeFilter(t, t.TempDir(), "f.ts", `import { defineFilter, deny, placeholder } from "bouncer";
+const p = placeholder("gitlab-pat");
+export default defineFilter({ onRequest() { return deny(p); } });`)})
+		require.ErrorContains(t, err, "placeholder() can only be called while handling a request")
+	})
+}
+
+func TestPlaceholderExpires(t *testing.T) {
+	sub := &fakeSub{}
+	f := load(t, `import { defineFilter, deny, placeholder, subrequest } from "bouncer";
+let kept = "";
+export default defineFilter({
+  async onRequest() {
+    if (kept === "") {
+      kept = placeholder("gitlab-pat");
+      return deny("first");
+    }
+    await subrequest({ url: "https://gitlab.example.com/api", headers: { "Private-Token": kept } });
+    return deny("second");
+  },
+});`, Options{Env: &chain.Env{Subrequest: sub.do}})
+	_, err := f.Handle(req(t, "GET", "https://x/", nil), upstream("x"))
+	require.NoError(t, err)
+	_, err = f.Handle(req(t, "GET", "https://x/", nil), upstream("x"))
+	require.NoError(t, err)
+	require.NotEmpty(t, sub.spec.Header.Get("Private-Token"), "the second run reused the first run's string")
+	assert.Empty(t, sub.caller.Placeholders, "a string from an earlier run is not this run's placeholder")
 }
 
 func TestSubrequestOrigin(t *testing.T) {

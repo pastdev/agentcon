@@ -22,7 +22,15 @@ import (
 
 func tokenCred(name string, src config.ValueSource) *config.Credential {
 	s := src
-	return &config.Credential{Name: name, Token: &s}
+	return &config.Credential{Name: name, Token: &s, Allow: []string{config.AllowAgent}}
+}
+
+// allowFor is an internal credential's allow list, or an agent one's.
+func allowFor(internal bool) []string {
+	if internal {
+		return []string{config.AllowInternal}
+	}
+	return []string{config.AllowAgent}
 }
 
 func TestGet(t *testing.T) {
@@ -43,7 +51,7 @@ func TestGet(t *testing.T) {
 		if tc.skipWin != "" && runtime.GOOS == "windows" {
 			t.Skip(tc.skipWin)
 		}
-		v, err := tc.store.Get(context.Background(), tc.name)
+		v, err := tc.store.Get(context.Background(), tc.name, config.AllowAgent)
 		if tc.wantErr != "" {
 			require.ErrorContains(t, err, tc.wantErr)
 			return
@@ -89,7 +97,7 @@ func TestGet(t *testing.T) {
 	})
 	t.Run("reads an env overlay without an os value", func(t *testing.T) {
 		s := NewStore(map[string]*config.Credential{"e": tokenCred("e", config.ValueSource{Source: "env", Env: "BOUNCER_TEST_UNSET"})})
-		_, err := s.Get(context.Background(), "e")
+		_, err := s.Get(context.Background(), "e", config.AllowAgent)
 		require.Error(t, err)
 		s.SetEnv(map[string]string{"BOUNCER_TEST_UNSET": "from-put"})
 		tester(t, testCase{store: s, name: "e", wantToken: "from-put"})
@@ -114,7 +122,7 @@ func TestGet(t *testing.T) {
 			Source: "bitwarden", Account: "work", Item: "GitLab", Path: "$.login.password",
 			Bitwarden: &config.BitwardenAccount{Name: "work", Email: "user@example.com", Server: srv.URL},
 		})})
-		_, err := s.Get(context.Background(), "bw")
+		_, err := s.Get(context.Background(), "bw", config.AllowAgent)
 		require.ErrorContains(t, err, `credential "bw"`)
 		require.ErrorContains(t, err, "prelogin")
 	})
@@ -133,16 +141,17 @@ func TestGet(t *testing.T) {
 			Bitwarden: &config.BitwardenAccount{Name: "work", Email: "user@example.com", Server: srv.URL,
 				Password: &config.ValueSource{Source: "env", Env: "BOUNCER_TEST_BW_MASTER"}},
 		})})
-		_, err := s.Get(context.Background(), "bw")
+		_, err := s.Get(context.Background(), "bw", config.AllowAgent)
 		require.ErrorContains(t, err, "bitwarden account work password: environment variable BOUNCER_TEST_BW_MASTER is not set")
 		s.SetEnv(map[string]string{"BOUNCER_TEST_BW_MASTER": "fake-test-password"})
-		_, err = s.Get(context.Background(), "bw")
+		_, err = s.Get(context.Background(), "bw", config.AllowAgent)
 		require.Error(t, err, "the fake vault has no login endpoint")
 		assert.NotContains(t, err.Error(), "is not set")
 	})
 	t.Run("fills composite username and password slots", func(t *testing.T) {
 		c := &config.Credential{
 			Name:     "login",
+			Allow:    []string{config.AllowAgent},
 			Username: &config.ValueSource{Source: "provided"},
 			Password: &config.ValueSource{Source: "provided"},
 		}
@@ -337,7 +346,7 @@ func TestCommandError(t *testing.T) {
 		}
 		s := NewStore(map[string]*config.Credential{"x": tokenCred("x", config.ValueSource{Source: "command",
 			Command: []string{"sh", "-c", tc.script}})})
-		_, err := s.Get(context.Background(), "x")
+		_, err := s.Get(context.Background(), "x", config.AllowAgent)
 		var ce *crederr.CommandError
 		require.ErrorAs(t, err, &ce)
 		assert.Equal(t, "sh", ce.Name)
@@ -364,7 +373,7 @@ func TestInternalCredential(t *testing.T) {
 	signing := func(internal bool) *config.Credential {
 		return &config.Credential{
 			Name:       "sign",
-			Internal:   internal,
+			Allow:      allowFor(internal),
 			PrivateKey: &config.ValueSource{Source: "provided"},
 			Password:   &config.ValueSource{Source: "provided"},
 		}
@@ -386,13 +395,13 @@ func TestInternalCredential(t *testing.T) {
 		t.Helper()
 		err := tc.read(tc.store())
 		if tc.wantErr {
-			require.ErrorIs(t, err, ErrInternal)
+			require.ErrorIs(t, err, ErrNotAllowed)
 			return
 		}
 		require.NoError(t, err)
 	}
 	get := func(s *Store) error {
-		_, err := s.Get(t.Context(), "sign")
+		_, err := s.Get(t.Context(), "sign", config.AllowAgent)
 		return err
 	}
 	sshSigners := func(s *Store) error {
@@ -432,6 +441,45 @@ func TestInternalCredential(t *testing.T) {
 	})
 }
 
+func TestGetByKind(t *testing.T) {
+	type testCase struct {
+		allow   []string
+		kind    string
+		wantErr bool
+	}
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		c := &config.Credential{Name: "x", Allow: tc.allow, Token: &config.ValueSource{Source: "provided"}}
+		s := NewStore(map[string]*config.Credential{"x": c})
+		s.SetProvided(map[string]string{config.ProvidedKey("x", config.SlotToken): "secret"})
+		v, err := s.Get(t.Context(), "x", tc.kind)
+		if tc.wantErr {
+			require.ErrorIs(t, err, ErrNotAllowed)
+			assert.Contains(t, err.Error(), tc.kind+" requests")
+			assert.Empty(t, v.Token)
+			return
+		}
+		require.NoError(t, err)
+		assert.Equal(t, "secret", v.Token)
+	}
+
+	t.Run("an elevated credential is refused to the agent", func(t *testing.T) {
+		tester(t, testCase{allow: []string{config.AllowSubrequest}, kind: config.AllowAgent, wantErr: true})
+	})
+	t.Run("an elevated credential is given to a subrequest", func(t *testing.T) {
+		tester(t, testCase{allow: []string{config.AllowSubrequest}, kind: config.AllowSubrequest})
+	})
+	t.Run("an agent-only credential is refused to a subrequest", func(t *testing.T) {
+		tester(t, testCase{allow: []string{config.AllowAgent}, kind: config.AllowSubrequest, wantErr: true})
+	})
+	t.Run("a credential allowing both is given to the agent", func(t *testing.T) {
+		tester(t, testCase{allow: []string{config.AllowAgent, config.AllowSubrequest}, kind: config.AllowAgent})
+	})
+	t.Run("get never hands out an internal credential, even asked as internal", func(t *testing.T) {
+		tester(t, testCase{allow: []string{config.AllowInternal}, kind: config.AllowInternal, wantErr: true})
+	})
+}
+
 func TestSlotCacheAcrossReload(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, value string) string {
@@ -443,10 +491,10 @@ func TestSlotCacheAcrossReload(t *testing.T) {
 	secret := write("secret", "internal-value")
 	record := func(file string, internal bool) *config.Credential {
 		return &config.Credential{
-			Name:     "x",
-			Internal: internal,
-			Token:    &config.ValueSource{Source: "file", File: file},
-			Cache:    &config.Duration{D: time.Hour},
+			Name:  "x",
+			Allow: allowFor(internal),
+			Token: &config.ValueSource{Source: "file", File: file},
+			Cache: &config.Duration{D: time.Hour},
 		}
 	}
 	type testCase struct {
@@ -492,7 +540,7 @@ func TestSlotCacheAcrossReload(t *testing.T) {
 
 func TestProvidedAcrossReload(t *testing.T) {
 	record := func(internal bool) *config.Credential {
-		return &config.Credential{Name: "x", Internal: internal, Token: &config.ValueSource{Source: "provided"}}
+		return &config.Credential{Name: "x", Allow: allowFor(internal), Token: &config.ValueSource{Source: "provided"}}
 	}
 	key := config.ProvidedKey("x", config.SlotToken)
 	type testCase struct {

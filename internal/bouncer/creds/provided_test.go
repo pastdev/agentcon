@@ -36,22 +36,22 @@ func TestParseProvided(t *testing.T) {
 		require.Equal(t, "glpat-abc: #not a comment 'quoted'", got["gitlab"])
 		require.Equal(t, "ghp_nospace", got["github"])
 		store := NewStore(map[string]*config.Credential{
-			"gitlab":     {Name: "gitlab", Token: &config.ValueSource{Source: "keyring"}},
-			"deploy-key": {Name: "deploy-key", PrivateKey: &config.ValueSource{Source: "provided"}},
-			"other":      {Name: "other", Token: &config.ValueSource{Source: "provided"}},
+			"gitlab":     {Name: "gitlab", Allow: []string{config.AllowAgent}, Token: &config.ValueSource{Source: "keyring"}},
+			"deploy-key": {Name: "deploy-key", Allow: []string{config.AllowAgent}, PrivateKey: &config.ValueSource{Source: "provided"}},
+			"other":      {Name: "other", Allow: []string{config.AllowAgent}, Token: &config.ValueSource{Source: "provided"}},
 		})
 		store.SetProvided(map[string]string{
 			config.ProvidedKey("gitlab", config.SlotToken):          got["gitlab"],
 			config.ProvidedKey("deploy-key", config.SlotPrivateKey): got["deploy-key"],
 		})
-		v, err := store.Get(context.Background(), "gitlab")
+		v, err := store.Get(context.Background(), "gitlab", config.AllowAgent)
 		require.NoError(t, err)
 		assert.Equal(t, got["gitlab"], v.Token, "provided value should override keyring")
 		signers, err := store.SSHSigners(context.Background(), "deploy-key")
 		require.NoError(t, err)
 		assert.Len(t, signers, 1, "multi-line key via base64")
 		assert.Equal(t, []string{config.ProvidedKey("other", config.SlotToken)}, store.MissingProvided())
-		_, err = store.Get(context.Background(), "other")
+		_, err = store.Get(context.Background(), "other", config.AllowAgent)
 		require.ErrorContains(t, err, "no value provided")
 	}
 
@@ -94,7 +94,7 @@ func TestSSHSigners(t *testing.T) {
 	tester := func(t *testing.T, tc testCase) {
 		t.Helper()
 		store := NewStore(map[string]*config.Credential{
-			"deploy": {Name: "deploy", PrivateKey: &config.ValueSource{Source: tc.src}},
+			"deploy": {Name: "deploy", Allow: []string{config.AllowAgent}, PrivateKey: &config.ValueSource{Source: tc.src}},
 		})
 		store.SetProvided(map[string]string{
 			config.ProvidedKey("deploy", config.SlotPrivateKey): tc.pem,

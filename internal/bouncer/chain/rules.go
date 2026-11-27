@@ -23,12 +23,13 @@ type Rules struct {
 	env         *Env
 	ssh         bool
 	sshSvc      *config.SSHService
+	httpSvc     *config.Service
 	service     string
 }
 
 // NewRules builds the rules filter for an HTTP service.
 func NewRules(svc *config.Service, env *Env) *Rules {
-	return &Rules{name: "rules:" + svc.Name, rules: svc.Rules, def: svc.DefaultAction(), defYAML: svc.Default, env: env, service: svc.Name}
+	return &Rules{name: "rules:" + svc.Name, rules: svc.Rules, def: svc.DefaultAction(), defYAML: svc.Default, env: env, httpSvc: svc, service: svc.Name}
 }
 
 // NewSSHRules builds the rules filter for an SSH service. It also enforces the
@@ -70,7 +71,7 @@ func (r *Rules) Handle(req *Request, next Handler) (*Response, error) {
 	}
 	for i := range r.rules {
 		rule := &r.rules[i]
-		ok, err := Match(req, rule, r.env)
+		ok, err := Match(req, r.httpSvc, rule, r.env)
 		if err != nil {
 			return nil, fmt.Errorf("rules[%d]: %w", i, err)
 		}
@@ -89,6 +90,10 @@ func (r *Rules) wrap(i int, next Handler) Handler {
 }
 
 func (r *Rules) act(req *Request, next Handler, i int, action, by, reason, prompt string) (*Response, error) {
+	req.RuleCredentials = nil
+	if i >= 0 && r.rules[i].Subrequest != nil {
+		req.RuleCredentials = r.rules[i].Subrequest.Credentials
+	}
 	switch action {
 	case config.ActionAllow:
 		req.AllowedBy = by
@@ -127,8 +132,18 @@ func (r *Rules) act(req *Request, next Handler, i int, action, by, reason, promp
 	}
 }
 
-// Match reports whether all of a rule's matchers match req.
-func Match(req *Request, rule *config.Rule, env *Env) (bool, error) {
+// Match reports whether all of a rule's matchers match req. svc is the
+// HTTP service the rule belongs to, nil for SSH. The subrequest check runs
+// first, so a rule an agent request can never match starts no lookup.
+func Match(req *Request, svc *config.Service, rule *config.Rule, env *Env) (bool, error) {
+	if sr := rule.Subrequest; sr != nil {
+		if req.Subrequest == nil {
+			return false, nil
+		}
+		if sr.Filters != nil && (req.Subrequest.ID == "" || !slices.Contains(sr.Filters, req.Subrequest.ID)) {
+			return false, nil
+		}
+	}
 	isHTTP := req.Transport == TransportHTTP
 	if len(rule.Methods) > 0 && (!isHTTP || !slices.Contains(rule.Methods, req.Method)) {
 		return false, nil
@@ -150,20 +165,22 @@ func Match(req *Request, rule *config.Rule, env *Env) (bool, error) {
 			return false, nil
 		}
 	}
+	// git runs before gitlab_project, so a request that is not git skips a
+	// git-only rule before any project lookup.
+	if g := rule.Git; g != nil {
+		ok, err := matchGit(req, g)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
 	if p := rule.GitLabProject; p != nil {
-		ok, err := matchGitLabProject(req, env, p)
+		ok, err := matchGitLabProject(req, svc, env, p)
 		if err != nil || !ok {
 			return false, err
 		}
 	}
 	if len(rule.GitHubRepo) > 0 {
 		ok, err := matchGitHubRepo(req, rule.GitHubRepo, rule.GitHubSubpaths)
-		if err != nil || !ok {
-			return false, err
-		}
-	}
-	if g := rule.Git; g != nil {
-		ok, err := matchGit(req, g)
 		if err != nil || !ok {
 			return false, err
 		}

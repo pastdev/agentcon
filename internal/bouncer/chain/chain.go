@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/pastdev/agentcon/pkg/bouncer/claims"
+	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
 // Handler processes a request, typically by calling the rest of the chain.
@@ -67,7 +68,9 @@ type ClaimRequester interface {
 }
 
 // ProjectResolver maps a GitLab project path to its numeric ID on a host.
-type ProjectResolver func(ctx context.Context, service, host, project string) (int64, error)
+// svc is the service of the profile that matched the request, so a lookup
+// uses only that service's lookup_credential.
+type ProjectResolver func(ctx context.Context, svc *config.Service, host, project string) (int64, error)
 
 // Env is shared by every filter in a daemon.
 type Env struct {
@@ -78,13 +81,9 @@ type Env struct {
 	// Log receives filter log output. Each line names its filter.
 	Log      zerolog.Logger
 	Resolver ProjectResolver
-	// Credential returns a named secret. Filters are trusted; the request
-	// object still does not carry secrets unless a filter puts one in a
-	// respond() body.
-	Credential func(ctx context.Context, name string) (string, error)
-	// Placeholder returns a credential's placeholder. Nil returns it
-	// without checking that the credential exists.
-	Placeholder func(name string) (string, error)
+	// Placeholder checks that a filter may send a credential in a
+	// subrequest: it exists and allows subrequest. Nil accepts any name.
+	Placeholder func(name string) error
 	// Subrequest sends a filter's subrequest. Nil makes subrequest() throw.
 	Subrequest SubrequestFunc
 }

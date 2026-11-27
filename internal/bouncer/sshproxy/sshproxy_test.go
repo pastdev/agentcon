@@ -188,7 +188,7 @@ func setupR(t *testing.T) (*upstream, string, *ca.Authority, *sessionState) {
 
 	cfg, err := config.Parse([]byte(fmt.Sprintf(`
 credentials:
-  key: {private_key: {source: file, file: %s}}
+  key: {allow: [agent, subrequest], private_key: {source: file, file: %s}}
 profiles:
   p:
     ssh:
@@ -422,7 +422,7 @@ func TestPrepare(t *testing.T) {
 		t.Helper()
 		cfg, err := config.Parse([]byte(`
 credentials:
-  key: {private_key: {source: env, env: UNUSED}}
+  key: {allow: [agent, subrequest], private_key: {source: env, env: UNUSED}}
 profiles:
   p:
     ssh:

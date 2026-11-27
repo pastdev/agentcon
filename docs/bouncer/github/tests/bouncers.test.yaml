@@ -6,19 +6,19 @@ cases:
     steps:
       - request: {url: "https://api.github.com/user"}
         expect: allow
-        expect_credential: true
+        expect_credentials: [github-pat]
       - request: {url: "https://api.github.com/repos/your-org/your-repo/pulls"}
         expect: allow
-        expect_credential: true
+        expect_credentials: [github-pat]
 
   - name: leftover paths go through without the PAT
     steps:
       - request: {url: "https://api.github.com/repos/other-org/other-repo/pulls"}
         expect: allow
-        expect_credential: false
+        expect_credentials: []
       - request: {method: DELETE, url: "https://api.github.com/repos/your-org/your-repo"}
         expect: allow
-        expect_credential: false
+        expect_credentials: []
 
   - name: tag push asks
     steps:
@@ -31,13 +31,13 @@ cases:
         request: {method: POST, url: "https://github.com/your-org/your-repo.git/git-receive-pack", git_push: [{ref: refs/tags/v1.0.0}]}
         expect: allow
         expect_asked: true
-        expect_credential: true
+        expect_credentials: [github-pat]
 
   - name: feature branch push carries the PAT
     steps:
       - request: {method: POST, url: "https://github.com/your-org/your-repo.git/git-receive-pack", git_push: [{ref: refs/heads/feature}]}
         expect: allow
-        expect_credential: true
+        expect_credentials: [github-pat]
 
   - name: pushes to main and master are blocked
     steps:
@@ -63,7 +63,7 @@ cases:
     steps:
       - request: {method: POST, url: "https://api.github.com/graphql", body: '{"query":"query { viewer { login } }"}'}
         expect: allow
-        expect_credential: true
+        expect_credentials: [github-pat]
 
   - name: graphql deny list blocks repository deletion
     steps:
@@ -92,4 +92,4 @@ cases:
     steps:
       - ssh: {host: github.com, user: git, command: "git-upload-pack 'your-org/your-repo.git'"}
         expect: allow
-        expect_credential: true
+        expect_credentials: [github-ssh]

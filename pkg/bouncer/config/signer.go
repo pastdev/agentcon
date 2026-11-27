@@ -94,8 +94,8 @@ func (c *Config) validateSigner(s *Service) error {
 	if s.Signer.OpenPGP == nil {
 		return fmt.Errorf("signer: openpgp is required")
 	}
-	if s.Credential != "" {
-		return fmt.Errorf("signer service may not set credential")
+	if len(s.Credentials) > 0 || s.LookupCredential != "" {
+		return fmt.Errorf("signer service may not set credentials")
 	}
 	if s.Inject != nil {
 		return fmt.Errorf("signer service may not set inject")
@@ -143,8 +143,8 @@ func (c *Config) validateSigningCredential(name string) error {
 	if !ok {
 		return fmt.Errorf("unknown credential %q", name)
 	}
-	if !cr.Internal {
-		return fmt.Errorf("credential %q must set internal: true", name)
+	if !cr.Allows(AllowInternal) {
+		return fmt.Errorf("credential %q must be allow: [internal]", name)
 	}
 	if cr.PrivateKey == nil {
 		return fmt.Errorf("credential %q needs private_key", name)

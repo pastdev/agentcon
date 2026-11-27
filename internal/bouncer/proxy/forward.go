@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -9,14 +10,14 @@ import (
 	"strings"
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
+	"github.com/pastdev/agentcon/internal/bouncer/credinject"
 	"github.com/pastdev/agentcon/internal/bouncer/creds"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
-	"github.com/pastdev/agentcon/pkg/bouncer/config"
 )
 
-// forwarder is the terminal handler: inject the credential and send upstream.
+// forwarder is the terminal handler: attach credentials and send upstream.
 // It runs only after every filter and rule has allowed the request, so
-// filters never see the secret.
+// filters never see a secret.
 func (s *Server) forwarder(svc *policy.Service, origLength int64) chain.Handler {
 	return func(req *chain.Request) (*chain.Response, error) {
 		header := req.Header.Clone()
@@ -24,27 +25,20 @@ func (s *Server) forwarder(svc *policy.Service, origLength int64) chain.Handler 
 		// so response filters always see plain bodies.
 		header.Del("Accept-Encoding")
 		u := *req.URL
-		var injectedSecret string
-		if name := svc.Config.Credential; name != "" {
-			if header.Get("Upgrade") != "" && !svc.Config.AllowUpgrade {
-				return synthetic(http.StatusForbidden, "agent-bouncer: protocol upgrades on "+svc.Config.Name+" are not allowed (the upgraded stream can't be filtered); set allow_upgrade: true to permit"), nil
-			}
-			spec := svc.Config.Inject.For(req.Git() != nil)
-			if req.SkipCredential {
-				stripPlaceholder(header, &u, name, spec)
-			} else {
-				if u.Scheme != "https" && !svc.Config.Insecure {
-					return synthetic(http.StatusForbidden, "agent-bouncer: refusing to send credentials over plain HTTP; use https (or set insecure: true on the service for local development)"), nil
-				}
-				secret, err := s.Creds.Get(req.Ctx, name)
-				if err != nil {
-					creds.LogError(s.Log.Warn(), err).Str("service", svc.Config.Name).Msg("credential unavailable")
-					return synthetic(http.StatusBadGateway, "agent-bouncer: "+creds.Unavailable(svc.Config.Name).Error()), nil
-				}
-				Inject(header, &u, name, spec, secret)
-				if spec != nil && spec.Query != "" {
-					injectedSecret = secret.HTTP()
-				}
+		credentialed := len(svc.Config.Credentials) > 0
+		if credentialed && header.Get("Upgrade") != "" && !svc.Config.AllowUpgrade {
+			return synthetic(http.StatusForbidden, "agent-bouncer: protocol upgrades on "+svc.Config.Name+" are not allowed (the upgraded stream can't be filtered); set allow_upgrade: true to permit"), nil
+		}
+		var querySecrets []string
+		// substituted is the outbound body when a secret was placed in it.
+		// It stays local to the upstream request, so filters reading req.body
+		// afterwards, such as in onResponse, still see the placeholder.
+		var substituted []byte
+		if credentialed {
+			var resp *chain.Response
+			querySecrets, substituted, resp = s.attach(svc, req, header, &u)
+			if resp != nil {
+				return resp, nil
 			}
 		}
 
@@ -53,7 +47,13 @@ func (s *Server) forwarder(svc *policy.Service, origLength int64) chain.Handler 
 			length = origLength
 		}
 		var body io.ReadCloser = http.NoBody
-		if length != 0 {
+		switch {
+		case substituted != nil:
+			length = int64(len(substituted))
+			if length != 0 {
+				body = io.NopCloser(bytes.NewReader(substituted))
+			}
+		case length != 0:
 			body = req.Body.Reader()
 		}
 		out, err := http.NewRequestWithContext(req.Ctx, req.Method, u.String(), body)
@@ -72,17 +72,18 @@ func (s *Server) forwarder(svc *policy.Service, origLength int64) chain.Handler 
 			r.UpstreamErr = fmt.Errorf("upstream: %w", err)
 			return r, nil
 		}
-		// A query-injected secret can come back in a URL the upstream echoes
-		// (a redirect Location, say), which the agent would then read. Scrub it.
-		if injectedSecret != "" {
-			scrubSecret(resp.Header, injectedSecret)
+		// A secret placed in the query can come back in a URL the upstream
+		// echoes (a redirect Location, say), which the agent would then read.
+		// Scrub it.
+		for _, secret := range querySecrets {
+			scrubSecret(resp.Header, secret)
 		}
 		r := &chain.Response{Status: resp.StatusCode, Header: resp.Header}
 		if resp.StatusCode == http.StatusSwitchingProtocols {
 			// Only splice a 101 if the client actually asked to upgrade and
 			// the service permits it; otherwise an upstream could hand the
 			// agent a raw stream on a request that was never meant to upgrade.
-			if header.Get("Upgrade") == "" || (svc.Config.Credential != "" && !svc.Config.AllowUpgrade) {
+			if header.Get("Upgrade") == "" || (credentialed && !svc.Config.AllowUpgrade) {
 				_ = resp.Body.Close()
 				return synthetic(http.StatusBadGateway, "agent-bouncer: unexpected protocol upgrade from upstream"), nil
 			}
@@ -118,123 +119,48 @@ func synthetic(status int, msg string) *chain.Response {
 		Body: chain.BytesBody([]byte(msg + "\n"))}
 }
 
-// Inject replaces the credential's placeholder in authentication headers
-// (including inside Basic auth), then applies the explicit inject spec.
-//
-// Placeholders are replaced only in Authorization, Private-Token, the
-// spec's header, and headers it lists in placeholder_headers. Anywhere an
-// API might store and echo a value back (other headers, the query string,
-// the body), a substituted secret would end up readable by the agent.
-func Inject(h http.Header, u *url.URL, credName string, spec *config.Inject, secret creds.Secret) {
-	ph := config.Placeholder(credName)
-	httpSecret := secret.HTTP()
-	for _, k := range placeholderHeaders(spec) {
-		vs := h.Values(k)
-		for i, v := range vs {
-			if strings.HasPrefix(v, "Basic ") && strings.EqualFold(k, "Authorization") {
-				if raw, err := base64.StdEncoding.DecodeString(v[len("Basic "):]); err == nil && strings.Contains(string(raw), ph) {
-					vs[i] = "Basic " + base64.StdEncoding.EncodeToString([]byte(strings.ReplaceAll(string(raw), ph, httpSecret)))
-					continue
-				}
-			}
-			if strings.Contains(v, ph) {
-				vs[i] = strings.ReplaceAll(v, ph, httpSecret)
-			}
+// attach replaces the placeholders req may use and applies inject, or
+// strips them when the request is forwarded without credentials. header
+// and u are the outbound copies. It returns the secrets it put in the
+// query, the outbound body when it placed a secret there (nil otherwise),
+// or a response that ends the request instead. It never changes req.
+func (s *Server) attach(svc *policy.Service, req *chain.Request, header http.Header, u *url.URL) ([]string, []byte, *chain.Response) {
+	var body []byte
+	if req.Subrequest != nil && len(req.Placeholders) > 0 && req.Body != nil {
+		b, err := req.Body.ReadAll()
+		if err != nil {
+			return nil, nil, synthetic(http.StatusBadGateway, "agent-bouncer: read subrequest body: "+err.Error())
 		}
+		body = b
 	}
-	if spec == nil {
-		return
+	plan := credinject.NewPlan(svc.Config, req, header, u, body, s.Creds.Credential)
+	if req.SkipCredential {
+		plan.Strip(header, u)
+		return nil, nil, nil
 	}
-	switch {
-	case spec.Bearer:
-		h.Set("Authorization", "Bearer "+httpSecret)
-	case spec.Basic != nil:
-		user := secret.BasicUser(spec.Basic.Username)
-		h.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(user+":"+secret.BasicPass())))
-	case spec.Header != "":
-		v := spec.Value
-		if v == "" {
-			v = "{{secret}}"
+	if len(plan.Used) == 0 {
+		return nil, nil, nil
+	}
+	if u.Scheme != "https" && !svc.Config.Insecure {
+		return nil, nil, synthetic(http.StatusForbidden, "agent-bouncer: refusing to send credentials over plain HTTP; use https (or set insecure: true on the service for local development)")
+	}
+	kind := credinject.Kind(req)
+	secrets := map[string]creds.Secret{}
+	for _, name := range plan.Used {
+		secret, err := s.Creds.Get(req.Ctx, name, kind)
+		if err != nil {
+			creds.LogError(s.Log.Warn(), err).Str("service", svc.Config.Name).Str("credential", name).Msg("credential unavailable")
+			return nil, nil, synthetic(http.StatusBadGateway, "agent-bouncer: "+creds.Unavailable(svc.Config.Name).Error())
 		}
-		h.Set(spec.Header, strings.ReplaceAll(v, "{{secret}}", httpSecret))
+		secrets[name] = secret
 	}
-	if spec.Query != "" {
-		// Append rather than re-encode: url.Values.Encode() drops malformed
-		// pairs and reorders the rest, so the forwarded query would differ
-		// from the one the rules evaluated.
-		pair := url.QueryEscape(spec.Query) + "=" + url.QueryEscape(httpSecret)
-		if u.RawQuery == "" {
-			u.RawQuery = pair
-		} else {
-			u.RawQuery += "&" + pair
-		}
+	newBody, querySecrets := plan.Apply(header, u, body, secrets)
+	req.Credentials = plan.Used
+	if !plan.Body {
+		return querySecrets, nil, nil
 	}
-}
-
-// stripPlaceholder removes header and query values that carry the
-// credential placeholder, so an unmatched-path fallback is unauthenticated
-// instead of sending a fake token.
-func stripPlaceholder(h http.Header, u *url.URL, credName string, spec *config.Inject) {
-	ph := config.Placeholder(credName)
-	if ph == "" {
-		return
+	if newBody == nil {
+		newBody = []byte{}
 	}
-	for _, k := range placeholderHeaders(spec) {
-		vs := h.Values(k)
-		if len(vs) == 0 {
-			continue
-		}
-		var kept []string
-		for _, v := range vs {
-			if strings.HasPrefix(v, "Basic ") && strings.EqualFold(k, "Authorization") {
-				raw, err := base64.StdEncoding.DecodeString(v[len("Basic "):])
-				if err == nil && strings.Contains(string(raw), ph) {
-					continue
-				}
-			}
-			if strings.Contains(v, ph) {
-				continue
-			}
-			kept = append(kept, v)
-		}
-		h.Del(k)
-		for _, v := range kept {
-			h.Add(k, v)
-		}
-	}
-	if u == nil || u.RawQuery == "" {
-		return
-	}
-	q := u.Query()
-	changed := false
-	for k, vs := range q {
-		kept := vs[:0]
-		for _, v := range vs {
-			if strings.Contains(v, ph) {
-				changed = true
-				continue
-			}
-			kept = append(kept, v)
-		}
-		if len(kept) == 0 {
-			q.Del(k)
-			continue
-		}
-		q[k] = kept
-	}
-	if changed {
-		u.RawQuery = q.Encode()
-	}
-}
-
-// placeholderHeaders lists the headers in which placeholders are replaced.
-func placeholderHeaders(spec *config.Inject) []string {
-	out := []string{"Authorization", "Private-Token"}
-	if spec != nil {
-		if spec.Header != "" {
-			out = append(out, spec.Header)
-		}
-		out = append(out, spec.PlaceholderHeaders...)
-	}
-	return out
+	return querySecrets, newBody, nil
 }

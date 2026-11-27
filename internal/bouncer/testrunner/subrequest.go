@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
+	"github.com/pastdev/agentcon/internal/bouncer/credinject"
 	"github.com/pastdev/agentcon/internal/bouncer/policy"
 	"github.com/pastdev/agentcon/internal/bouncer/signer"
 	"github.com/pastdev/agentcon/internal/bouncer/subreq"
@@ -29,15 +30,15 @@ type subrequests struct {
 
 // fixtureSeen is what a fixture received. It records the last call.
 type fixtureSeen struct {
-	header     http.Header
-	credential bool
+	header      http.Header
+	credentials []string
 }
 
 // router routes subrequests the way the daemon does. With a policy, they
 // run through the profile's chains, and fixtures stand in for upstreams
 // and tunnels. Without one, a filter spec's subrequests go straight to the
 // fixtures.
-func (s *subrequests) router(profiles func(string) (*policy.Profile, bool), cl *scriptedClaims) *subreq.Router {
+func (s *subrequests) router(profiles func(string) (*policy.Profile, bool), lookup credinject.Lookup, cl *scriptedClaims) *subreq.Router {
 	r := &subreq.Router{
 		// Like the daemon, a subrequest sees the session's claims as they
 		// are now.
@@ -48,7 +49,7 @@ func (s *subrequests) router(profiles func(string) (*policy.Profile, bool), cl *
 		},
 	}
 	if profiles == nil {
-		r.Direct = func(req *chain.Request) (*chain.Response, error) { return s.answer(req, false), nil }
+		r.Direct = func(req *chain.Request) (*chain.Response, error) { return s.answer(req, nil), nil }
 		return r
 	}
 	r.Profile = profiles
@@ -57,11 +58,11 @@ func (s *subrequests) router(profiles func(string) (*policy.Profile, bool), cl *
 			return signer.Terminal(svc.Config, testSigner{}, zerolog.Nop())
 		}
 		return func(req *chain.Request) (*chain.Response, error) {
-			return s.answer(req, svc.Config.Credential != "" && !req.SkipCredential), nil
+			return s.answer(req, planCredentials(svc.Config, req, lookup)), nil
 		}
 	}
 	r.Tunnel = func(_ *policy.Profile, req *chain.Request) (*chain.Response, error) {
-		return s.answer(req, false), nil
+		return s.answer(req, nil), nil
 	}
 	return r
 }
@@ -79,13 +80,13 @@ func (s *subrequests) reset(fixtures []SubrequestFixture) {
 }
 
 // answer is the upstream response to req from its fixture.
-func (s *subrequests) answer(req *chain.Request, credential bool) *chain.Response {
+func (s *subrequests) answer(req *chain.Request, credentials []string) *chain.Response {
 	key, _ := fixtureKey(req.Method, req.URL.String())
 	for i, f := range s.fixtures {
 		if s.keys[i] != key {
 			continue
 		}
-		s.seen[i] = &fixtureSeen{header: req.Header.Clone(), credential: credential}
+		s.seen[i] = &fixtureSeen{header: req.Header.Clone(), credentials: credentials}
 		if f.Error != "" {
 			return &chain.Response{Status: http.StatusBadGateway, Header: http.Header{}, Body: chain.BytesBody(nil), UpstreamErr: errors.New(f.Error)}
 		}
@@ -121,8 +122,10 @@ func (s *subrequests) problems() []string {
 				out = append(out, fmt.Sprintf("subrequest %s: expected header %s=%q, got %q", s.keys[i], k, v, got))
 			}
 		}
-		if f.ExpectCredential != nil && *f.ExpectCredential != seen.credential {
-			out = append(out, fmt.Sprintf("subrequest %s: expected credential=%v, got %v", s.keys[i], *f.ExpectCredential, seen.credential))
+		if f.ExpectCredentials != nil {
+			if p := credentialProblem(*f.ExpectCredentials, seen.credentials); p != "" {
+				out = append(out, fmt.Sprintf("subrequest %s: %s", s.keys[i], p))
+			}
 		}
 	}
 	return out
@@ -143,8 +146,11 @@ func checkFixtures(s *Step, filterSpec bool) error {
 		if f.Error != "" && (f.Status != 0 || f.Body != "" || len(f.Headers) > 0) {
 			return fmt.Errorf("subrequests[%d]: error excludes status, headers, and body", i)
 		}
-		if f.ExpectCredential != nil && filterSpec {
-			return fmt.Errorf("subrequests[%d]: expect_credential needs a bouncer spec, since a filter spec has no service", i)
+		if f.RemovedExpectCredential != nil {
+			return fmt.Errorf("subrequests[%d]: expect_credential is removed; use expect_credentials", i)
+		}
+		if f.ExpectCredentials != nil && filterSpec {
+			return fmt.Errorf("subrequests[%d]: expect_credentials needs a bouncer spec, since a filter spec has no service", i)
 		}
 	}
 	return nil

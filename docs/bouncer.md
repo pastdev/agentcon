@@ -11,12 +11,13 @@ Host commands pick a live session by `--slug`, then `--project`, then cwd.
 `default_profile` is required.
 A session with no profile uses that name.
 
-Each HTTP or SSH service is a host list, an optional credential, inject rules, and an ordered `rules` list.
+Each HTTP service is a host list, the credentials that may be sent to it, inject rules, and an ordered `rules` list.
+Each SSH service names the one credential it signs in with.
 The first matching rule wins.
 `unmatched` applies to hosts that no service claims.
 `tunnel` splices those hosts.
 `deny` blocks them.
-Leftover paths on an intercepted host skip the credential and strip placeholder auth.
+Leftover paths on an intercepted host carry no credential and have placeholder auth stripped.
 
 `git: {}` is a git-smart-HTTP matcher, not an HTTP method.
 It matches info/refs, git-upload-pack, and git-receive-pack.
@@ -92,6 +93,9 @@ Container names are described in [Sessions](#sessions).
 Each credential is a composite of slots (`username`, `password`, `token`, `private_key`, `certificate`).
 Each slot has a `source` and the fields that source needs.
 
+`allow` is required.
+It lists the kinds of requests that may use the credential, as described in [allow](#allow).
+
 `export_env` lists agent environment variables set to that credential's placeholder.
 `cache` is how long a fetched slot is kept.
 Default is 5m.
@@ -144,6 +148,7 @@ bitwarden:
       command: [rbw, get, agent-vault-master]
 credentials:
   github-pat:
+    allow: [agent]
     token:
       source: bitwarden
       account: agent
@@ -151,6 +156,7 @@ credentials:
       path: $.notes
     export_env: [GH_TOKEN, GITHUB_TOKEN]
   gitlab-login:
+    allow: [agent]
     username:
       source: bitwarden
       account: agent
@@ -177,6 +183,7 @@ Required: `env`.
 ```yaml
 credentials:
   slack:
+    allow: [agent]
     token:
       source: env
       env: SLACK_BOT_TOKEN
@@ -196,6 +203,7 @@ Relative paths resolve against the config file.
 ```yaml
 credentials:
   sandbox-key:
+    allow: [agent]
     private_key:
       source: file
       file: "{{home}}/.ssh/id_ed25519_sandbox"
@@ -215,6 +223,7 @@ Store the secret under service `agent-bouncer` and that account before `run`.
 ```yaml
 credentials:
   gitlab:
+    allow: [agent]
     token:
       source: keyring
       account: gitlab
@@ -231,6 +240,7 @@ Required: `command`.
 ```yaml
 credentials:
   github-cli:
+    allow: [agent]
     token:
       source: command
       command: [gh, auth, token]
@@ -256,6 +266,7 @@ Optional: `fingerprint` (default is every key currently in the agent).
 ```yaml
 credentials:
   github-ssh:
+    allow: [agent]
     private_key:
       source: ssh-agent
       fingerprint: SHA256:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -271,11 +282,17 @@ Required: none beyond `source`.
 ```yaml
 credentials:
   deploy:
+    allow: [agent]
     private_key:
       source: provided
 ```
 
-A service names a credential, then `inject` says how it is attached:
+An HTTP service lists in `credentials` the credentials that may be sent to its hosts.
+`inject` names one of them in `inject.credential` and says how it is attached.
+`inject.git` changes how it is attached to git smart-HTTP requests, and always uses `inject.credential`.
+An agent may also send a listed credential's placeholder in `Authorization`, `Private-Token`, the inject header, or a header in `placeholder_headers`.
+A placeholder there takes precedence over `inject` in the header `inject` would write.
+An SSH service names its one credential in `credential`.
 
 ```yaml
 profiles:
@@ -284,8 +301,9 @@ profiles:
     http:
       - name: github
         hosts: [github.com, api.github.com]
-        credential: github-pat
+        credentials: [github-pat]
         inject:
+          credential: github-pat
           bearer: true
           git: {basic: {username: x-access-token}}
           # header: PRIVATE-TOKEN
@@ -318,16 +336,49 @@ profiles:
 
 A full GitHub overlay is the [GitHub starting point](#github-starting-point).
 
-### internal
+### lookup_credential
 
-`internal: true` limits a credential to handlers that run inside the sidecar, such as an [OpenPGP signer](#commit-signing).
-Policy load refuses an internal credential named by an HTTP or SSH service `credential`, and one that sets `export_env`.
-A filter's `credential(name)` reports it as unavailable and the sidecar logs the attempt.
+A rule can name a GitLab project by path while the request URL uses its numeric ID, such as `/api/v4/projects/42/issues`.
+The sidecar then looks the ID up with `GET /api/v4/projects/<path>`, sending the service's `lookup_credential` as a bearer token.
+It must be listed in the service's `credentials` and must allow `agent`, because agent requests trigger lookups.
+A service whose rules name a project by `path` without `id` must set it.
+
+```yaml
+      - name: gitlab
+        hosts: [gitlab.example.com]
+        credentials: [gitlab]
+        inject: {credential: gitlab, header: PRIVATE-TOKEN}
+        lookup_credential: gitlab
+        rules:
+          - action: allow
+            gitlab_project: {path: mygroup/myproject, subpaths: ["issues/**"]}
+```
+
+A lookup only ever uses the service of the profile that matched the request.
+Results are cached for an hour per credential, host, and project.
+
+### allow
+
+`allow` lists the kinds of requests that may use a credential:
+
+- `agent`: the agent's own requests and SSH connections.
+- `subrequest`: requests a filter makes with [`subrequest()`](bouncer-filters.md#subrequests).
+- `internal`: handlers inside the sidecar, such as an [OpenPGP signer](#commit-signing).
+  It never combines with another kind, because the secret is used inside the sidecar and never sent.
+
+None of them lets filter code read the secret.
+The policy load refuses:
+
+- a credential without `allow`, or with an empty one
+- `export_env` without `agent`, since the agent could never use the exported placeholder
+- an SSH service's credential without `agent`, since the SSH proxy signs in with the key directly
+- a signer's credential that is not `allow: [internal]`
+- an `internal` credential in a service's `credentials`
 
 ```yaml
 credentials:
   signing:
-    internal: true
+    allow: [internal]
     private_key:
       source: bitwarden
       account: agent
@@ -340,6 +391,59 @@ credentials:
       path: $.login.password
 ```
 
+### Elevated credentials
+
+An elevated credential allows `subrequest` but not `agent`.
+It lets a filter look up data that the agent's own token must not read, such as a repo's Actions secrets or classic branch protection.
+The agent can never send it, even by naming its placeholder.
+
+A subrequest may use an elevated credential only on a rule that lists it in `subrequest.credentials`.
+A rule with a `subrequest` block matches only filter subrequests, and agent requests fall through to later rules.
+`subrequest.filters` limits it further, to the filter placements with those ids.
+A filter placement gets an `id` in the policy, unique across the whole policy.
+Rules never match on a filter's name, because the name comes from its file name or from `defineFilter({name})`, and two filters can share one.
+
+```yaml
+credentials:
+  github:       {allow: [agent, subrequest], token: {source: keyring}}
+  github-audit: {allow: [subrequest], token: {source: keyring}}
+
+profiles:
+  default:
+    http:
+      - name: github
+        hosts: [github.com, api.github.com]
+        credentials: [github, github-audit]
+        inject: {credential: github, bearer: true}
+        rules:
+          - action: allow                     # the filter's lookup, elevated token
+            methods: [GET]
+            github_repo: [myorg/myrepo]
+            github_subpaths: ["actions/secrets"]
+            subrequest:
+              filters: [github-ci-safety]     # optional: only this placement
+              credentials: [github-audit]
+          - action: allow                     # the agent's own access, ordinary token
+            methods: [GET]
+            github_repo: [myorg/myrepo]
+          - action: allow
+            git: {}
+            github_repo: [myorg/myrepo]
+            filters:
+              - path: ts/filters/github-ci-safety.ts
+                id: github-ci-safety
+```
+
+When the agent and a filter use the same endpoint with different tokens, put the subrequest rule first.
+The policy file then shows every route an elevated credential can reach.
+A redirect hop is matched against the rules again, so a redirect to another route loses the elevated credential.
+
+The policy load refuses a `subrequest` block with neither `filters` nor `credentials`, an empty list in either, an id that no placement has, an id used twice, a `subrequest.credentials` entry that is not elevated or not in the service's `credentials`, an elevated `inject.credential`, and a `subrequest` block on an SSH rule.
+
+A filter that names an elevated credential acts with that credential's authority.
+The filter author is responsible for how it is used, the same as for any other filter code.
+[Elevated lookups](bouncer-filters.md#elevated-lookups) covers what that means for filter code.
+
 ## Commit signing
 
 An agent can sign its own commits and tags with an OpenPGP key that only the sidecar holds.
@@ -350,11 +454,11 @@ Its last step signs the request body inside the sidecar instead of forwarding it
 ```yaml
 credentials:
   signing-work:
-    internal: true
+    allow: [internal]
     private_key: {source: bitwarden, account: agent, item: gpg-work, path: $.notes}
     password:    {source: bitwarden, account: agent, item: gpg-work, path: $.login.password}
   signing-oss:
-    internal: true
+    allow: [internal]
     private_key: {source: bitwarden, account: agent, item: gpg-oss, path: $.notes}
     password:    {source: bitwarden, account: agent, item: gpg-oss, path: $.login.password}
 profiles:
@@ -373,7 +477,7 @@ profiles:
 Each `id` is a 16-digit long key ID or a full fingerprint.
 Git asks for a key with `-u <user.signingkey>`, so per-repository keys chosen by the agent's own git config keep working.
 A long key ID matches a fingerprint that ends with it.
-Each `credential` must be `internal: true`, must have `private_key` as an armored OpenPGP private key, and may have `password` as its passphrase.
+Each `credential` must be `allow: [internal]`, must have `private_key` as an armored OpenPGP private key, and may have `password` as its passphrase.
 After unlocking, the signer checks that the key, or one of its signing subkeys, has the configured ID.
 A subkey ID signs with exactly that subkey, like `gpg -u <subkey>!`.
 A primary key ID signs with the newest valid signing subkey, or the primary key when it has none, like `gpg -u <primary>`.
@@ -388,7 +492,7 @@ gpg --armor --export-secret-keys 'C26E02CE599B53FF!'
 ```
 
 `hosts` must be exact names, and a resolved profile may have only one signer service.
-A signer service may not set `credential`, `inject`, `allow_upgrade`, or `insecure`.
+A signer service may not set `credentials`, `lookup_credential`, `inject`, `allow_upgrade`, or `insecure`.
 
 The signer refuses, with no signature:
 
@@ -491,12 +595,14 @@ Hosts can send these lines to log ingestion, so their field names are stable.
 
 | Event | Fields |
 | --- | --- |
-| `decision` | `session`, `label`, `profile`, `transport`, `service`, `request`, `decision`, `by`, `reason`, `status`, `duration_ms`, and for a filter's subrequest `subrequest` (`filter`, `depth`, `parent`) |
+| `decision` | `session`, `label`, `profile`, `transport`, `service`, `request`, `decision`, `by`, `reason`, `status`, `duration_ms`, `credentials` (names only, when the request carried any), and for a filter's subrequest `subrequest` (`filter`, `id`, `depth`, `parent`) |
 | `session_created` | `session`, `label`, `profile`, `claims` (`{}` when none) |
 | `claim_added` | `session`, `label`, `claim_type`, `claim_value`, `added_by`, and for an operator addition `filter` and `prompt` |
 
 A [subrequest](bouncer-filters.md#subrequests) logs one `decision` per hop, including each redirect it follows.
 Its `parent` is the description of the request that caused it.
+One request can carry more than one credential, such as a one-time placeholder in the body and `inject` in a header.
+The message names them, as in `[subrequest from github-ci-safety as github-audit]` or `[as github]`.
 
 `added_by` is `seeded` for a claim the session was created with, and `operator` for one added through a `requestClaim()` prompt.
 A session created with claims logs `session_created` and then one `claim_added` per claim.

@@ -1,6 +1,7 @@
 default_profile: open
 credentials:
   tok:
+    allow: [agent, subrequest]
     token: {source: env, env: TESTRUNNER_TOKEN}
 profiles:
   open:
@@ -18,8 +19,8 @@ profiles:
     http:
       - name: api
         hosts: [api.example.com]
-        credential: tok
-        inject: {bearer: true}
+        credentials: [tok]
+        inject: {credential: tok, bearer: true}
         rules:
           - action: allow
             path: /in
@@ -28,8 +29,8 @@ profiles:
     http:
       - name: api
         hosts: [api.example.com]
-        credential: tok
-        inject: {bearer: true}
+        credentials: [tok]
+        inject: {credential: tok, bearer: true}
         filters:
           - path: lookup.ts
         rules:

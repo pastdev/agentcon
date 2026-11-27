@@ -124,7 +124,7 @@ func setup(t *testing.T, profileYAML string) *env {
 	profileYAML = strings.ReplaceAll(profileYAML, "hosts: [localhost]", `hosts: ["localhost:`+e.port+`"]`)
 	cfg, err := config.Parse([]byte(`
 credentials:
-  tok: {token: {source: env, env: BOUNCER_TEST_TOKEN}}
+  tok: {allow: [agent, subrequest], token: {source: env, env: BOUNCER_TEST_TOKEN}}
 profiles:
 `+profileYAML), t.TempDir()+"/config.yaml")
 	require.NoError(t, err)
@@ -179,8 +179,9 @@ const scopedProfile = `
     http:
       - name: api
         hosts: [localhost]
-        credential: tok
-        inject: {bearer: true}
+        credentials: [tok]
+        lookup_credential: tok
+        inject: {credential: tok, bearer: true}
         rules:
           - action: allow
             gitlab_project: group/proj
@@ -271,8 +272,9 @@ func TestIntercept(t *testing.T) {
     http:
       - name: api
         hosts: [localhost]
-        credential: tok
-        inject: {bearer: true}
+        credentials: [tok]
+        lookup_credential: tok
+        inject: {credential: tok, bearer: true}
         default: deny
         rules:
           - action: allow
@@ -292,7 +294,8 @@ func TestIntercept(t *testing.T) {
     http:
       - name: api
         hosts: [localhost]
-        credential: tok
+        credentials: [tok]
+        lookup_credential: tok
 `)
 		ph := config.Placeholder("tok")
 		basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("oauth2:"+ph))
@@ -317,8 +320,9 @@ func TestIntercept(t *testing.T) {
     http:
       - name: api
         hosts: [localhost]
-        credential: tok
-        inject: {query: api_key}
+        credentials: [tok]
+        lookup_credential: tok
+        inject: {credential: tok, query: api_key}
 `)
 		tester(t, testCase{
 			e:        e,
@@ -387,13 +391,15 @@ func TestIntercept(t *testing.T) {
     http:
       - name: api
         hosts: ["127.0.0.1:`+port+`"]
-        credential: tok
-        inject: {bearer: true}
+        credentials: [tok]
+        lookup_credential: tok
+        inject: {credential: tok, bearer: true}
       - name: dev
         hosts: ["localhost:`+port+`"]
-        credential: tok
+        credentials: [tok]
+        lookup_credential: tok
         insecure: true
-        inject: {bearer: true}
+        inject: {credential: tok, bearer: true}
 `)
 		status, _ := e.get(t, "GET", plain.URL+"/x", nil)
 		require.Equal(t, 403, status, "plain HTTP to a credentialed service")
@@ -428,7 +434,8 @@ func TestIntercept(t *testing.T) {
     http:
       - name: api
         hosts: [localhost]
-        credential: tok
+        credentials: [tok]
+        lookup_credential: tok
 `)
 		tester(t, testCase{
 			e:          e,
@@ -445,7 +452,8 @@ func TestIntercept(t *testing.T) {
     http:
       - name: api
         hosts: [localhost]
-        credential: tok
+        credentials: [tok]
+        lookup_credential: tok
         allow_upgrade: true
 `)
 		status, _ := e.get(t, "GET", "https://localhost:"+e.port+"/upgrade", nil)
@@ -480,8 +488,9 @@ func TestIntercept(t *testing.T) {
     http:
       - name: api
         hosts: [localhost]
-        credential: tok
-        inject: {query: api_key}
+        credentials: [tok]
+        lookup_credential: tok
+        inject: {credential: tok, query: api_key}
 `)
 		_, body := e.get(t, "GET", "https://localhost:"+e.port+"/x?a=1;b=2&q=%2B", nil)
 		assert.Contains(t, body, "query=a=1;b=2&q=%2B&api_key=real-secret")
@@ -501,63 +510,6 @@ func TestIntercept(t *testing.T) {
 		delete(e.backend.sessions, "tok123")
 		status, _ = e.get(t, "GET", base+"/api/v4/projects/group%2Fproj", nil)
 		assert.Equal(t, http.StatusProxyAuthRequired, status, "after revocation")
-	})
-}
-
-func TestInject(t *testing.T) {
-	type testCase struct {
-		spec   *config.Inject
-		secret creds.Secret
-		want   string
-	}
-	tester := func(t *testing.T, tc testCase) {
-		t.Helper()
-		h := http.Header{}
-		u, err := url.Parse("https://example.com/")
-		require.NoError(t, err)
-		Inject(h, u, "login", tc.spec, tc.secret)
-		assert.Equal(t, tc.want, h.Get("Authorization"))
-	}
-
-	t.Run("uses the username slot for basic auth", func(t *testing.T) {
-		tester(t, testCase{
-			spec:   &config.Inject{Basic: &config.BasicInject{}},
-			secret: creds.Secret{Username: "alice", Password: "s3cret"},
-			want:   "Basic " + base64.StdEncoding.EncodeToString([]byte("alice:s3cret")),
-		})
-	})
-	t.Run("uses an override username with a token", func(t *testing.T) {
-		tester(t, testCase{
-			spec:   &config.Inject{Basic: &config.BasicInject{Username: "oauth2"}},
-			secret: creds.Secret{Username: "alice", Token: "pat"},
-			want:   "Basic " + base64.StdEncoding.EncodeToString([]byte("oauth2:pat")),
-		})
-	})
-}
-
-func TestStripPlaceholder(t *testing.T) {
-	type testCase struct{}
-	tester := func(t *testing.T, _ testCase) {
-		t.Helper()
-		ph := config.Placeholder("tok")
-		h := http.Header{}
-		h.Set("Authorization", "Bearer "+ph)
-		h.Set("Private-Token", ph)
-		h.Set("X-Other", "keep")
-		basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("oauth2:"+ph))
-		h.Add("Authorization", basic)
-		u, err := url.Parse("https://example.com/x?api_key=" + ph + "&ok=1")
-		require.NoError(t, err)
-		stripPlaceholder(h, u, "tok", &config.Inject{Query: "api_key"})
-		assert.Empty(t, h.Get("Authorization"))
-		assert.Empty(t, h.Get("Private-Token"))
-		assert.Equal(t, "keep", h.Get("X-Other"))
-		assert.Empty(t, u.Query().Get("api_key"))
-		assert.Equal(t, "1", u.Query().Get("ok"))
-	}
-
-	t.Run("strips placeholders from auth headers and the inject query", func(t *testing.T) {
-		tester(t, testCase{})
 	})
 }
 
@@ -697,7 +649,7 @@ func TestSignerService(t *testing.T) {
 		cfg, err := config.Parse([]byte(`
 credentials:
   sign:
-    internal: true
+    allow: [internal]
     private_key: {source: provided}
 profiles:
   p:

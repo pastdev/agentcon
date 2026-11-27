@@ -55,11 +55,13 @@ var hopHeaders = []string{
 
 // crossHostHeaders are dropped when a redirect leaves the host, as Go's
 // HTTP client does, so a value the filter set for one host never reaches
-// another. Bouncer's own credentials are injected per hop anyway.
+// another. Bouncer's own credentials are injected per hop anyway, and a
+// one-time placeholder is replaced only where the hop's service and rule
+// let the subrequest use its credential.
 var crossHostHeaders = []string{"Authorization", "Private-Token", "Cookie", "Cookie2", "Www-Authenticate"}
 
 // Do implements chain.SubrequestFunc.
-func (r *Router) Do(parent *chain.Request, filter string, spec chain.SubrequestSpec) (*chain.Response, *url.URL, error) {
+func (r *Router) Do(parent *chain.Request, caller chain.SubrequestCaller, spec chain.SubrequestSpec) (*chain.Response, *url.URL, error) {
 	depth := 1
 	if parent.Subrequest != nil {
 		depth = parent.Subrequest.Depth + 1
@@ -94,7 +96,7 @@ func (r *Router) Do(parent *chain.Request, filter string, spec chain.SubrequestS
 		header.Del(k)
 	}
 	body := spec.Body
-	info := &chain.SubrequestInfo{Filter: filter, Depth: depth, Parent: parent.Describe()}
+	info := &chain.SubrequestInfo{Filter: caller.Filter, ID: caller.ID, Depth: depth, Parent: parent.Describe()}
 
 	base := parent.Ctx
 	if base == nil {
@@ -108,7 +110,7 @@ func (r *Router) Do(parent *chain.Request, filter string, spec chain.SubrequestS
 	}
 
 	for redirects := 0; ; redirects++ {
-		resp, err := r.hop(ctx, parent.Session, info, method, u, header, body)
+		resp, err := r.hop(ctx, parent.Session, info, caller.Placeholders, method, u, header, body)
 		if err != nil {
 			cancel()
 			return nil, nil, err
@@ -201,7 +203,7 @@ func normalized(u *url.URL) *url.URL {
 }
 
 // hop sends one request, with no redirect handling.
-func (r *Router) hop(ctx context.Context, sess *chain.Session, info *chain.SubrequestInfo, method string, u *url.URL, header http.Header, body []byte) (*chain.Response, error) {
+func (r *Router) hop(ctx context.Context, sess *chain.Session, info *chain.SubrequestInfo, placeholders map[string]string, method string, u *url.URL, header http.Header, body []byte) (*chain.Response, error) {
 	start := time.Now()
 	live, ok := r.Session(sess)
 	if !ok {
@@ -210,10 +212,11 @@ func (r *Router) hop(ctx context.Context, sess *chain.Session, info *chain.Subre
 	req := &chain.Request{
 		Ctx: ctx, Transport: chain.TransportHTTP, Session: live, Profile: live.Profile,
 		Method: method, URL: u, Header: header.Clone(), Body: chain.BytesBody(body), Subrequest: info,
+		Placeholders: placeholders,
 	}
 	e := audit.Entry{
 		Session: live.ID, Label: live.Label, Profile: live.Profile, Transport: chain.TransportHTTP,
-		Subrequest: &audit.Subrequest{Filter: info.Filter, Depth: info.Depth, Parent: info.Parent},
+		Subrequest: &audit.Subrequest{Filter: info.Filter, ID: info.ID, Depth: info.Depth, Parent: info.Parent},
 	}
 	resp, err := r.route(req, &e)
 	if err == nil && resp.UpstreamErr != nil {
@@ -225,6 +228,7 @@ func (r *Router) hop(ctx context.Context, sess *chain.Session, info *chain.Subre
 		err = errors.New("subrequest: protocol upgrades are not supported")
 	}
 	e.Request = req.Describe()
+	e.Credentials = req.Credentials
 	e.DurationMS = time.Since(start).Milliseconds()
 	switch {
 	case err != nil:

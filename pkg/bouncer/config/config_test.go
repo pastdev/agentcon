@@ -96,6 +96,7 @@ func TestParse(t *testing.T) {
 			yaml: `
 credentials:
   gl:
+    allow: [agent, subrequest]
     token: {source: keyring}
 profiles:
   base:
@@ -104,7 +105,8 @@ profiles:
     http:
       - name: gitlab
         hosts: [gitlab.com]
-        credential: gl
+        credentials: [gl]
+        lookup_credential: gl
         rules:
           - action: allow
             gitlab_project: Group/Proj
@@ -116,7 +118,8 @@ profiles:
     http:
       - name: gitlab
         hosts: [gitlab.com]
-        credential: gl
+        credentials: [gl]
+        lookup_credential: gl
 `,
 			check: func(t *testing.T, cfg *Config) {
 				t.Helper()
@@ -156,6 +159,7 @@ bitwarden:
     email: User@Example.com
 credentials:
   gl:
+    allow: [agent, subrequest]
     token:
       source: bitwarden
       account: work
@@ -176,14 +180,14 @@ credentials:
 	})
 	t.Run("requires bitwarden item", func(t *testing.T) {
 		tester(t, testCase{
-			yaml:    "bitwarden:\n  w: {email: a@b.c}\ncredentials:\n  gl:\n    token: {source: bitwarden, account: w}\n",
+			yaml:    "bitwarden:\n  w: {email: a@b.c}\ncredentials:\n  gl:\n    allow: [agent]\n    token: {source: bitwarden, account: w}\n",
 			path:    "x.yaml",
 			wantErr: true,
 		})
 	})
 	t.Run("requires bitwarden path", func(t *testing.T) {
 		tester(t, testCase{
-			yaml:    "bitwarden:\n  w: {email: a@b.c}\ncredentials:\n  gl:\n    token: {source: bitwarden, account: w, item: GitLab}\n",
+			yaml:    "bitwarden:\n  w: {email: a@b.c}\ncredentials:\n  gl:\n    allow: [agent]\n    token: {source: bitwarden, account: w, item: GitLab}\n",
 			path:    "x.yaml",
 			wantErr: true,
 		})
@@ -197,10 +201,12 @@ bitwarden:
     email: User@Example.com
 credentials:
   deploy:
+    allow: [agent, subrequest]
     private_key:
       source: file
       file: /tmp/id
   gl:
+    allow: [agent, subrequest]
     username:
       source: bitwarden
       account: work
@@ -229,7 +235,7 @@ credentials:
 	})
 	t.Run("rejects ssh-agent on a token slot", func(t *testing.T) {
 		tester(t, testCase{
-			yaml:    "credentials:\n  gl:\n    token: {source: ssh-agent}\n",
+			yaml:    "credentials:\n  gl:\n    allow: [agent]\n    token: {source: ssh-agent}\n",
 			path:    "x.yaml",
 			wantErr: true,
 		})
@@ -240,13 +246,15 @@ credentials:
 			yaml: `
 credentials:
   gl:
+    allow: [agent, subrequest]
     token: {source: keyring}
 profiles:
   p:
     http:
       - name: gitlab
         hosts: [gitlab.com]
-        credential: gl
+        credentials: [gl]
+        lookup_credential: gl
         rules:
           - action: allow
             git: {}
@@ -269,13 +277,15 @@ profiles:
 			yaml: `
 credentials:
   gl:
+    allow: [agent, subrequest]
     token: {source: keyring}
 profiles:
   p:
     http:
       - name: gitlab
         hosts: [gitlab.com]
-        credential: gl
+        credentials: [gl]
+        lookup_credential: gl
         rules:
           - action: deny
             path: /x
@@ -290,13 +300,14 @@ profiles:
 			yaml: `
 credentials:
   gh:
+    allow: [agent, subrequest]
     token: {source: keyring}
 profiles:
   p:
     http:
       - name: github
         hosts: [github.com]
-        credential: gh
+        credentials: [gh]
         rules:
           - action: allow
             github_repo: [Octo/Hello]
@@ -316,13 +327,14 @@ profiles:
 			yaml: `
 credentials:
   gh:
+    allow: [agent, subrequest]
     token: {source: keyring}
 profiles:
   p:
     http:
       - name: github
         hosts: [github.com]
-        credential: gh
+        credentials: [gh]
         rules:
           - action: allow
             github_repo: octo/hello
@@ -336,13 +348,14 @@ profiles:
 			yaml: `
 credentials:
   gh:
+    allow: [agent, subrequest]
     token: {source: keyring}
 profiles:
   p:
     http:
       - name: github
         hosts: [github.com]
-        credential: gh
+        credentials: [gh]
         rules:
           - action: allow
             github_subpaths: ["pulls/**"]
@@ -403,9 +416,11 @@ bitwarden:
   unused: {email: unused@example.com}
 credentials:
   a:
+    allow: [agent, subrequest]
     username:
 ` + slot("work") + `    password:
 ` + slot("work") + `  b:
+    allow: [agent]
     token:
 ` + slot("home"),
 			want: []string{"home", "work"},
@@ -418,7 +433,7 @@ credentials:
 	})
 	t.Run("rejects an unknown account", func(t *testing.T) {
 		tester(t, testCase{
-			yaml:    "credentials:\n  gl:\n    token:\n" + slot("missing"),
+			yaml:    "credentials:\n  gl:\n    allow: [agent]\n    token:\n" + slot("missing"),
 			wantErr: `credential "gl" token: unknown bitwarden account "missing"`,
 		})
 	})
@@ -465,25 +480,25 @@ credentials:
 	})
 	t.Run("rejects a key colliding with a credential slot", func(t *testing.T) {
 		tester(t, testCase{
-			yaml:    "bitwarden:\n  token: {email: a@b.c}\ncredentials:\n  bitwarden:\n    token: {source: env, env: X}\n",
+			yaml:    "bitwarden:\n  token: {email: a@b.c}\ncredentials:\n  bitwarden:\n    allow: [agent]\n    token: {source: env, env: X}\n",
 			wantErr: `bitwarden account "token": provided key bitwarden.token collides with credential "bitwarden" slot token`,
 		})
 	})
 	t.Run("rejects a dotted key colliding with a credential slot", func(t *testing.T) {
 		tester(t, testCase{
-			yaml:    "bitwarden:\n  work.token: {email: a@b.c}\ncredentials:\n  bitwarden.work:\n    token: {source: env, env: X}\n",
+			yaml:    "bitwarden:\n  work.token: {email: a@b.c}\ncredentials:\n  bitwarden.work:\n    allow: [agent]\n    token: {source: env, env: X}\n",
 			wantErr: `bitwarden account "work.token": provided key bitwarden.work.token collides with credential "bitwarden.work" slot token`,
 		})
 	})
 	t.Run("allows an account beside a dotted credential", func(t *testing.T) {
 		tester(t, testCase{
-			yaml: "bitwarden:\n  work: {email: a@b.c}\ncredentials:\n  bitwarden.work:\n    token: {source: env, env: X}\n",
+			yaml: "bitwarden:\n  work: {email: a@b.c}\ncredentials:\n  bitwarden.work:\n    allow: [agent]\n    token: {source: env, env: X}\n",
 		})
 	})
 	for _, field := range []string{"email: a@b.c", "server: https://vault.example.com", "password_env: BW_MASTER"} {
 		t.Run("rejects the removed slot field "+strings.Fields(field)[0], func(t *testing.T) {
 			tester(t, testCase{
-				yaml:    "bitwarden:\n  w: {email: a@b.c}\ncredentials:\n  gl:\n    token:\n" + slot("w") + "      " + field + "\n",
+				yaml:    "bitwarden:\n  w: {email: a@b.c}\ncredentials:\n  gl:\n    allow: [agent]\n    token:\n" + slot("w") + "      " + field + "\n",
 				wantErr: "no longer takes email, server, or password_env",
 			})
 		})

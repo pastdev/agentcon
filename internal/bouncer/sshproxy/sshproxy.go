@@ -329,6 +329,7 @@ func (cn *conn) decide(req *chain.Request) *chain.Response {
 		e.Decision, e.By, e.Reason = audit.DecisionDeny, resp.Denial.By, resp.Denial.Reason
 	} else {
 		e.Decision, e.By = audit.DecisionAllow, req.AllowedBy
+		e.Credentials = []string{cn.svc.Config.Credential}
 	}
 	cn.s.Audit.Write(e)
 	return resp

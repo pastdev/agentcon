@@ -22,7 +22,10 @@ const poolSize = 8
 
 // Options configure a loaded filter.
 type Options struct {
-	Path    string
+	Path string
+	// ID is the placement's policy-assigned id, or empty. Rules with
+	// subrequest.filters match on it.
+	ID      string
 	Config  map[string]any
 	Timeout time.Duration
 	Env     *chain.Env
@@ -87,6 +90,9 @@ func (f *Filter) Name() string { return f.name }
 
 // Path is the filter's source file.
 func (f *Filter) Path() string { return f.opts.Path }
+
+// ID is the filter placement's policy-assigned id, or empty.
+func (f *Filter) ID() string { return f.opts.ID }
 
 func (f *Filter) Handle(req *chain.Request, next chain.Handler) (*chain.Response, error) {
 	switch req.Transport {
@@ -178,6 +184,10 @@ type instance struct {
 	gen uint64
 	// subBodies are the bodies of this run's subrequest responses.
 	subBodies []*chain.Body
+	// placeholders maps the one-time placeholders this run issued to their
+	// credential names. A new run starts with none, so a string kept from
+	// an earlier run matches nothing.
+	placeholders map[string]string
 }
 
 // live reports whether a closure created in generation gen may still act.
@@ -236,12 +246,14 @@ func (f *Filter) newInstance() (*instance, error) {
 func (i *instance) run(req *chain.Request, next chain.Handler) (resp *chain.Response, err error) {
 	i.cur = req
 	i.gen++
+	i.placeholders = map[string]string{}
 	i.vm.ClearInterrupt()
 	i.wd.start(i.f.opts.Timeout)
 	defer func() {
 		i.wd.stop()
 		i.closeSubBodies(resp)
 		i.cur = nil
+		i.placeholders = nil
 		var ie *goja.InterruptedError
 		if errors.As(err, &ie) {
 			i.broken = true

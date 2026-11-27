@@ -23,6 +23,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/pastdev/agentcon/internal/bouncer/chain"
+	"github.com/pastdev/agentcon/internal/bouncer/credinject"
 	"github.com/pastdev/agentcon/internal/bouncer/gitproto"
 	"github.com/pastdev/agentcon/internal/bouncer/jsfilter"
 	"github.com/pastdev/agentcon/internal/bouncer/kv"
@@ -113,9 +114,13 @@ type Step struct {
 	ExpectBodyExcludes   []string          `yaml:"expect_body_excludes"`
 	ExpectAsked          *bool             `yaml:"expect_asked"`
 	ExpectUpstreamHeader map[string]string `yaml:"expect_upstream_header"`
-	// ExpectCredential checks whether the request reached the upstream with
-	// its service's credential. Leftover paths under unmatched: tunnel do not.
-	ExpectCredential *bool `yaml:"expect_credential"`
+	// ExpectCredentials lists the credentials the request reached the
+	// upstream with, compared as a set. [] means unauthenticated. Leftover
+	// paths under unmatched: tunnel carry none.
+	ExpectCredentials *[]string `yaml:"expect_credentials"`
+	// RemovedExpectCredential is decoded only to reject it with a pointer
+	// to expect_credentials.
+	RemovedExpectCredential *bool `yaml:"expect_credential,omitempty"`
 	// ExpectClaimRequested checks whether the step asked the operator for
 	// a claim, and optionally which one.
 	ExpectClaimRequested *ClaimRequested `yaml:"expect_claim_requested"`
@@ -138,9 +143,13 @@ type SubrequestFixture struct {
 	Error string `yaml:"error"`
 	// ExpectHeader checks headers the fixture received, after the chain.
 	ExpectHeader map[string]string `yaml:"expect_header"`
-	// ExpectCredential checks whether the subrequest reached the fixture
-	// with its service's credential. It needs a bouncer spec.
-	ExpectCredential *bool `yaml:"expect_credential"`
+	// ExpectCredentials lists the credentials the subrequest reached the
+	// fixture with, compared as a set. [] means unauthenticated. It needs
+	// a bouncer spec.
+	ExpectCredentials *[]string `yaml:"expect_credentials"`
+	// RemovedExpectCredential is decoded only to reject it with a pointer
+	// to expect_credentials.
+	RemovedExpectCredential *bool `yaml:"expect_credential,omitempty"`
 }
 
 type HTTPRequest struct {
@@ -222,9 +231,14 @@ const harnessName = "test"
 
 // target is the filter chain for a host and the service it belongs to.
 type target struct {
-	filters    []chain.Filter
-	service    string
-	credential string
+	filters []chain.Filter
+	service string
+	// http is the HTTP service config, nil for SSH and filter specs.
+	http *config.Service
+	// sshCredential is the SSH service's credential.
+	sshCredential string
+	// lookup finds a policy credential.
+	lookup credinject.Lookup
 	// signer is the service config when it is a signer service.
 	signer *config.Service
 }
@@ -244,9 +258,9 @@ type chainFunc func(host string) (target, error)
 
 // upstream is what the fake upstream saw of a request.
 type upstream struct {
-	reached        bool
-	header         http.Header
-	skipCredential bool
+	reached     bool
+	header      http.Header
+	credentials []string
 }
 
 // Options locate what a spec tests when the spec does not name it.
@@ -339,6 +353,9 @@ func runCase(spec *Spec, c *Case, filterPath, policyPath string) (Result, error)
 	}
 	for i := range c.Steps {
 		err = checkClaimFields(&c.Steps[i])
+		if err == nil && c.Steps[i].RemovedExpectCredential != nil {
+			err = errors.New("expect_credential is removed; use expect_credentials")
+		}
 		if err == nil {
 			err = checkFixtures(&c.Steps[i], filterPath != "")
 		}
@@ -359,7 +376,7 @@ func runCase(spec *Spec, c *Case, filterPath, policyPath string) (Result, error)
 			NoColor:    true,
 			PartsOrder: []string{zerolog.LevelFieldName, zerolog.MessageFieldName},
 		}),
-		Resolver: func(_ context.Context, _, _, p string) (int64, error) {
+		Resolver: func(_ context.Context, _ *config.Service, _, p string) (int64, error) {
 			if id, ok := spec.GitLabProjectIDs[p]; ok {
 				return id, nil
 			}
@@ -370,12 +387,12 @@ func runCase(spec *Spec, c *Case, filterPath, policyPath string) (Result, error)
 	if c.Profile != "" {
 		profile = c.Profile
 	}
-	httpChain, sshChain, profiles, err := chains(spec, c, filterPath, policyPath, profile, env, store)
+	httpChain, sshChain, profiles, lookup, err := chains(spec, c, filterPath, policyPath, profile, env, store)
 	if err != nil {
 		return Result{}, err
 	}
 	subs := &subrequests{}
-	env.Subrequest = subs.router(profiles, claimer).Do
+	env.Subrequest = subs.router(profiles, lookup, claimer).Do
 
 	for i := range c.Steps {
 		s := &c.Steps[i]
@@ -407,7 +424,7 @@ func runCase(spec *Spec, c *Case, filterPath, policyPath string) (Result, error)
 // chains loads the case's filter, or compiles its policy and picks its
 // profile, and returns the filter chain lookups for HTTP and SSH.
 // The profile lookup is nil for a filter spec, which has no policy.
-func chains(spec *Spec, c *Case, filterPath, policyPath, profile string, env *chain.Env, store *kv.Store) (chainFunc, chainFunc, func(string) (*policy.Profile, bool), error) {
+func chains(spec *Spec, c *Case, filterPath, policyPath, profile string, env *chain.Env, store *kv.Store) (chainFunc, chainFunc, func(string) (*policy.Profile, bool), credinject.Lookup, error) {
 	if filterPath != "" {
 		cfg := spec.FilterConfig
 		if c.FilterConfig != nil {
@@ -415,43 +432,38 @@ func chains(spec *Spec, c *Case, filterPath, policyPath, profile string, env *ch
 		}
 		f, err := jsfilter.Load(jsfilter.Options{Path: filterPath, Config: cfg, Env: env, KV: store})
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("load filter: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("load filter: %w", err)
 		}
 		one := func(string) (target, error) { return target{filters: []chain.Filter{f}, service: harnessName}, nil }
-		return one, one, nil, nil
+		return one, one, nil, nil, nil
 	}
 
 	if profile == "" {
-		return nil, nil, nil, errors.New("no profile")
+		return nil, nil, nil, nil, errors.New("no profile")
 	}
 	cfg, err := config.Load(policyPath)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("load config: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("load config: %w", err)
 	}
-	env.Placeholder = func(name string) (string, error) {
-		cred, ok := cfg.Credentials[name]
-		if !ok {
-			return "", fmt.Errorf("no credential named %q", name)
-		}
-		if cred.Internal {
-			return "", fmt.Errorf("credential %q is internal and is never injected", name)
-		}
-		return config.Placeholder(name), nil
+	env.Placeholder = cfg.CheckSubrequestCredential
+	lookup := func(name string) (*config.Credential, bool) {
+		c, ok := cfg.Credentials[name]
+		return c, ok
 	}
 	set, err := policy.Compile(cfg, env, store)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("compile policy: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("compile policy: %w", err)
 	}
 	prof, ok := set.Profiles[profile]
 	if !ok {
-		return nil, nil, nil, fmt.Errorf("profile %q not found", profile)
+		return nil, nil, nil, nil, fmt.Errorf("profile %q not found", profile)
 	}
 	httpChain := func(host string) (target, error) {
 		svc := prof.MatchHTTP(host)
 		if svc == nil {
 			return target{}, fmt.Errorf("no service in profile %s matches %s (it would be %sed)", prof.Name, host, prof.Unmatched)
 		}
-		t := target{filters: svc.Filters, service: svc.Config.Name, credential: svc.Config.Credential}
+		t := target{filters: svc.Filters, service: svc.Config.Name, http: svc.Config, lookup: lookup}
 		if svc.Config.Signer != nil {
 			t.signer = svc.Config
 		}
@@ -462,13 +474,13 @@ func chains(spec *Spec, c *Case, filterPath, policyPath, profile string, env *ch
 		if svc == nil {
 			return target{}, fmt.Errorf("no ssh service in profile %s matches %s", prof.Name, host)
 		}
-		return target{filters: svc.Filters, service: svc.Config.Name, credential: svc.Config.Credential}, nil
+		return target{filters: svc.Filters, service: svc.Config.Name, sshCredential: svc.Config.Credential}, nil
 	}
 	profiles := func(name string) (*policy.Profile, bool) {
 		p, ok := set.Profiles[name]
 		return p, ok
 	}
-	return httpChain, sshChain, profiles, nil
+	return httpChain, sshChain, profiles, lookup, nil
 }
 
 func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scriptedApprover, cl *scriptedClaims) (string, error) {
@@ -482,9 +494,15 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 		if tgt.signer != nil {
 			return signer.Terminal(tgt.signer, testSigner{}, zerolog.Nop())(r)
 		}
-		seen = upstream{reached: true, header: r.Header, skipCredential: r.SkipCredential}
+		seen = upstream{reached: true, header: r.Header}
 		if r.Transport == chain.TransportSSH {
+			if tgt.sshCredential != "" {
+				seen.credentials = []string{tgt.sshCredential}
+			}
 			return chain.Allowed(), nil
+		}
+		if tgt.http != nil {
+			seen.credentials = planCredentials(tgt.http, r, tgt.lookup)
 		}
 		up := c.Upstream
 		if up == nil {
@@ -522,8 +540,8 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 		if tgt.signer != nil && c.Upstream != nil {
 			return "", fmt.Errorf("upstream is not allowed on signer service %s, which never forwards", tgt.service)
 		}
-		if tgt.signer != nil && c.ExpectCredential != nil {
-			return "", fmt.Errorf("expect_credential is not allowed on signer service %s, which injects no credential", tgt.service)
+		if tgt.signer != nil && c.ExpectCredentials != nil {
+			return "", fmt.Errorf("expect_credentials is not allowed on signer service %s, which injects no credential", tgt.service)
 		}
 		method := c.Request.Method
 		if method == "" {
@@ -548,7 +566,7 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 			err = chain.CheckMethodOverride(req)
 		}
 		if err != nil {
-			return check(c, chain.Deny("bouncer", err.Error()), ap, cl, tgt, seen)
+			return check(c, chain.Deny("bouncer", err.Error()), ap, cl, seen)
 		}
 	case c.SSH != nil:
 		var err error
@@ -580,10 +598,10 @@ func runStep(c *Step, httpChain, sshChain chainFunc, profile string, ap *scripte
 	}
 
 	resp, _ := chain.Build(tgt.filters, terminal)(req)
-	return check(c, resp, ap, cl, tgt, seen)
+	return check(c, resp, ap, cl, seen)
 }
 
-func check(c *Step, resp *chain.Response, ap *scriptedApprover, cl *scriptedClaims, tgt target, seen upstream) (string, error) {
+func check(c *Step, resp *chain.Response, ap *scriptedApprover, cl *scriptedClaims, seen upstream) (string, error) {
 	upstreamHeader := seen.header
 	var problems []string
 	got := "allow"
@@ -636,13 +654,35 @@ func check(c *Step, resp *chain.Response, ap *scriptedApprover, cl *scriptedClai
 		}
 	}
 	problems = append(problems, checkClaims(c, cl)...)
-	if c.ExpectCredential != nil {
-		got := seen.reached && !seen.skipCredential && tgt.credential != ""
-		if got != *c.ExpectCredential {
-			problems = append(problems, fmt.Sprintf("expected credential=%v, got %v", *c.ExpectCredential, got))
+	if c.ExpectCredentials != nil {
+		if p := credentialProblem(*c.ExpectCredentials, seen.credentials); p != "" {
+			problems = append(problems, p)
 		}
 	}
 	return strings.Join(problems, "; "), nil
+}
+
+// planCredentials is the credentials the forwarder would send req with.
+func planCredentials(svc *config.Service, req *chain.Request, lookup credinject.Lookup) []string {
+	if req.SkipCredential {
+		return nil
+	}
+	var body []byte
+	if req.Subrequest != nil && req.Body != nil {
+		body, _ = req.Body.ReadAll()
+	}
+	return credinject.NewPlan(svc, req, req.Header, req.URL, body, lookup).Used
+}
+
+// credentialProblem compares the credentials a request carried with the
+// expected set.
+func credentialProblem(want, got []string) string {
+	w := slices.Sorted(slices.Values(want))
+	g := slices.Sorted(slices.Values(got))
+	if slices.Equal(slices.Compact(w), g) {
+		return ""
+	}
+	return fmt.Sprintf("expected credentials=%v, got %v", w, g)
 }
 
 const (

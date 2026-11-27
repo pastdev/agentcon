@@ -29,10 +29,9 @@ const KeyringService = "agent-bouncer"
 
 const commandTimeout = 60 * time.Second
 
-// ErrInternal means a credential is internal: only in-process consumers such
-// as the signer may read it, through GetSlot. Get and SSHSigners, which hand
-// values to filters and upstreams, refuse it.
-var ErrInternal = errors.New("credential is internal")
+// ErrNotAllowed means a credential's allow list does not name the kind of
+// request that asked for it.
+var ErrNotAllowed = errors.New("credential is not allowed")
 
 // ErrStale means a reload replaced the credential record a lookup was
 // holding before it read a provided value. Nothing was read.
@@ -323,16 +322,17 @@ func (s *Store) Credential(name string) (*config.Credential, bool) {
 	return c, ok
 }
 
-// Get returns the resolved slots for a credential. It refuses an internal
-// credential, judged on the same record whose slots it reads, so a reload
-// cannot slip one past the check.
-func (s *Store) Get(ctx context.Context, name string) (Secret, error) {
+// Get returns the resolved slots for a credential on behalf of a request
+// of kind (config.AllowAgent or config.AllowSubrequest). It refuses a
+// credential whose allow list lacks kind, judged on the same record whose
+// slots it reads, so a reload cannot slip one past the check.
+func (s *Store) Get(ctx context.Context, name, kind string) (Secret, error) {
 	c, m, err := s.lookup(name)
 	if err != nil {
 		return Secret{}, err
 	}
-	if c.Internal {
-		return Secret{}, fmt.Errorf("credential %q: %w", name, ErrInternal)
+	if kind == config.AllowInternal || !c.Allows(kind) {
+		return Secret{}, notAllowed(name, kind)
 	}
 	m.Lock()
 	defer m.Unlock()
@@ -350,14 +350,19 @@ func (s *Store) Get(ctx context.Context, name string) (Secret, error) {
 	return out, nil
 }
 
-// GetSlot returns one named slot, internal or not. Its callers keep the
-// value in process.
+// GetSlot returns one named slot, whatever the credential allows. Its
+// callers keep the value in process: the signer, and the host resolving
+// values to provide to the sidecar.
 func (s *Store) GetSlot(ctx context.Context, name, slotName string) (string, error) {
 	c, m, err := s.lookup(name)
 	if err != nil {
 		return "", err
 	}
 	return s.getSlot(ctx, name, c, m, slotName)
+}
+
+func notAllowed(name, kind string) error {
+	return fmt.Errorf("credential %q: %w for %s requests", name, ErrNotAllowed, kind)
 }
 
 func (s *Store) getSlot(ctx context.Context, name string, c *config.Credential, m *sync.Mutex, slotName string) (string, error) {
@@ -475,14 +480,15 @@ func (s *Store) fetchPayload(ctx context.Context, credName string, src *config.V
 
 // SSHSigners returns signers for an SSH credential: the parsed private key
 // for secret-bearing sources, or keys from the running ssh-agent. It refuses
-// an internal credential, judged on the record it reads the key from.
+// a credential that does not allow agent, judged on the record it reads the
+// key from.
 func (s *Store) SSHSigners(ctx context.Context, name string) ([]ssh.Signer, error) {
 	c, m, err := s.lookup(name)
 	if err != nil {
 		return nil, err
 	}
-	if c.Internal {
-		return nil, fmt.Errorf("credential %q: %w", name, ErrInternal)
+	if !c.Allows(config.AllowAgent) {
+		return nil, notAllowed(name, config.AllowAgent)
 	}
 	src := c.PrivateKey
 	if src == nil {

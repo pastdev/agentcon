@@ -44,12 +44,17 @@ type Entry struct {
 	DurationMS int64  `json:"duration_ms"`
 	// Subrequest is set when a filter made the request with subrequest().
 	Subrequest *Subrequest `json:"subrequest,omitempty"`
+	// Credentials names the credentials the request was sent with, never
+	// their values.
+	Credentials []string `json:"credentials,omitempty"`
 }
 
 // Subrequest names the filter that made a subrequest, its nesting depth,
 // and the request that caused it.
 type Subrequest struct {
 	Filter string `json:"filter"`
+	// ID is the filter placement's policy-assigned id, or empty.
+	ID     string `json:"id,omitempty"`
 	Depth  int    `json:"depth"`
 	Parent string `json:"parent"`
 }
@@ -88,7 +93,14 @@ func (l *Log) Write(e Entry) {
 	}
 	ev.Int64("duration_ms", e.DurationMS)
 	if sr := e.Subrequest; sr != nil {
-		ev.Dict("subrequest", zerolog.Dict().Str("filter", sr.Filter).Int("depth", sr.Depth).Str("parent", sr.Parent))
+		d := zerolog.Dict().Str("filter", sr.Filter)
+		if sr.ID != "" {
+			d = d.Str("id", sr.ID)
+		}
+		ev.Dict("subrequest", d.Int("depth", sr.Depth).Str("parent", sr.Parent))
+	}
+	if len(e.Credentials) > 0 {
+		ev.Strs("credentials", e.Credentials)
 	}
 	ev.Msg(Summary(e))
 }
@@ -118,8 +130,19 @@ func Summary(e Entry) string {
 	case e.By != "":
 		s += fmt.Sprintf("  (%s)", e.By)
 	}
-	if e.Subrequest != nil {
-		s += fmt.Sprintf("  [subrequest from %s]", e.Subrequest.Filter)
+	as := ""
+	if len(e.Credentials) > 0 {
+		as = " as " + strings.Join(e.Credentials, ",")
+	}
+	switch {
+	case e.Subrequest != nil:
+		who := e.Subrequest.Filter
+		if e.Subrequest.ID != "" {
+			who = e.Subrequest.ID
+		}
+		s += fmt.Sprintf("  [subrequest from %s%s]", who, as)
+	case as != "":
+		s += fmt.Sprintf("  [%s]", strings.TrimPrefix(as, " "))
 	}
 	return s
 }

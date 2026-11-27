@@ -62,7 +62,7 @@ func newEnv(unmatched string, filters ...chain.Filter) *env {
 		Name:      "p",
 		Unmatched: unmatched,
 		HTTP: []*policy.Service{{
-			Config:  &config.Service{Name: "github", Hosts: []string{"github.com", "api.github.com"}, Credential: "pat"},
+			Config:  &config.Service{Name: "github", Hosts: []string{"github.com", "api.github.com"}, Credentials: []string{"pat"}},
 			Filters: filters,
 		}},
 	}
@@ -137,7 +137,7 @@ func TestDo(t *testing.T) {
 		if p == nil {
 			p = parent(0)
 		}
-		resp, u, err := tc.env.router.Do(p, "probe", tc.spec)
+		resp, u, err := tc.env.router.Do(p, chain.SubrequestCaller{Filter: "probe"}, tc.spec)
 		if tc.wantErr != "" {
 			require.ErrorContains(t, err, tc.wantErr)
 			return

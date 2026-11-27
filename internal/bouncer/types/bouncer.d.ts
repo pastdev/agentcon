@@ -87,6 +87,8 @@ declare module "bouncer" {
   export interface SubrequestInfo {
     /** The filter that made the subrequest. */
     readonly filter: string;
+    /** The policy-assigned id of the filter placement that made it, or null. Rules match on this, never on `filter`. */
+    readonly id: string | null;
     /** Nesting level: 1 for a subrequest made while handling an agent request, at most 4. */
     readonly depth: number;
     /** describe() of the request that caused the subrequest. */
@@ -246,21 +248,20 @@ declare module "bouncer" {
   export function subrequest(init: SubrequestInit): Promise<SubrequestResponse>;
 
   /**
-   * The named credential's placeholder. Put it where the service expects
-   * its credential, for a service without an `inject` spec; the forwarder
-   * replaces it, as it does for the agent. Throws for an unknown or
-   * internal credential.
+   * A new one-time placeholder for the named credential, such as
+   * `bouncer-placeholder-github-audit-7f3a9c2e41d8b605`. Put it in a
+   * subrequest's headers, query, or body; the forwarder replaces it with
+   * the secret, escaped for JSON and form bodies. It is replaced only in
+   * this filter run's subrequests, only to a service that lists the
+   * credential, and, for a credential that does not allow agent, only on a
+   * rule that lists it in `subrequest.credentials`. It expires when the run
+   * ends. The static placeholder the agent uses is never replaced in a
+   * subrequest. Throws for an unknown credential or one whose `allow` lacks
+   * `subrequest`.
    */
   export function placeholder(name: string): string;
 
   export function log(message: string, fields?: Record<string, any>): void;
-
-  /**
-   * The named credential's secret. Filters are trusted.
-   * The request object does not include secrets unless a filter puts one
-   * in a respond() body.
-   */
-  export function credential(name: string): string;
 
   /** Persistent key-value storage, namespaced per filter. TTLs are "1h"-style strings or seconds. */
   export const kv: {

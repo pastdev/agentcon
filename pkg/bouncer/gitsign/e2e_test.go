@@ -73,7 +73,7 @@ func TestGitEndToEnd(t *testing.T) {
 
 	svc := &config.Service{Name: "signing", Signer: &config.Signer{OpenPGP: &config.OpenPGPSigner{Keys: []config.OpenPGPKey{{ID: fpr, Credential: "sign"}}}}}
 	sg := &signer.OpenPGP{Creds: staticCreds{
-		cred:   &config.Credential{Name: "sign", Internal: true, PrivateKey: &config.ValueSource{Source: "provided"}, Password: &config.ValueSource{Source: "provided"}},
+		cred:   &config.Credential{Name: "sign", Allow: []string{config.AllowInternal}, PrivateKey: &config.ValueSource{Source: "provided"}, Password: &config.ValueSource{Source: "provided"}},
 		values: map[string]string{"sign.private_key": armoredPriv, "sign.password": "hunter2"},
 	}}
 	terminal := signer.Terminal(svc, sg, zerolog.Nop())
