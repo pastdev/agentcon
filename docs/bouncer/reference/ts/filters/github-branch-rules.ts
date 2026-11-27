@@ -14,8 +14,9 @@
 //
 // The lookup is a subrequest. It goes through the policy of the service its
 // host matches, as this session, so that service must allow it and inject
-// its credential. A lookup that fails, is denied, or answers anything but
-// 200 denies the push.
+// its credential. It reads every page of rules, up to 10 pages of 100. A
+// lookup of any page that fails, is denied, or answers anything but 200
+// denies the push, and so do more than 1000 rules.
 //
 // config:
 //   api:   API base URL (default "https://api.github.com")
@@ -42,18 +43,30 @@ function branchPath(branch: string): string {
   return branch.split("/").map(encodeURIComponent).join("/");
 }
 
+const perPage = 100;
+const maxPages = 10;
+
+// rulesFor reads every page of rules for a branch, since a blocking rule
+// can be on any page. It returns the rule types, or a reason to deny.
 async function rulesFor(api: string, repo: string, branch: string): Promise<string[] | string> {
-  const url = `${api}/repos/${repo}/rules/branches/${branchPath(branch)}?per_page=100`;
-  let r;
-  try {
-    r = await subrequest({ url, headers: { Accept: "application/vnd.github+json" } });
-  } catch (e) {
-    return `branch rules lookup for '${branch}' failed: ${(e as Error).message}`;
+  const types: string[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const what = page === 1 ? `branch rules lookup for '${branch}'` : `branch rules lookup for '${branch}' page ${page}`;
+    const url = `${api}/repos/${repo}/rules/branches/${branchPath(branch)}?per_page=${perPage}&page=${page}`;
+    let r;
+    try {
+      r = await subrequest({ url, headers: { Accept: "application/vnd.github+json" } });
+    } catch (e) {
+      return `${what} failed: ${(e as Error).message}`;
+    }
+    if (r.denied) return `${what} was denied: ${r.denied.reason}`;
+    if (r.status !== 200) return `${what} answered ${r.status}`;
+    const rules = (await r.body.json()) as { type: string }[];
+    if (!Array.isArray(rules)) return `${what} did not answer a list`;
+    types.push(...rules.map((rule) => rule.type));
+    if (rules.length < perPage) return types;
   }
-  if (r.denied) return `branch rules lookup for '${branch}' was denied: ${r.denied.reason}`;
-  if (r.status !== 200) return `branch rules lookup for '${branch}' answered ${r.status}`;
-  const rules = (await r.body.json()) as { type: string }[];
-  return rules.map((rule) => rule.type);
+  return `more than ${perPage * maxPages} branch rules for '${branch}'; refusing to guess`;
 }
 
 async function check(req: HttpRequest | SshRequest, git: Git | null, cfg: Config) {
