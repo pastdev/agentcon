@@ -264,23 +264,41 @@ In the GitHub web UI on `pastdev/agentcon`:
    - Enforcement status active.
    - Target `refs/heads/smoke/protected` only.
    - Rules "Restrict updates" and "Restrict deletions".
-   - Empty bypass list.
+   - Bypass list with the role that covers the token's owner, such as Repository admin, in mode Always.
 
-The rules endpoint needs only read access, so the smoke PAT needs no admin scope.
+The bypass is what makes the check meaningful.
+GitHub enforces rulesets against the token's owner, so with the owner on the bypass list GitHub would accept the push, and only the filter stops it.
+Without the bypass, GitHub would refuse the same push anyway.
+A filter failure then lands an empty commit on a throwaway branch, never on `master`.
+
+The rules endpoint and the ruleset read need only read access, so the smoke PAT needs no admin scope.
 
 ### Script
 
-`.agentcon/smoke-subrequest.handoff.sh` builds `agentcon`, starts Bouncer with a smoke policy that attaches `github-branch-rules.ts` to git pushes for `pastdev/agentcon`, and uses a fresh clone in a temp directory.
+`ad_hoc/issue-42/smoke` is the smoke program, and `.agentcon/smoke-subrequest.handoff.sh` builds `agentcon` and runs it with the operator's Bitwarden account.
+It starts a real `agentcon bouncer serve` on loopback with the token from Bitwarden and a policy that attaches `github-branch-rules.ts` to git pushes for `pastdev/agentcon`.
+The sidecar's vault prompts are answered at the operator's terminal.
+Git runs with a temporary `HOME` and no system config, so only Bouncer can authenticate.
 
-1. Commit an empty change and push it to `smoke/protected` through Bouncer over HTTPS.
+1. Fetch `smoke/protected` through Bouncer and commit an empty change on it.
+2. Read the `smoke-protected` ruleset through Bouncer.
+   Pass when it is active and `current_user_can_bypass` is `always`.
+3. Push the empty commit to `smoke/protected` over HTTPS.
    Pass when git reports `denied by github-branch-rules`.
    Fail when the push succeeds or when the rejection comes from GitHub rather than Bouncer.
-2. Push to `smoke/subrequest-<random>` through Bouncer.
+4. Push the fetched commit to `smoke/subrequest-<random>`.
    Pass when the push succeeds.
-3. Delete `smoke/subrequest-<random>` through Bouncer.
+5. Delete `smoke/subrequest-<random>`.
    Pass when the delete succeeds.
-4. Check the Bouncer audit log for subrequest entries with `filter: github-branch-rules`.
-5. Repeat step 1 over SSH when an SSH key credential is configured, and skip it otherwise with a note.
+6. Repeat step 3 over SSH when `-ssh-item` names a Bitwarden SSH key, and skip it otherwise with a note.
+7. Check the audit log for one allowed subrequest entry from `github-branch-rules` per lookup, at depth 1, and the filter's denial of each protected push.
 
-It writes `status`, `step`, and `message` to the result file through a `write_result` trap.
+It writes `status`, `step`, `message`, and `bypass` to the result file through a `write_result` trap.
 It ends with `SMOKE PASSED` or `SMOKE FAILED: <reason>`.
+
+### Result
+
+It passed on 2026-11-27 at commit `9289340`, over HTTPS, with the SSH step skipped.
+The ruleset read reported `enforcement=active current_user_can_bypass=always`.
+So the rules endpoint reports rules even to a user who can bypass them, and the filter denied a push GitHub would have accepted.
+The audit log had three subrequest lookups, for the protected update and the branch create and delete, and one denial.
