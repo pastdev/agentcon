@@ -165,6 +165,14 @@ func Match(req *Request, svc *config.Service, rule *config.Rule, env *Env) (bool
 			return false, nil
 		}
 	}
+	// git runs before gitlab_project, so a request that is not git skips a
+	// git-only rule before any project lookup.
+	if g := rule.Git; g != nil {
+		ok, err := matchGit(req, g)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
 	if p := rule.GitLabProject; p != nil {
 		ok, err := matchGitLabProject(req, svc, env, p)
 		if err != nil || !ok {
@@ -173,12 +181,6 @@ func Match(req *Request, svc *config.Service, rule *config.Rule, env *Env) (bool
 	}
 	if len(rule.GitHubRepo) > 0 {
 		ok, err := matchGitHubRepo(req, rule.GitHubRepo, rule.GitHubSubpaths)
-		if err != nil || !ok {
-			return false, err
-		}
-	}
-	if g := rule.Git; g != nil {
-		ok, err := matchGit(req, g)
 		if err != nil || !ok {
 			return false, err
 		}

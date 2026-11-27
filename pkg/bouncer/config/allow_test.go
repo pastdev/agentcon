@@ -138,6 +138,15 @@ profiles:
 			wantErr: `rules[0]: gitlab_project path lookups need lookup_credential`,
 		})
 	})
+	t.Run("a git-only gitlab_project rule needs no lookup, even without credentials", func(t *testing.T) {
+		tester(t, testCase{yaml: service("        rules:\n          - action: allow\n            git: {service: upload-pack}\n            gitlab_project: group/proj\n")})
+	})
+	t.Run("the same rule without git needs lookup_credential", func(t *testing.T) {
+		tester(t, testCase{
+			yaml:    service("        rules:\n          - action: allow\n            gitlab_project: group/proj\n"),
+			wantErr: `rules[0]: gitlab_project path lookups need lookup_credential`,
+		})
+	})
 	t.Run("a gitlab_project with an id needs no lookup", func(t *testing.T) {
 		tester(t, testCase{yaml: service("        rules:\n          - action: allow\n            gitlab_project: {path: group/proj, id: 7}\n")})
 	})

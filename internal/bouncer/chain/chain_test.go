@@ -795,3 +795,43 @@ func TestSubrequestRules(t *testing.T) {
 		tester(t, testCase{url: "https://gitlab.com/api/v4/audit", allow: true, by: "rules:gitlab rules[2]"})
 	})
 }
+
+func TestGitOnlyProjectRule(t *testing.T) {
+	type testCase struct {
+		req      *Request
+		allow    bool
+		resolved bool
+	}
+	cfg, err := config.Parse([]byte(`
+profiles:
+  p:
+    http:
+      - name: gitlab
+        hosts: [gitlab.com]
+        rules:
+          - action: allow
+            git: {service: upload-pack}
+            gitlab_project: mygroup/myproj
+`), "/tmp/c.yaml")
+	require.NoError(t, err)
+	svc := cfg.Profiles["p"].HTTP[0]
+	tester := func(t *testing.T, tc testCase) {
+		t.Helper()
+		resolved := false
+		env := &Env{Resolver: func(context.Context, *config.Service, string, string) (int64, error) {
+			resolved = true
+			return 42, nil
+		}}
+		resp, err := Build([]Filter{NewRules(svc, env)}, upstreamOK)(tc.req)
+		require.NoError(t, err)
+		assert.Equal(t, tc.allow, resp.Denial == nil)
+		assert.Equal(t, tc.resolved, resolved)
+	}
+
+	t.Run("a REST request by numeric id skips the rule without a lookup", func(t *testing.T) {
+		tester(t, testCase{req: httpReq(t, "GET", "https://gitlab.com/api/v4/projects/42/repository/tree", nil)})
+	})
+	t.Run("a git request matches the rule by path", func(t *testing.T) {
+		tester(t, testCase{req: httpReq(t, "POST", "https://gitlab.com/mygroup/myproj.git/git-upload-pack", nil), allow: true})
+	})
+}

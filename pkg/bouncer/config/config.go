@@ -964,7 +964,9 @@ func (c *Config) validateServiceCredentials(s *Service) error {
 func (c *Config) validateHTTPRules(s *Service) error {
 	for i := range s.Rules {
 		r := &s.Rules[i]
-		if p := r.GitLabProject; p != nil && p.Path != "" && p.ID == 0 && s.LookupCredential == "" {
+		// A rule with git matches only git requests, which carry the
+		// project path, so it never looks a project up.
+		if p := r.GitLabProject; p != nil && p.Path != "" && p.ID == 0 && r.Git == nil && s.LookupCredential == "" {
 			return fmt.Errorf("rules[%d]: gitlab_project path lookups need lookup_credential", i)
 		}
 		sr := r.Subrequest
