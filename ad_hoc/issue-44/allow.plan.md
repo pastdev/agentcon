@@ -14,6 +14,11 @@ The agent cannot name that credential, by accident or on purpose.
   `internal` stands alone and replaces `internal: true`.
 - A service lists `credentials` and names its injected one in `inject.credential`.
   The singular `credential:` is removed.
+- A service's `lookup_credential` names the credential Bouncer itself uses when a matcher needs data from the service.
+  Today only the GitLab project resolver uses it, to map `gitlab_project.path` to a numeric ID.
+  It is a typed field, not an options map, so strict decoding catches a misspelled key.
+  It must allow `agent`, because agent requests trigger lookups, so a lookup never uses an elevated credential.
+  It is on the service rather than top level, so a profile never causes a lookup with a credential its services do not list.
 - `inject.git` uses `inject.credential`.
   A `credential` key under `inject.git` fails the policy load.
 - `placeholder(name)` returns a one-time string per call, valid for that filter run only.
@@ -79,6 +84,20 @@ bouncers:
 When the agent and a filter use the same endpoint with different tokens, the subrequest rule comes first.
 The agent's request skips it and falls through to its own rule.
 
+A GitLab service whose rules match projects by path:
+
+```yaml
+          - name: gitlab
+            hosts: [gitlab.example.com]
+            credentials: [gitlab, gitlab-audit]
+            inject: {header: PRIVATE-TOKEN, credential: gitlab}
+            lookup_credential: gitlab     # used only for project path to ID lookups
+            rules:
+              - action: allow
+                methods: [GET]
+                gitlab_project: {path: myorg/myrepo, subpaths: [issues]}
+```
+
 ### Load checks
 
 Each check fails with a message in the existing `credential %q: ...` or `http %q: ...` form.
@@ -99,6 +118,8 @@ Each check fails with a message in the existing `credential %q: ...` or `http %q
 - A `subrequest` block on an `ssh` rule.
 - A `subrequest.credentials` entry that is not in the service's `credentials`, or that allows `agent`.
 - `inject.credential` that is elevated.
+- `lookup_credential` that is not in the service's `credentials`, or that is elevated.
+- A rule using `gitlab_project.path` without `id` on a service with no `lookup_credential` (`http %q: gitlab_project path lookups need lookup_credential`).
 
 ## Forwarder
 
@@ -141,6 +162,18 @@ The map is dropped when the run returns, so a string kept in a closure or KV mat
 The TypeScript `name` plays no part in matching.
 A matched rule sets `req.RuleCredentials` from `Subrequest.Credentials`, the same way it sets `SkipCredential`.
 Each redirect hop is matched again, so a same-host redirect to another route loses the elevated credential.
+A rule's `Subrequest` check runs before its other matchers, so an agent request never starts a GitLab lookup for a subrequest-only rule.
+
+## GitLab project resolver
+
+The resolver moves from `internal/bouncer/daemon/daemon.go` (`resolveGitLabProject`) into a new package, `internal/bouncer/gitlab`.
+It takes a transport, a credential getter, and the service lookup, and keeps its per service, host, and project cache.
+The daemon only wires it into `chain.Env.Resolver`.
+
+The lookup sends `GET https://<host>/api/v4/projects/<path>` with `Authorization: Bearer <lookup_credential>`.
+GitLab accepts Bearer for personal, project, and group access tokens and for OAuth tokens, while `PRIVATE-TOKEN` does not take OAuth tokens.
+It no longer uses `inject`, and the bearer fallback for a service without `inject` is gone.
+It reads the secret with request kind `agent`, so the store refuses an elevated credential even if the load check were bypassed.
 
 ## Audit and tests
 
@@ -155,10 +188,11 @@ Each redirect hop is matched again, so a same-host redirect to another route los
 
 - `credential()` binding, `chain.Env.Credential`, the daemon's wiring, and `bouncer.d.ts` entries.
 - `Credential.Internal`, `HTTPService.Credential`.
+- `Daemon.resolveGitLabProject`, replaced by `internal/bouncer/gitlab`.
 
 ## Docs and examples
 
-- `docs/bouncer.md`: credential `allow`, service `credentials`, `inject.credential`, subrequest rules.
+- `docs/bouncer.md`: credential `allow`, service `credentials`, `inject.credential`, `lookup_credential`, subrequest rules.
 - `docs/bouncer-filters.md`: one-time placeholders, the static placeholder not working in subrequests, removal of `credential()`, and the responsibility and latency notes from the issue.
 - Migrate every config under `docs/bouncer/**` and test data.
 - Add a reference example: a `github-ci-safety` filter that denies a push when the repo has Actions secrets, using `github-audit`, with tests.
@@ -171,6 +205,10 @@ Each redirect hop is matched again, so a same-host redirect to another route los
 - Rules: `subrequest` matches only subrequests, only the listed ids when set, and lets agent requests fall through.
   A filter whose basename or `defineFilter({name})` equals a listed id, but whose placement has a different or no id, does not match.
 - Config: duplicate and unknown ids fail the load.
+- Config: `lookup_credential` not listed, elevated, or missing for a path lookup fails the load.
+- GitLab resolver: an agent request with a numeric project ID, on a service whose subrequest rule lists `gitlab-audit`, sends only the `lookup_credential` token.
+  An agent request never calls the resolver for a subrequest-only rule.
+  The existing `daemon_test.go` resolver test moves to the new package.
 - Elevated credentials: a placeholder is replaced on a rule listing the credential, and left as text on another allowed route of the same service and on a redirect hop to one.
 - Store: `Get` refuses by kind.
 - Test runner: `expect_credentials` in steps and fixtures.
